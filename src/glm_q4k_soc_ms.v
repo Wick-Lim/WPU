@@ -17,7 +17,7 @@
 //============================================================================
 // glm_q4k_soc_ms.v -- MULTI-SEQUENCE batched SoC top (Q4_K local-device track)
 //----------------------------------------------------------------------------
-// Q4_K-native sibling of the prior glm_fp8_soc_ms (branch 'fp8'; see
+// Q4_K-native sibling of the prior glm_fp8_soc_ms (tag 'fp8-verified-baseline'; see
 // docs/Q4K_SYSTEM_PLAN.md §1.2).
 // IDENTICAL retarget to §1.1: u_model die swap glm_model_fp8 -> glm_model_q4k,
 // the three weight-bus families FP8 -> Q4_K (aw_col/aw_scale ->

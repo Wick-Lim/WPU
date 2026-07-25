@@ -5,7 +5,7 @@
 //   instantiated NOWHERE (repo-wide it survives only in docs/comments), is in
 //   NO Makefile gate, and has NO testbench: its referenced test/weight_decomp2_tb.v
 //   and offline tools/fp8_ctxpack.py do NOT exist on this branch -- the FP8
-//   track lives on branch 'fp8'. Q4_K applicability is PENDING (Q4_K is already
+//   track lives on tag 'fp8-verified-baseline'. Q4_K applicability is PENDING (Q4_K is already
 //   4-bit, so an extra entropy coder gains less; re-measure needed --
 //   docs/ULTRA_PERF.md #3). NOTE: the order-0 sibling src/weight_decomp.v is a
 //   SEPARATE module being wired up independently; it is NOT superseded here.
@@ -25,7 +25,7 @@
 //   correlation.  An ORDER-1 model -- decode each byte with one of a few
 //   Huffman tables selected by a cheap function of the PREVIOUS decoded byte --
 //   captures that and reaches ~1.4-1.5x (a measured ~1.13x over order-0 on the
-//   SAME correlated weight blocks -- measured on branch 'fp8'; the harness
+//   SAME correlated weight blocks -- measured on tag 'fp8-verified-baseline'; the harness
 //   test/weight_decomp2_tb.v is NOT present on this branch), for a few
 //   small extra on-chip tables.  Bigger Flash->DDR5 compression = tok/s + J.
 //

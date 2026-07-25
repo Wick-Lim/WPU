@@ -56,7 +56,7 @@ a separate, non-target analysis, not this product's speed.)
   `EXPERT_STALL` — see §Faithful integration), wired into both the DUT and the TB storage-read
   (NVMe/PCIe) latency responder; the DUT exposes the counters `ec_demand_stall_cycles` /
   `ec_hit_count` / `ec_miss_count` read by the perf line.
-- **Driver (prior FP8 track — branch `fp8`).** `test/glm_fp8_system_perf_tb.v` — the functional
+- **Driver (prior FP8 track — tag `fp8-verified-baseline`).** `test/glm_fp8_system_perf_tb.v` — the functional
   system perf TB (`token == standalone glm_model_fp8`, X-aware) with TB-level `*_CFG` overrides
   (`FLASH_LAT_CFG`, `DDR_NCH_CFG`, `CACHE_SLOTS_CFG`, `L_CFG`, `N_EXPERT_CFG`, `EXPERT_STALL_CFG`),
   a free-running cycle counter (`cyc_per_tok` = start → `tok_valid`), and a machine-readable
@@ -94,7 +94,7 @@ cut vs RESIDENT=0 at FLASH_LAT=1024. *(The last row uses the no-stall accounting
 drop rather than stall; its stall column is the counter, not exposed latency.)* Independently re-run
 (byte-identical). See `make perf-q4k` and `build/perf_q4k_sweep.log`.
 
-## Measured sweep — prior FP8 track (branch `fp8`), historical mechanism reference
+## Measured sweep — prior FP8 track (tag `fp8-verified-baseline`), historical mechanism reference
 
 > **These are prior-FP8 cycle counts**, produced by the fp8-branch `tools/perf_sweep.sh` on
 > `glm_fp8_system` + `glm_model_fp8`. Retained because the *mechanism* (stall linear in `FLASH_LAT`,
@@ -160,7 +160,7 @@ measurement (no longer flat) while the token stays byte-identical. This param an
 current on `main` (`src/glm_q4k_system.v`); the numeric demonstration below is from the prior FP8
 harness.
 
-**Verified on the prior FP8 perf harness** (branch `fp8`; perf TB, `EXPERT_STALL=1`,
+**Verified on the prior FP8 perf harness** (tag `fp8-verified-baseline`; perf TB, `EXPERT_STALL=1`,
 `FLASH_LAT=256`): `ALL 3 TESTS PASSED` (token `== standalone glm_model_fp8`) + `PERF flash_lat=256 …
 cyc_per_tok=8607 stall=777 … expert_stall=1` — i.e. `cyc_per_tok` rose from the flat **7947** to
 **8607** (the exposed demand-stall now inside the measured token window). The growth **equals the
@@ -176,7 +176,7 @@ keeps the committed system byte-identical — regression `ALL 3 TESTS PASSED`.)
 The slice has **miss = 3 per 3 tokens** (tiny weights → almost everything fits the cache). At the
 real config the per-token miss count is large: ~75 MoE layers × ~8 routed experts × `(1 − hit)`.
 With the GLM-trace hit rate `h ≈ 27%` (measured on the FP8 prior track, `make cache-study` [removed
-from `main` — see branch `fp8`] / [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)), that is ~**hundreds
+from `main` — see tag `fp8-verified-baseline`] / [`IMPROVEMENT_PLAN.md`](IMPROVEMENT_PLAN.md)), that is ~**hundreds
 of demand misses per token**. (**Update — newer proxy measurement:** [`H_MEASUREMENT.md`](H_MEASUREMENT.md),
 OLMoE-1B-7B-Instruct trace — U(K)/EOR have since been **GLM-family measured** on GLM-4.5-Air
 ([`H_MEASUREMENT.md`](H_MEASUREMENT.md) 2nd measurement), superseding the OLMoE first-pass —
@@ -223,10 +223,10 @@ absolute magnitude — see the extrapolation for how it maps to the real regime.
 `ec_hit_count` / `ec_miss_count` / `ec_demand_stall_cycles` counters. The Q4_K perf TB + sweep that
 drive them into a `PERF …` table are **since ported** (`make perf-q4k`).
 
-**Prior FP8 harness (branch `fp8`)** — the exact commands that produced the table above:
+**Prior FP8 harness (tag `fp8-verified-baseline`)** — the exact commands that produced the table above:
 
 ```sh
-git checkout fp8
+git checkout fp8-verified-baseline
 bash tools/perf_sweep.sh             # faithful (EXPERT_STALL=1) SLICE + SCALE(thrashing cache) + decoupled BASELINE
 SWEEP=full bash tools/perf_sweep.sh  # additionally sweeps DDR_NCH and CACHE_SLOTS
 # single point:

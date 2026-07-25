@@ -5,7 +5,7 @@
 //============================================================================
 // mtp_head_q4k.v  --  GLM-5.2 (Q4_K) Multi-Token Prediction head (the Q4_K-native
 //                     sibling of mtp_head.v; prior FP8 sibling mtp_head_fp8 preserved
-//                     on branch 'fp8').  num_nextn_predict_layers=1.
+//                     on tag 'fp8-verified-baseline').  num_nextn_predict_layers=1.
 //----------------------------------------------------------------------------
 // FUNCTION  (identical math + FSM + flow to mtp_head.v; the ONLY change is that
 //   the big WEIGHT matmuls run in GGML Q4_K numerics -- the ggml-Q4_K reference

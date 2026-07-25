@@ -9,7 +9,7 @@ class → the box's size, thermal budget, BOM, and per-seat price.
 > **Track note.** This is the **current Q4_K / XCKU3P / Vivado** flow. A prior scaffold
 > targeted **FP8 on Gowin GW5AT-138** (Gowin/nextpnr); that scaffold is **removed**
 > (superseded by this Vivado flow) — it referenced the FP8 datapath also removed from
-> `main` (preserved on branch `fp8`).
+> `main` (preserved on tag `fp8-verified-baseline`).
 
 ## What it synthesizes
 `glm_q4k_system_cdc` — the whole 2-clock product top (compute die `glm_model_q4k` +

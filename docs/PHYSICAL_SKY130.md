@@ -3,7 +3,7 @@
 > **⚠ PRIOR FP8 TRACK — this is *not* the current product's physical run.** Everything in the
 > **Results** and **Post-placement P&R** sections below is a place-and-route of **`glm_matmul_fp8`**,
 > the FP8 GEMM tile of the **prior / datacenter track**. That module is **deleted from `main`** and
-> preserved on branch **`fp8`** (+ tag `fp8-verified-baseline`). The current product is **Q4_K**
+> preserved on tag **`fp8-verified-baseline`**. The current product is **Q4_K**
 > local-device inference — the Q4_K GEMM tile is `glm_matmul_q4k`, the whole-chip top is
 > `glm_q4k_system_cdc` (see [`Q4K_RETARGET.md`](Q4K_RETARGET.md),
 > [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md), [`../README.md`](../README.md)).
@@ -78,7 +78,7 @@ synthesis. Post-placement timing is **fully met at 40 ns (25 MHz) with +15.89 ns
 critical path ≈ 24 ns → **~41 MHz post-placement**, *better* than the pre-route 35.4 ns
 because the resizer buffers/upsizes the dequant/fold path — a direct, measured confirmation of
 the "pipeline the fold stage → higher fmax" thesis (all on the **prior FP8** tile; the fold-drain
-pipeline it validates was applied in `src/glm_matmul_fp8.v` on branch `fp8`, item 2 below).
+pipeline it validates was applied in `src/glm_matmul_fp8.v` on tag `fp8-verified-baseline`, item 2 below).
 
 **Where it stops, and why (environment, not design).** The flow died at **CTS** with
 `illegal instruction`: `openroad/orfs` ships an **amd64-only** OpenROAD binary, and on this
@@ -93,7 +93,7 @@ host-architecture limit.
 1. **The −87.6% accumulator claim has a real-cell anchor — on the prior FP8 tile.**
    `glm_matmul_fp8`'s BFP fixed-point accumulator maps to real sky130 cells; the 262,689 µm²
    figure (39% sequential) is a concrete area for the FP8 GEMM tile, replacing the cell-count
-   `[EST]` of the prior FP8 PPA analysis (`PPA_FP8.md`, now on branch `fp8`). The −87.6%
+   `[EST]` of the prior FP8 PPA analysis (`PPA_FP8.md`, now on tag `fp8-verified-baseline`). The −87.6%
    fixed-point-accumulate win is an **FP8-specific, prior-track** result; the Q4_K tile
    (`glm_matmul_q4k`) has its own dequant→fp32-accumulate path whose real-cell area is **[PENDING]**.
 
@@ -101,7 +101,7 @@ host-architecture limit.
    The shared pipelined MAC closes at ~131 MHz (7.6 ns), but `glm_matmul_fp8`'s own
    register-to-register path is 35.4 ns (~28 MHz) — i.e. the **block-dequant / accumulate-fold
    logic AROUND the pipelined MAC, not the MAC itself, was the fmax limiter**. This was flagged by
-   the prior FP8 PPA analysis and then measured on real cells — and **fixed** (on branch `fp8`,
+   the prior FP8 PPA analysis and then measured on real cells — and **fixed** (on tag `fp8-verified-baseline`,
    `src/glm_matmul_fp8.v`): the dequant/fold stage (the accumulator drain) was pipelined, registering
    `acc_sel_r`/`wf_sel_r` before the block-scale `fp32_mul_pipe` so `fixed_to_fp32` (48-bit
    leading-one + barrel-shift + RNE) no longer shares a stage with the mul's 24×24 mantissa multiply.
@@ -118,7 +118,7 @@ host-architecture limit.
 - **This is the prior FP8 tile, not the Q4_K product.** The single biggest open item: **no Q4_K
   sky130 / ORFS physical run exists.** `glm_matmul_q4k` (and the whole `glm_q4k_system_cdc`) has been
   elaborated and structurally checked (`make synth-glm`, see below) but **not** synth-mapped to real
-  cells or placed. Everything above characterizes `glm_matmul_fp8` on branch `fp8`.
+  cells or placed. Everything above characterizes `glm_matmul_fp8` on tag `fp8-verified-baseline`.
 - **Through placement, not yet routed (prior FP8).** Synthesis, floorplan and legalized placement are
   done on the real ORFS flow (see the post-placement section — 357,320 µm², timing met at
   40 ns). The remaining **CTS → routing → parasitic extraction → post-route STA** did not run
@@ -134,16 +134,16 @@ host-architecture limit.
   but a full-chip sky130 map/P&R (with the memory macros as real SRAM) is a larger effort; the prior
   FP8 GEMM + the shared fp32 MAC above are the compute-core datapoints.
 
-## Reproduce (prior FP8 tile — on branch `fp8`)
+## Reproduce (prior FP8 tile — on tag `fp8-verified-baseline`)
 
 `glm_matmul_fp8.v` is deleted from `main`; the command below reproduces the prior-FP8 result on
-branch `fp8` (`git checkout fp8`). The analogous **Q4_K** run — swapping in `src/glm_matmul_q4k.v` /
+tag `fp8-verified-baseline` (`git checkout fp8-verified-baseline`). The analogous **Q4_K** run — swapping in `src/glm_matmul_q4k.v` /
 `-top glm_matmul_q4k` — has **not yet been done ([PENDING])**.
 
 ```sh
 python3 -m volare enable --pdk sky130 c6d73a35f524070e85faff4a6a9eef49553ebc2b
 LIB=~/.volare/volare/sky130/versions/c6d73a35*/sky130A/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
-# branch fp8:
+# tag fp8-verified-baseline:
 yosys -p "read_verilog -sv -I src src/glm_matmul_fp8.v src/glm_fp_pipe.v; \
           synth -top glm_matmul_fp8 -flatten; dfflibmap -liberty $LIB; \
           abc -liberty $LIB; stat -liberty $LIB"          # -> Chip area

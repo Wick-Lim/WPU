@@ -1,7 +1,7 @@
 # P1.2 — full-config parameter scale-up (elaboration study)
 
 > **Retargeted FP8 → Q4_K.** This study was first executed on the FP8 sibling hierarchy
-> (now the *prior* track, preserved on branch `fp8` + tag `fp8-verified-baseline`). The
+> (now the *prior* track, preserved on tag `fp8-verified-baseline`). The
 > module names below are the **current Q4_K product** units (`glm_model_q4k` /
 > `glm_decoder_block_q4k` / `mla_attn_q4k` / `moe_router_q4k` / `swiglu_expert_q4k` /
 > `glm_matmul_q4k`) — the drop-in Q4_K siblings share the *identical* parameterization,
@@ -188,9 +188,9 @@ sequences — the batching bandwidth win. This is P1.3 work; the datapath (`PER_
 per-row-slot union, `kc_seq`) is present in the current Q4_K tree (`glm_model_q4k` /
 `mla_attn_q4k`, batched top `glm_q4k_soc_ms`).
 
-**Prior FP8-track measurement (branch `fp8`); Q4_K standalone re-run [PENDING].** The
+**Prior FP8-track measurement (tag `fp8-verified-baseline`); Q4_K standalone re-run [PENDING].** The
 following B=2 / B=4 figures were produced by the FP8 multi-seq TBs
-(`glm_model_fp8_multiseq_tb.v` / `glm_model_fp8_multiseq4_tb.v`, now on branch `fp8`). The
+(`glm_model_fp8_multiseq_tb.v` / `glm_model_fp8_multiseq4_tb.v`, now on tag `fp8-verified-baseline`). The
 union logic is retargeted unchanged into `mla_attn_q4k` / `glm_model_q4k`, so the beat-count
 ratios are expected to reproduce, but a standalone Q4_K re-measurement is pending:
 

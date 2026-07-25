@@ -1182,7 +1182,7 @@ mshr:
 #   dense-vs-sparse full-window cross-check (TOPK=4 vs TOPK=S_MAX machine,
 #   bit-identical when selection covers the window), and PER_ROW_SEQ per-row
 #   KV windows (TOPK_SEQ=2; kc==sum-of-rows, weights shared).  The fp8 track
-#   carried the sibling gate (on branch fp8, not on main); this is the
+#   carried the sibling gate (on tag fp8-verified-baseline, not on main); this is the
 #   Q4_K-product sibling closing that audit gap.
 # ============================================================================
 .PHONY: mla-sparse

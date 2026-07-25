@@ -59,13 +59,13 @@ is in. What remains open is the *board* (bring-up + the L3 token demo), not the 
 The Q4_K LUT/DSP numbers above are the **routed Vivado measurement on the target part**. Structural
 cell histograms from `make synth-glm` remain a *sanity* cross-check, **not** a routed fit.
 
-> **Prior FP8 track (branch `fp8`) — methodology carried forward; numbers are NOT Q4_K.** The prior
+> **Prior FP8 track (tag `fp8-verified-baseline`) — methodology carried forward; numbers are NOT Q4_K.** The prior
 > FP8 datacenter track ran an open **Gowin `synth_gowin`** synth exploration that established two
 > transferable methodology points: (1) **DSP inference** (`MULT18X18`/`MULT9X9`) maps a block-scaled
 > quant datapath and **sidesteps the `abc -lut4` accumulator timeout**, and (2) a **sequential
 > block-scaled dequant fold is O(1) in FP pipes** (the pattern `glm_matmul_q4k` uses today). Those
 > runs produced **FP8-specific** figures — e.g. the `glm_matmul_fp8` leaf @ KMAX=256 mapped in ~77 s
-> to **~17.8 K LUT4-equivalent + 20 DSP mults + ~5.4 K DFF** — which live on branch `fp8` and are
+> to **~17.8 K LUT4-equivalent + 20 DSP mults + ~5.4 K DFF** — which live on tag `fp8-verified-baseline` and are
 > **prior-track measurements, not Q4_K, and not routed** (no P&R Fmax). **The Q4_K Vivado run above
 > is DONE and supersedes them**; do not read the FP8 numbers as the current product's fit. (The
 > Gowin/nextpnr scaffold itself has been removed from `fpga/`, superseded by the Vivado flow.)

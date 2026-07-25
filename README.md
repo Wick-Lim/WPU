@@ -53,8 +53,8 @@ throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon).
 > bit-exact in RTL at Laguna's config, and the (different) GQA attention machine is specified +
 > reference-verified end to end (`make laguna`) — the bit-exact orchestrator RTL is scoped, not yet
 > written. See that branch's [`docs/LAGUNA_S21.md`](https://github.com/Wick-Lim/WPU/blob/laguna-s-2.1/docs/LAGUNA_S21.md).
-> The prior **FP8 datacenter track** is preserved on branch **`fp8`** + tag `fp8-verified-baseline`; a
-> compression-research study on `research/compression-study`. All referenced as prior/preserved, never
+> The prior **FP8 datacenter track** is preserved on tag `fp8-verified-baseline`; a
+> compression-research study on tag `compression-study-baseline`. All referenced as prior/preserved, never
 > current. The full product (rungs ②③) is the roadmap, not main's current code
 > ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md), [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
 
@@ -250,15 +250,15 @@ model adds the memory/streaming system + array scaling.
 
 ---
 
-## Appendix — prior FP8 track (branch `fp8`)
+## Appendix — prior FP8 track (tag `fp8-verified-baseline`)
 
 Before the Q4_K retarget, `main` developed a datacenter-native **FP8 E4M3** accelerator targeting
-[`zai-org/GLM-5.2-FP8`](https://huggingface.co/zai-org/GLM-5.2-FP8). It is preserved on branch **`fp8`** +
-tag **`fp8-verified-baseline`** (every `*_fp8.v`, TB, and evidence doc), referenced here as prior/preserved
-— none of it is on `main`. On that branch: operator bit-accuracy 9216/9216 vs the real FP8 safetensors,
+[`zai-org/GLM-5.2-FP8`](https://huggingface.co/zai-org/GLM-5.2-FP8). It is preserved at tag **`fp8-verified-baseline`**
+(every `*_fp8.v`, TB, and evidence doc), referenced here as prior/preserved
+— none of it is on `main`. At that tag: operator bit-accuracy 9216/9216 vs the real FP8 safetensors,
 exhaustive FP8 E4M3 arithmetic (66069 cases), real sky130 place-and-route of `glm_matmul_fp8`, and
-compute-side PPA wins — all FP8-specific. To inspect: `git checkout fp8`. The memory-system controllers,
-CDC, ECC/BIST, and clock-gating blocks are shared byte-agnostic logic on both branches.
+compute-side PPA wins — all FP8-specific. To inspect: `git checkout fp8-verified-baseline`. The memory-system controllers,
+CDC, ECC/BIST, and clock-gating blocks are shared byte-agnostic logic across both tracks.
 
 ---
 

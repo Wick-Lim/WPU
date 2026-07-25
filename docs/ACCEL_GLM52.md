@@ -11,7 +11,7 @@
 > `mtp_head_q4k`, `glm_matmul_q4k`, `glm_q4k_soc`/`glm_q4k_soc_ms`, `weight_loader_q4k`), plus
 > the shared bf16 leaves `glm_softmax`, `rmsnorm_unit`, `rope_interleave_unit`, `dsa_indexer`,
 > `topk_select`, `sampler`. The **prior FP8 datacenter-native track** — a *different arithmetic
-> contract* (FP8 activations + FP8 weights) — is preserved on branch **`fp8`** + tag
+> contract* (FP8 activations + FP8 weights) — is preserved on tag
 > **`fp8-verified-baseline`**, referenced here as prior/preserved, never current.
 
 > **What is actually proven (read this before any "bit-exact" below).**
@@ -382,7 +382,7 @@ fp32 MAC → bf16); the activation×activation QK^T and A·V are **bf16** (`glm_
   - **⚠️ Verification status (honest).** The *bit-exact weight-share*, *union-byte-identical*, and
     *multi-seq per-row-bit-exact* results — with the specific regression counts (swiglu 513 /
     router 192 / mla 6 / mtp 44; `glm_*_multiseq_tb`: 2 seqs ~41% / B=4 ~52% fewer attn-weight
-    beats) — were established on the **PRIOR FP8 track** (branch `fp8`; the multiseq TBs are FP8).
+    beats) — were established on the **PRIOR FP8 track** (tag `fp8-verified-baseline`; the multiseq TBs are FP8).
     Those checks are also **DUT-vs-DUT self-consistency** (a batched run vs independent `PE_M=1`
     runs of the *same* model), **not** a numeric golden vs ggml/llama.cpp. On `main` the Q4_K
     units carry the identical `PE_M`/`PER_ROW_SEQ` parameters, but a **Q4_K re-run of these
@@ -669,7 +669,7 @@ result-invariant resource knob (`glm_act` HW_LANES serialization).
 
 > **Prior-FP8 note.** Earlier revisions of this doc/track carried specific **FP8** measurements
 > (sky130 PPA slack, LUT/DSP counts, cycle counts, byte/BOM figures). Those are **prior-FP8**
-> results (branch `fp8`) for a **deleted** datapath; **no Q4_K re-run exists**. They are *not*
+> results (tag `fp8-verified-baseline`) for a **deleted** datapath; **no Q4_K re-run exists**. They are *not*
 > reproduced here rather than relabeled as Q4_K numbers.
 
 ---

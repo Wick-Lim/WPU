@@ -33,7 +33,7 @@ N_EXPERT=16, Q_LORA=1536. **This study pushes to the TRUE full config**
   the assembled spec loops (DUT-vs-DUT), and — since closed — the **assembled end-to-end
   golden** (`make model-q4k`, **1155/1155** bit-exact vs the assembled numpy reference
   `tools/glm_model_q4k_ref.py`; + `model-q4k-acthw`). **Real-checkpoint Q4_K validation is OPEN** — the
-  prior-FP8 real-weight run lives on branch `fp8` (`REAL_CKPT_VALIDATION.md`, deleted from
+  prior-FP8 real-weight run lives on tag `fp8-verified-baseline` (`REAL_CKPT_VALIDATION.md`, deleted from
   `main`); that record was FP8-only and does **not** cover the Q4_K datapath. Full synthesis /
   abc gate-mapping was not attempted (this is an elaboration-only study).
 
@@ -229,7 +229,7 @@ width-lint family** in `mla_attn_q4k`, a documented consequence of the flagged S
   billions of cycles/token. P1.2 is a **structural/elaboration** contract, not "set params +
   run the TB." (Slice functional fidelity: committed Q4_K leaf TBs + the assembled end-to-end
   golden `make model-q4k` (1155/1155) + spec loops (DUT-vs-DUT); real-checkpoint Q4_K fidelity
-  is **OPEN** — the prior-FP8 real-weight run is on branch `fp8`.)
+  is **OPEN** — the prior-FP8 real-weight run is on tag `fp8-verified-baseline`.)
 - **1M-context attention scratch (S_MAX)** — kept small; decoupling the window from S_MAX is
   task **B7**.
 - **Synthesis / gate mapping / area / timing** — not attempted (this is an

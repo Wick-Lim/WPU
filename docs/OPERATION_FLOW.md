@@ -2,7 +2,7 @@
 
 > **Track.** This is the **Q4_K** operational flow — the current / `main` product track (GGML
 > Q4_K, targeting [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF),
-> ~467 GB). The **prior FP8 datacenter-native track** is preserved on branch **`fp8`** (tag
+> ~467 GB). The **prior FP8 datacenter-native track** is preserved on tag **`fp8-verified-baseline`** (tag
 > `fp8-verified-baseline`), referenced here as prior/preserved, **never current**. The Q4_K module
 > names used below are `glm_q4k_system_cdc` / `glm_q4k_system` / `glm_model_q4k` /
 > `glm_decoder_block_q4k` / `mla_attn_q4k` / `moe_router_q4k` / `swiglu_expert_q4k` /
@@ -228,7 +228,7 @@ fp32 weight` MAC, fp32-accumulated in K, rounded to bf16; scores/probs/softmax s
   (`glm_model_q4k` at PE_M=B + `NSEQ`-window pager + a REAL per-layer KV store `kv_mem` owned by
   the top + host FSM: prefill B seqs → 1 forward → commit B tokens). *Byte-identical at
   `PER_ROW_SEQ=0` by construction; the per-row-argmax == per-seq-PE_M=1 bit-exactness was a
-  **prior-FP8 result** (branch `fp8`) — a Q4_K re-run is **PENDING**.*
+  **prior-FP8 result** (tag `fp8-verified-baseline`) — a Q4_K re-run is **PENDING**.*
 - **Continuous-batching decode loop (`glm_q4k_soc_ms`, `N_STEPS>1`):** one host `start` decodes
   **N tokens per sequence** — a `RUN→DECAP→RUN` loop that runs one PE_M=B forward, streams the B
   argmax out (`tok_valid`), writes each decode token's latent into `kv_mem` at the growing position
@@ -350,7 +350,7 @@ and **not** llama.cpp. The FPGA P&R fit is **MEASURED** (Vivado ML 2026.1 on XCK
 real downloaded GGUF / llama.cpp, and the board bring-up/run (see
 [`PRODUCT_ROADMAP.md`](PRODUCT_ROADMAP.md), [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md)). *(The prior-FP8
 real-checkpoint validation — operator-bit-exact vs the published `GLM-5.2-FP8` safetensors + a truncated
-real-weight token chain — lives on branch `fp8`; it is **not** a Q4_K result.)*
+real-weight token chain — lives on tag `fp8-verified-baseline`; it is **not** a Q4_K result.)*
 
 ## 10. Compact config (FPGA miniaturization)
 
@@ -416,7 +416,7 @@ exhausted; the last area lever is the invasive cross-module 3-way hoist, deferre
 measurement. This is free in time (the NVMe-bound die has the slack) and keeps the decoded token
 **byte-identical by construction**.
 
-> **Prior-FP8 measurement (branch `fp8`, not re-run for Q4_K).** The area of the merge was quantified
+> **Prior-FP8 measurement (tag `fp8-verified-baseline`, not re-run for Q4_K).** The area of the merge was quantified
 > on the FP8 track: the freed matmul core was **~6186 LUT4** each (≈12K LUT4/block), per-expert
 > generic-cell delta **−1519**, decoded token byte-identical (FP8 slice). Those numbers are **FP8**;
 > a Q4_K re-measure is **PENDING** (yosys can't map the datapath; the Vivado flow now exists, but the

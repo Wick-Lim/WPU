@@ -8,7 +8,7 @@
 //                        DDR5 fabric + the weight-side DMA loader)
 //                       (docs/Q4K_SYSTEM_PLAN.md §1.3 -- the largest top)
 //----------------------------------------------------------------------------
-// Q4_K RETARGET (vs. the prior glm_fp8_system on branch 'fp8'):  ONE contract
+// Q4_K RETARGET (vs. the prior glm_fp8_system on tag 'fp8-verified-baseline'):  ONE contract
 //   change -- the compute die
 //   glm_model_fp8 -> glm_model_q4k -- drives everything.  The three weight-bus
 //   families that cross the die boundary swap FP8 (8-bit codes + bf16 [128,128]

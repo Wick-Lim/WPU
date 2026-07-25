@@ -5,7 +5,7 @@
 //============================================================================
 // glm_matmul_q4k.v  --  GLM-5.2 Q4_K-NATIVE GEMM datapath (local-device target)
 //                       a DROP-IN sibling of glm_matmul_pipe.v (prior FP8 twin
-//                       glm_matmul_fp8 preserved on branch 'fp8').
+//                       glm_matmul_fp8 preserved on tag 'fp8-verified-baseline').
 //----------------------------------------------------------------------------
 // FUNCTION
 //   C[M,N] = A[M,K] x W[K,N], computed in the OFFICIAL GGML Q4_K numerics so the

@@ -2,7 +2,7 @@
 //============================================================================
 // glm_q4k_system_perf_tb.v -- CYCLE-ACCURATE THROUGHPUT harness for the Q4_K
 //   production system (glm_q4k_system) -- the port of the fp8 track's
-//   glm_fp8_system_perf_tb.v (branch `fp8`) to the Q4_K top (audit #15; the
+//   glm_fp8_system_perf_tb.v (tag `fp8-verified-baseline`) to the Q4_K top (audit #15; the
 //   docs/CYCLE_EMULATION.md [PENDING] item).
 //----------------------------------------------------------------------------
 // WHAT IT MEASURES  (a MEASUREMENT harness, not a bit-exactness gate -- but

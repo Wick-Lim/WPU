@@ -3,7 +3,7 @@
 > **This doc describes the CURRENT Q4_K product track.** The energy analysis below (bandwidth
 > roofline, cache/paging, DVFS, clock-gating) is **format-agnostic** and has been reframed FP8 → Q4_K
 > (753 GB → **~467 GB**, ~1.0 → **~0.6 B/param**). A handful of numbers were *measured on the prior
-> **FP8** track* (now preserved on branch `fp8` + tag `fp8-verified-baseline`) — lossless-compression
+> **FP8** track* (now preserved on tag `fp8-verified-baseline`) — lossless-compression
 > ratios, the BFP-accumulator cell count, and the `FLASH_LAT` stall table — and are called out inline
 > as **prior-FP8, Q4_K re-run PENDING**. They are **not** relabelled as Q4_K results. See
 > [`Q4K_RETARGET.md`](Q4K_RETARGET.md) / [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md) and the honest
@@ -192,7 +192,7 @@ slower clock) — the same "compute is nearly free" slack that shrinks the die
 > a standalone `glm_model_q4k` golden, shows exposed `stall/token` scaling linearly with read latency
 > (`FLASH_LAT` 8 → 11; 1024 → **2,567** at RESIDENT=0), and — the residency confirmation —
 > **35 cyc/token independent of `FLASH_LAT` at RESIDENT=1** (expert refills bypass the storage tier),
-> a ~73× cut. The prior FP8 table (`FLASH_LAT` 256→777, 2048→6153) is retained on branch `fp8` as
+> a ~73× cut. The prior FP8 table (`FLASH_LAT` 256→777, 2048→6153) is retained on tag `fp8-verified-baseline` as
 > the historical mechanism reference. The *conclusion* it supports — **storage-stall shadow ∝ read
 > latency → a ~4–5× DVFS budget** — is a **format-agnostic roofline** property: at real 753B scale the
 > die is memory-bound regardless of numeric format, so compute is ≈ 20–25 % of the token window.
@@ -277,7 +277,7 @@ optimum on its own).)*
   win already counted in §1; the bf16 MAC is cheaper than an fp32-weight MAC but **not** silicon-
   characterized.
 
-> **Prior-FP8 compute-energy results [branch `fp8`, Q4_K re-characterization PENDING]:** the **BFP
+> **Prior-FP8 compute-energy results [tag `fp8-verified-baseline`, Q4_K re-characterization PENDING]:** the **BFP
 > fixed-point accumulator** measured **−87.6 % cells** vs fp32-accumulate, and **FP8 E4M3 (4×4
 > mantissa)** freed DSPs at far less energy/MAC than fp32. Both are **FP8-datapath** results — the
 > Q4_K path uses bf16 activations + fp32 accumulate (a different arithmetic contract) and has **no
@@ -311,7 +311,7 @@ then revisited as a separate fidelity decision:
 - **spec high-K:** the ÷K *hardware* is **built + output-preserving in Q4_K** (§4a); what is not built
   is the **resident ~1–3 B dense draft model** that raises K_eff 1.7→3–5 — a model artifact, not RTL.
 - **Prior-FP8 numbers** (compression 1.34×/1.4–1.5×, BFP −87.6 % cells, the `FLASH_LAT` stall table
-  and its ~4–5× compute-slowdown budget) are **branch `fp8`** measurements; the Q4_K re-runs are
+  and its ~4–5× compute-slowdown budget) are **tag `fp8-verified-baseline`** measurements; the Q4_K re-runs are
   [PENDING] and none of them is restated as a Q4_K result.
 
 ## 8. Verification invariant

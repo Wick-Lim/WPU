@@ -26,7 +26,7 @@ Build the binary + golden vectors first (once):
     make model-q4k            # -> build/glm_model_q4k_full_sim + build/mq4k/*.hex
 
 History: the prior fp8-era backend targeted `build/glm_model_fp8_sim`; `glm_model_fp8`
-was removed from main (it lives on branch `fp8`), so this backend was retargeted to the
+was removed from main (it lives on tag `fp8-verified-baseline`), so this backend was retargeted to the
 on-main `glm_model_q4k` product top.
 """
 

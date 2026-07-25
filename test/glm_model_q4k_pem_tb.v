@@ -28,7 +28,7 @@
 //   two DUTs' request buses are MUXED into the single responder set (only one
 //   DUT runs at a time), and the response buses (PE_M-independent widths) feed
 //   both.  Scope: PE_M widening for a SHARED sequence (PER_ROW_*=0) -- the
-//   per-row-KV multi-seq / decode-loop TBs remain FP8-only (branch fp8).
+//   per-row-KV multi-seq / decode-loop TBs remain FP8-only (tag fp8-verified-baseline).
 //============================================================================
 module glm_model_q4k_pem_tb;
 `ifdef SPEC_SLICE

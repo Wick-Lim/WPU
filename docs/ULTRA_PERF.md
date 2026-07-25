@@ -14,7 +14,7 @@
 > (`glm_model_q4k`, `glm_decoder_block_q4k`, `mla_attn_q4k`, `swiglu_expert_q4k`, `moe_router_q4k`,
 > `mtp_head_q4k`, `glm_matmul_q4k`, `glm_q4k_soc(_ms)`, `glm_q4k_system(_cdc)`, `weight_loader_q4k`).
 >
-> **Prior FP8 track (branch `fp8` + tag `fp8-verified-baseline`).** Several *measured* perf multipliers
+> **Prior FP8 track (tag `fp8-verified-baseline`).** Several *measured* perf multipliers
 > quoted below (flash_xbar latency-hide, weight_decomp ratio, MTP throughput, idle-gate %, flash_layout
 > balance) were measured on the **prior FP8 datapath**. The mechanisms are format-agnostic, but the
 > numbers are **prior-FP8 measurements** — a **Q4_K re-run is PENDING** and no Q4_K equivalent is
@@ -24,7 +24,7 @@
 
 **Scope.** Opportunities *beyond* the already-built levers (flash_xbar latency-hide, weight_decomp,
 MTP K=2, clk_en_ctrl idle-gate, flash_layout balance, fmax fixes, predictor-prefetch [measured no-op]).
-The perf multipliers for those levers are **[prior-FP8]** (branch `fp8`; Q4_K re-measure PENDING) — see the
+The perf multipliers for those levers are **[prior-FP8]** (tag `fp8-verified-baseline`; Q4_K re-measure PENDING) — see the
 banner above. Numbers marked **[EST]** are roofline model estimates, not measured silicon. **Numeric
 honesty:** the Q4_K GEMM core is **bit-exact to the team's own ggml reference `tools/q4k_ref.py`** —
 whose **dequant layer is now proven on real GGUF bytes** (376,586,240 weights — Q4_K/Q6_K/Q8_0,
@@ -106,7 +106,7 @@ fmax/area work does **not** move the wall (the die is already ~75% idle behind t
 > `tools/glm_model_q4k_ref.py` — **ALL 1155 TESTS bit-exact** (logits+argmax+h_state), plus
 > `make model-q4k-acthw` (the same golden through the ACT_HW=1 serialized-activation datapath, also 1155).
 > Caveat that stays: the golden is our **own numpy reimpl, NOT llama.cpp/GGUF**. The batched
-> `PE_M`/union/paged-KV paths were verified **bit-exact on the prior FP8 track (branch `fp8`)**, not on
+> `PE_M`/union/paged-KV paths were verified **bit-exact on the prior FP8 track (tag `fp8-verified-baseline`)**, not on
 > Q4_K. Where a row says a mechanism was "verified bit-exact", that is a **[prior-FP8]** result unless
 > stated otherwise. Also checked on Q4_K end-to-end: `spec_decode_top` **18/18 spec==greedy**
 > (DUT-vs-DUT self-consistency, the "greedy golden" is itself a `glm_model_q4k` — a lossless-speculation
@@ -251,7 +251,7 @@ a Q4_K golden is stated per step.**
    selected — a `T_ESCAN` scan over the expert axis with a combinational `any_has` membership test skips every
    non-union expert (the FP8 `batched_moe.v` union-skip logic was **folded inline** here). This was verified
    **BYTE-IDENTICAL on the prior FP8 track [prior-FP8]** (union_tb / `_pem` / decoder TB, and `make bcov`
-   B∈{1,2,3,5,8} — *all FP8-track, removed from `main`, see branch `fp8`*). **On Q4_K the assembled decoder
+   B∈{1,2,3,5,8} — *all FP8-track, removed from `main`, see tag `fp8-verified-baseline`*). **On Q4_K the assembled decoder
    path is now covered at B=1 by the `glm_model_q4k` end-to-end golden** (`make model-q4k`, 1155 bit-exact
    vs `tools/glm_model_q4k_ref.py`), **but the PE_M>1 union fetch has no Q4_K golden (NOT-YET)** — its
    Q4_K numeric correctness at batch is unproven. Effect *when realized*: up to **~32×** fewer NVMe/storage
@@ -383,7 +383,7 @@ endgame for the hybrid/streaming SKU and >512 GB checkpoints.)*
 ---
 
 *Estimates [EST] are first-order model projections (master eq + roofline), not silicon measurements.
-**[prior-FP8]** multipliers were measured on the prior FP8 datapath (branch `fp8`); their Q4_K re-measure is
+**[prior-FP8]** multipliers were measured on the prior FP8 datapath (tag `fp8-verified-baseline`); their Q4_K re-measure is
 PENDING and no Q4_K equivalent is fabricated. Faithful levers preserve the Q4_K arithmetic contract
 (bit-exact to the ggml reference `tools/q4k_ref.py` — not the real GGUF / llama.cpp, which is OPEN); #6/#7
 (and latent-KV, hierarchical indexing) are quality knobs and must be validated against the accuracy contract

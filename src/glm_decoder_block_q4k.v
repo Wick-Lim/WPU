@@ -6,7 +6,7 @@
 // glm_decoder_block_q4k.v  --  ONE GLM-5.2 (Q4_K) decoder layer (ACCEL_GLM52 §2,§6)
 //----------------------------------------------------------------------------
 // FUNCTION  (the Q4_K-native sibling of glm_decoder_block.v; prior FP8 sibling
-//   glm_decoder_block_fp8 preserved on branch 'fp8' -- IDENTICAL FSM, dataflow,
+//   glm_decoder_block_fp8 preserved on tag 'fp8-verified-baseline' -- IDENTICAL FSM, dataflow,
 //   dense/MoE modes, streamed residual adds and FFN combine; the ONLY change is
 //   that the big LINEAR WEIGHT matmuls run Q4_K instead of bf16)
 //

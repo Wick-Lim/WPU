@@ -17,7 +17,7 @@
 //    argmax = arg max_v logits[v]                               // next token
 //
 //   This is the Q4_K-native sibling of glm_model.v (prior FP8 sibling glm_model_fp8
-//   preserved on branch 'fp8').  ONLY the per-layer attention/router/expert WEIGHT
+//   preserved on tag 'fp8-verified-baseline').  ONLY the per-layer attention/router/expert WEIGHT
 //   matmuls are Q4_K (GGML Q4_K: 4-bit codes + per-256-elem-super-block fp16 d/dmin
 //   scales; activations stay bf16 -- NO activation quant, unlike the prior FP8
 //   track); the token embedding, the final RMSNorm, the LM-head GEMV and the

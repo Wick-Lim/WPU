@@ -97,7 +97,7 @@ scale, robustly, and ship it.*
 | Memory | DDR5/NVMe/USB-C **PHYs stubbed** (TB) | licensed **PHY IP** integrated + signed off |
 | Verification | bounded BMC (7 controllers + 1 ECC-ring) + 5 lifted to unbounded k-induction (`make formal`/`formal-ind`); directed TBs at slice; verilator line/toggle/branch coverage (`make coverage`) | coverage *closure*, constrained-random regression, gate-level sim, production-width formal |
 | Reliability | ECC foundations (`ecc_mem_wrap` SECDED scrub, `kv_ecc_ring`), CDC/reset hardening (`reset_sync` wired), DVFS (`clk_throttle`); the die already carries the inline `die_clk` ICG (`glm_q4k_system.v:1307-1311`); `mbist_ctrl` is the verified single-port March **reference** (per-macro BIST collars are the physical-flow insertion, [`P2_MEMORY_MAP.md`](P2_MEMORY_MAP.md) §4 — not a hand-wire-in-top task) | full ECC/recovery, CDC sign-off, reset/init hardening, dual-port BIST collars + DFT/scan closed |
-| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%) synth-stage (routed 141,298 LUT, `fpga/results/util_routed_ku3p_acthw1.rpt`), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on branch `fp8` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
+| Physical | **measured FPGA fit**: Vivado ML 2026.1 real synth + full P&R of `glm_q4k_system_cdc` on XCKU3P (compact + ACT_HW=1) — 142,320 LUT (87.5%) synth-stage (routed 141,298 LUT, `fpga/results/util_routed_ku3p_acthw1.rpt`), ~100K FF, 421 DSP, 0 BRAM, hold met; routed Fmax 10.2 → 17.2 → 46.5 MHz over bit-exact repipeline rounds, **campaign CLOSED at 4.6×** — the worst path is now route-dominated (wide-bus wiring at 87% utilization), physical work not arithmetic (see [`fpga/`](../fpga/README.md) + `fpga/results/`); **prior-FP8 sky130 realizability** on tag `fp8-verified-baseline` (see below) | **bitstream** on a board — the Fmax campaign is closed at 46.5 MHz (in the bring-up demo's target band; 200 MHz-class is rung-②/③ work) (rungs ①②; ASIC/tapeout is the rung-③ volume endgame — see [`HARDWARE_LADDER.md`](HARDWARE_LADDER.md)) |
 | Software | weight-pack tools (`ckpt_pack_q4k.py`/`flash_layout.py`); **host scaffold built** — OpenAI-compatible server + device protocol + **real GLM BPE tokenizer** + chat template + sampling ([`host/`](../host/README.md); simulator backend targets the on-`main` `glm_model_q4k` slice via `vvp` and returns real RTL argmax tokens — parse/protocol covered by `make host-test`, 32 tests) | production host **driver** (real USB backend), runtime/scheduler, quant-layout pipeline |
 | Manufacturing | — | PCB, BOM, assembly, qualification |
 
@@ -160,7 +160,7 @@ thing the slice and the spec==greedy self-consistency cannot.
   at the slice + the elaboration study, not a full-config run. *(Prior-FP8 note: the O(NB²)→O(1) sequential
   block-scale dequant fold that first made the product KMAX buildable — one `fp32_mul_pipe` + one
   `fp32_add_pipe` reused over all blocks — was established and measured **bit-exact on the prior FP8 track**
-  `glm_matmul_fp8` (branch `fp8`); `glm_matmul_q4k` inherits the same sequential fp32-accumulate structure,
+  `glm_matmul_fp8` (tag `fp8-verified-baseline`); `glm_matmul_q4k` inherits the same sequential fp32-accumulate structure,
   and its Q4_K bit-exactness is the `make q4k` 160/160 result. The specific FP8 buildability counts are a
   prior-track measurement — no fabricated Q4_K equivalent.)*
 - **P1.3 Close the batched-decode / per-position-KV correctness gaps for product.** **Largely closed on
@@ -306,11 +306,10 @@ thing the slice and the spec==greedy self-consistency cannot.
   weights, numerically checked* — not a slice, and not spec==greedy self-consistency.
 - **Out of pure RTL (but on the product critical path):** PHY IP, physical implementation, software, PCB,
   manufacturing. These dominate product cost/time and are mostly vendor/EDA/board work, not algorithm design.
-- **Prior FP8 track (branch `fp8`).** The compute-side die-shrink / accumulator / fold-pipeline PPA wins,
+- **Prior FP8 track (tag `fp8-verified-baseline`).** The compute-side die-shrink / accumulator / fold-pipeline PPA wins,
   the sky130 place-and-route realizability, and the real-checkpoint bit-accuracy runs were established on
   the **prior FP8 track** and are **FP8-specific measurements** — they are **not** re-run for Q4_K and are
-  **not** claims about the current Q4_K `main`. To inspect them: `git checkout fp8` (or the tag
-  `fp8-verified-baseline`). No Q4_K equivalent is fabricated here.
+  **not** claims about the current Q4_K `main`. To inspect them: `git checkout fp8-verified-baseline` . No Q4_K equivalent is fabricated here.
 
 ## Immediate next step (product)
 

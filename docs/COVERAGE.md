@@ -1,7 +1,7 @@
 # Code Coverage — Verilator structural (line / toggle / branch)
 
 > **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
-> targeting `unsloth/GLM-5.2-GGUF`). **FP8 is the PRIOR / PRESERVED track** on branch **`fp8`**
+> targeting `unsloth/GLM-5.2-GGUF`). **FP8 is the PRIOR / PRESERVED track** on tag **`fp8-verified-baseline`**
 > (tag `fp8-verified-baseline`), removed from `main` in commit `cbef69d`. Coverage here is
 > **Verilator structural (line/toggle/branch) only — explicitly NOT a substitute** for the
 > functional fidelity suite, and it measures **format-agnostic leaf/unit modules**, not the
@@ -200,7 +200,7 @@ configuration** — the small parameterization the unit TBs instantiate. It is
   assembled Q4_K path now **does** have a gated functional sim (`make model-q4k`,
   1155/1155 vs the assembled numpy golden), but it is iverilog-gated and not
   instrumented in this Verilator structural set (the prior FP8 `batched_moe` `bcov`
-  lives only on branch `fp8`; `batched_moe` was folded inline into
+  lives only on tag `fp8-verified-baseline`; `batched_moe` was folded inline into
   `glm_decoder_block_q4k` on `main`). Coverage here targets the fast leaf/unit
   modules.
 

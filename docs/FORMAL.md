@@ -1,7 +1,7 @@
 # Formal Verification — memory-system controllers (BMC)
 
 > **⚠️ TRACK NOTE (2026-07-08). The current / `main` track is Q4_K-native** (GGML Q4_K,
-> targeting `unsloth/GLM-5.2-GGUF`); **FP8 is the PRIOR / PRESERVED track** on branch **`fp8`**
+> targeting `unsloth/GLM-5.2-GGUF`); **FP8 is the PRIOR / PRESERVED track** on tag **`fp8-verified-baseline`**
 > (tag `fp8-verified-baseline`). The formal work here is on the **memory-system / control-plane
 > controllers** (`ddr5_xbar`, `flash_xbar`, `boot_loader`, `kv_cache_pager` ±ECC,
 > `expert_cache_pf`, `spec_decode_seq`, `clk_throttle`) which are **track-agnostic** — they

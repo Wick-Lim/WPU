@@ -2,8 +2,7 @@
 
 *The accelerator's local-device target: the published **`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`**
 (467 GB, ~38% smaller than the 753 GB FP8 checkpoint).
-The FP8 datacenter-native baseline is preserved on branch **`fp8`** + tag
-`fp8-verified-baseline`; `main` develops the Q4_K local-device track.*
+The FP8 datacenter-native baseline is preserved on tag `fp8-verified-baseline`; `main` develops the Q4_K local-device track.*
 
 ## Why
 FP8 E4M3 is the **datacenter-native** format (runs natively on H100-class silicon). GGUF
@@ -52,7 +51,7 @@ fp32 through the full MAC).
 - `tools/q4k_ref.py` — bit-exact ggml dequant golden (Q4_K/Q6_K/Q8_0) + fp32-MAC contract.
 - `tools/q4k_matmul_gen.py` — random-tile + golden-output vector generator for the RTL TB.
 - `src/q4k.vh` — Q4_K primitives (exact IEEE fp16→fp32, `get_scale_min_k4`, int→fp32).
-- `src/glm_matmul_q4k.v` — the Q4_K-native GEMM core (drop-in sibling of the now-removed FP8 `glm_matmul_fp8`, preserved on branch `fp8`).
+- `src/glm_matmul_q4k.v` — the Q4_K-native GEMM core (drop-in sibling of the now-removed FP8 `glm_matmul_fp8`, preserved on tag `fp8-verified-baseline`).
 - `test/q4k_prim_tb.v`, `test/glm_matmul_q4k_tb.v` — the verification gates.
 
 ## Progress
@@ -95,7 +94,7 @@ work.)*
 2. **Per-tensor type routing** — select Q4_K/Q6_K/Q8_0/F16 per tensor from the GGUF header
    (DONE — per-column `w_type` routing + `desc_wtype`: `src/q4k_mixed.vh`,
    `src/glm_matmul_q4k.v`, `src/weight_loader_q4k.v`; gate `make mixedtype`).
-3. **Remove FP8** from `main` (preserved on branch `fp8`); update the Makefile gate.
+3. **Remove FP8** from `main` (preserved on tag `fp8-verified-baseline`); update the Makefile gate.
 4. **Docs/site** — footprint/BOM/tok/s and the §03 moat row to the GGUF basis.
 
 *The 467 GB GGUF can't be downloaded on the dev host (disk), so per-tensor type verification

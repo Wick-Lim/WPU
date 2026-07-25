@@ -179,7 +179,7 @@ so this is real warming-up UX, not a spinner flash. (Phase D2.)
   (`clk_throttle` — run the die f/div in the ~4–5× slack, byte-identical, BMC-proven), spec ÷K
   (K=2 ≈ +23 %), flash striping (`flash_layout.py` — expert→channel placement, ~+40 %). Predictor
   prefetch is a **measured NO-OP** (popular experts already resident — kept honest).
-- **Compute-side PPA levers are prior-FP8-track only (branch `fp8`; Q4_K re-run PENDING):** the
+- **Compute-side PPA levers are prior-FP8-track only (tag `fp8-verified-baseline`; Q4_K re-run PENDING):** the
   BFP fixed-point accumulator (−87.6 % cells), die-shrink, and `weight_decomp` compression (1.34×)
   were measured on the FP8 datapath and are **not** re-measured for Q4_K — presented here as prior-FP8
   numbers, not Q4_K claims (on an NVMe-bound die they cut area/power/timing but do not move tok/s).

@@ -15,7 +15,7 @@ quote. Prices are single-unit / low-volume unless noted.*
 > UD-Q4_K_XL` (**467 GB**, ~38% smaller than the 753 GB FP8 checkpoint), so the memory/storage lines below
 > are **conservative**: the hot-set and routed bytes scale down ~proportionally, which eases the DDR and
 > NVMe sizing (a smaller hot-set cache and a 467 GB model still fits ~1 TB with room to spare). FP8 is
-> preserved on branch **`fp8`** + tag **`fp8-verified-baseline`** ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
+> preserved on tag **`fp8-verified-baseline`** ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
 
 ---
 

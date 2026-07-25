@@ -17,7 +17,7 @@ the real GGUF bytes / llama.cpp runtime. The sections below stand as the execute
 record, with per-section (DONE) notes.*
 
 Companion: `docs/Q4K_RETARGET.md` (numerics + leaf/operator status, already ✅). The FP8
-baseline is preserved on branch `fp8` (+ tag `fp8-verified-baseline`); the §3 deletion
+baseline is preserved on tag `fp8-verified-baseline`; the §3 deletion
 has since been executed on `main`.
 
 ---
@@ -231,11 +231,11 @@ at the system level is **routing the type per tensor**:
 
 ---
 
-## 3. FP8 removal from `main` (DONE — executed; preserved on branch `fp8`)
+## 3. FP8 removal from `main` (DONE — executed; preserved on tag `fp8-verified-baseline`)
 
 Once the Q4_K datapath is complete (§1–§2 landed + gated green), delete the FP8 track from
 `main` in one commit. **(DONE — this removal has been executed on `main`; the list below
-is the record of what was removed.)** **All of this is preserved on branch `fp8` + tag
+is the record of what was removed.)** **All of this is preserved on tag
 `fp8-verified-baseline`.** Exact list:
 
 **`src/` (FP8 datapath — 9 files):**
@@ -373,7 +373,7 @@ bit-exactness vs the real GGUF bytes / llama.cpp.)*
 6. **Makefile `q4k` sub-gate** (§4.1) — wire in immediately (green today); retarget
    `synth-glm -top` as the tops land (§4.2).
 7. **`expert_cache_pf` / `ddr5_xbar`** doc/param refresh (§2.3–2.4).
-8. **FP8 removal** (§3) — only after 1–7 are gated green; preserved on branch `fp8`.
+8. **FP8 removal** (§3) — only after 1–7 are gated green; preserved on tag `fp8-verified-baseline`.
 9. **Docs/site** — footprint/BOM/tok/s + the moat row to the GGUF UD-Q4_K_XL basis
    (`docs/Q4K_RETARGET.md`, `ACCEL_GLM52.md`, `P2_MEMORY_MAP.md`).
 

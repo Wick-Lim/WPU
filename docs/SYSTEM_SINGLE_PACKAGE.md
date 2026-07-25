@@ -1,6 +1,6 @@
 # Single-Package GLM-5.2 (Q4_K) Inference System — design note
 
-> **Current datapath is Q4_K; FP8 is the prior track (branch `fp8`).** This single-package
+> **Current datapath is Q4_K; FP8 is the prior track (tag `fp8-verified-baseline`).** This single-package
 > design was first drafted for the FP8 datapath; the **current product datapath is Q4_K**
 > (`glm_q4k_soc` / `glm_q4k_soc_ms` over `glm_model_q4k`, a **Q4_K compute die**, wrapped by
 > `glm_q4k_system_cdc`), and the weight store is the **~467 GB `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`**
@@ -18,7 +18,7 @@
 > but bit-exactness to the *real downloaded GGUF bytes / llama.cpp runtime* remains **OPEN**;
 > the moat is **offline + full-frontier (753B) + appliance price**, *not* bit-exactness to the GGUF
 > (see [`README.md`](../README.md)). RTL/test names of the form `*_fp8` below map to their `*_q4k`
-> equivalents on main (branch `fp8` preserves the FP8 track).
+> equivalents on main (tag `fp8-verified-baseline` preserves the FP8 track).
 
 > **Scope.** A system design for running the *published* `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`
 > weights on **one module** — a custom Q4_K compute die + **64 GB DDR5** (the fast working

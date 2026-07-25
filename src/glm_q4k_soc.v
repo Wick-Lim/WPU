@@ -20,7 +20,7 @@
 //                    (docs/Q4K_SYSTEM_PLAN.md §1.1 -- the integrated top)
 //----------------------------------------------------------------------------
 // WHAT THIS IS
-//   The Q4_K-native sibling of the prior glm_fp8_soc (branch 'fp8').  Identical
+//   The Q4_K-native sibling of the prior glm_fp8_soc (tag 'fp8-verified-baseline').  Identical
 //   system: the only change is the compute die (glm_model_fp8 -> glm_model_q4k)
 //   and, as a consequence,
 //   the three weight-bus families that cross the compute-die boundary swap from

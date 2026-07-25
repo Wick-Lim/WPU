@@ -4,7 +4,7 @@
 // swiglu_expert_q4k.v -- GLM-5.2 SwiGLU FFN expert in Q4_K numerics.
 //   y = ( silu(x @ W_gate) (.) (x @ W_up) ) @ W_down
 //   with W_gate/W_up/W_down as GGML Q4_K-typed weights, NO re-quantization.
-//   A Q4_K sibling of the prior swiglu_expert_fp8 (branch 'fp8'): SAME FSM
+//   A Q4_K sibling of the prior swiglu_expert_fp8 (tag 'fp8-verified-baseline'): SAME FSM
 //   (gate pass -> up pass -> silu*up merge -> down pass on ONE shared
 //   glm_matmul_q4k), but the prior FP8 activation-shift machinery is GONE
 //   (glm_matmul_q4k takes bf16 activations

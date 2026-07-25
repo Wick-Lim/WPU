@@ -8,7 +8,7 @@
 //                           (docs/Q4K_SYSTEM_PLAN.md §1.4 -- the synth-glm-q4k
 //                            whole-chip sign-off top.)
 //----------------------------------------------------------------------------
-// Q4_K RETARGET (vs. the prior glm_fp8_system_cdc on branch 'fp8'):  the compute
+// Q4_K RETARGET (vs. the prior glm_fp8_system_cdc on tag 'fp8-verified-baseline'):  the compute
 //   box u_core swaps
 //   glm_fp8_system -> glm_q4k_system (ONE contract change).  This CDC wrapper
 //   only FORWARDS buses across the async-FIFO boundary, so the retarget is a

@@ -33,7 +33,7 @@ set by **how much money is in the build**. So the plan is: **prove it works chea
 > RTL consumers are **DONE** (`make mixedtype`), and the reference's **dequant layer is proven on
 > real GGUF bytes — Q4_K/Q6_K/Q8_0** ([`GGUF_CROSSCHECK.md`](GGUF_CROSSCHECK.md)); the
 > whole-runtime llama.cpp check is out-of-contract and the real 467 GB file has not been consumed
-> end-to-end (see [`../README.md`](../README.md)). FP8 is preserved on branch **`fp8`** + tag **`fp8-verified-baseline`**
+> end-to-end (see [`../README.md`](../README.md)). FP8 is preserved on tag **`fp8-verified-baseline`**
 > ([`Q4K_RETARGET.md`](Q4K_RETARGET.md)).
 
 ---

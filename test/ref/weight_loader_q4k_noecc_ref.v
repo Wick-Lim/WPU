@@ -55,7 +55,7 @@
 //   NOTE the on-disk GGUF native order is qs[128] = 4-bit nibbles for all 256
 //   weights of a super-block; the packer (tools/ckpt_pack_q4k.py) unpacks nibble
 //   k of column pj into this per-beat CODE layout so this loader (like its prior
-//   FP8 ancestor on branch 'fp8') streams one code-row word per K-beat.
+//   FP8 ancestor on tag 'fp8-verified-baseline') streams one code-row word per K-beat.
 //
 //   The HEADER word for (col pj, super-block sb) is placed on the mm_w_* buses at
 //   bus slot (pj*NSB + sb) -- the EXACT (col-outer, super-block-inner, compile-

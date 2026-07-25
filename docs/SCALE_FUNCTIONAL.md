@@ -9,11 +9,11 @@
 >   numpy reference — item 1, since closed); the **real-dims operator sweep is since RE-RUN on
 >   Q4_K** (`make scale-ops` — item 2, since closed) and the **batched PE_M>1 assembled-model
 >   golden EXISTS** (`make batched-q4k` — item 3, since closed at its stated scope).
-> - **Prior FP8 track (branch `fp8` + tag `fp8-verified-baseline`).** The real-dims operator sweep
+> - **Prior FP8 track (tag `fp8-verified-baseline`).** The real-dims operator sweep
 >   (GEMM at K=6144, router over 256 experts top-8, …) and the batched multi-seq / decode-loop
 >   bit-exact checks were achieved **on the FP8 track**. Those TBs (`*_fp8`,
 >   `glm_model_fp8_multiseq_tb`, `glm_fp8_soc_ms_loop_tb`, …) are **deleted from `main`** and live only
->   on branch `fp8`. Their numbers are reproduced below **as prior-FP8 measurements** — they have
+>   on tag `fp8-verified-baseline`. Their numbers are reproduced below **as prior-FP8 measurements** — they have
 >   **not** been re-run on Q4_K, and none of them is a claim about current `main`. Names of the form
 >   `*_fp8` map to `*_q4k` equivalents on main (see the module map in the project briefing); those
 >   Q4_K modules exist but were **not** exercised at the FP8 sweep's dims.
@@ -90,7 +90,7 @@ The whole-chip Q4_K top `glm_q4k_system_cdc` passes the yosys structural gate (`
    scenarios with per-row-divergent tokens/MoE routing. Scope: PE_M widening for a **shared**
    sequence (PER_ROW_*=0). The per-row-KV multi-sequence (`kc_seq`-keyed windows) and
    continuous-batching decode-loop TBs (`glm_model_fp8_multiseq_tb`, `glm_fp8_soc_ms_loop_tb`)
-   remain **FP8-only** (branch `fp8`) — `glm_q4k_soc_ms` still has no Q4_K equivalent of those.
+   remain **FP8-only** (tag `fp8-verified-baseline`) — `glm_q4k_soc_ms` still has no Q4_K equivalent of those.
    Batching / multi-seq serving is a **capability of the silicon**, not the B=1 personal box's
    operating mode (see the scope note below).
 
@@ -102,11 +102,11 @@ per-projection K up to ~6144. These are **model-architecture** facts, independen
 
 ---
 
-## Prior FP8 track — real-dims operator sweep (branch `fp8`; Q4_K re-run since DONE, `make scale-ops`)
+## Prior FP8 track — real-dims operator sweep (tag `fp8-verified-baseline`; Q4_K re-run since DONE, `make scale-ops`)
 
 > **Prior-FP8 measurements.** Everything in this section was measured on the **FP8** datapath, whose
 > TBs (`glm_matmul_fp8`, `moe_router_fp8`, `swiglu_expert_fp8`, `mla_attn_fp8`, `glm_model_fp8`) are
-> **deleted from `main`** and live on branch `fp8`. The numbers are **not** Q4_K results. They are
+> **deleted from `main`** and live on tag `fp8-verified-baseline`. The numbers are **not** Q4_K results. They are
 > kept here to document what the real-dims sweep proved on the prior track; the equivalent Q4_K
 > sweep is **since re-established** (item 2 above, `make scale-ops`) — except the MLA real-geometry
 > leg, which has no standalone Q4_K TB on `main`.
@@ -116,7 +116,7 @@ On the FP8 track, the operator TBs were run at real per-head / per-block / per-e
 from the TB `localparam`s), emitting `ALL N TESTS PASSED` and `$fatal` on any mismatch/X. Verilator
 `--binary` gave fast sims; slower ones fell back to iverilog.
 
-| operator TB (branch `fp8`) | real dims exercised | result | tool |
+| operator TB (tag `fp8-verified-baseline`) | real dims exercised | result | tool |
 |---|---|---|---|
 | `glm_matmul_fp8` → `glm_matmul_q4k` | **K=6144** (NB=**48** [128]-blocks — real projection K), BLK=128 | **ALL 224 PASSED** (worst err/tol 0.49) | verilator (0.64 s) |
 | `moe_router_fp8` → `moe_router_q4k` | **N_EXPERT=256, TOPK=8** (the real expert count) | **ALL 230 PASSED** (top-K indices exact) | iverilog (7.7 min) |
@@ -130,14 +130,14 @@ equivalents (`*_q4k`) are **since re-run at real dims** by `make scale-ops` (ite
 K=6144 bit-exact, router 256/top-8, SwiGLU INTER_MOE=2048) — with two honest deltas vs this FP8
 table: no Q4_K re-run at **INTER_DENSE=12288**, and no standalone `mla_attn_q4k` real-geometry TB.
 
-**Intermediate full-model (branch `fp8`):** `glm_model_fp8` at **MODEL_DIM=256, VOCAB=512, L=8,
+**Intermediate full-model (tag `fp8-verified-baseline`):** `glm_model_fp8` at **MODEL_DIM=256, VOCAB=512, L=8,
 N_EXPERT=16, TOPK=4, H_HEADS=8** — 2×+ the committed slice on every axis — **ALL 3 PASSED** (gworst_rel
 0.0068, 77 s). The whole embed → 8 FP8 layers → norm → LM head → argmax pass composed correctly at
 larger scale **on the FP8 datapath**. The Q4_K assembled path now has its own numeric golden at the
 *committed slice* (`make model-q4k`, 1155/1155 — item 1, since closed), but there is **no Q4_K
 equivalent of this enlarged 2×-slice run**.
 
-### Batched multi-sequence + decode loop (branch `fp8`; Q4_K PE_M>1 golden since DONE — the per-row-KV multi-seq / decode-loop TBs remain FP8-only)
+### Batched multi-sequence + decode loop (tag `fp8-verified-baseline`; Q4_K PE_M>1 golden since DONE — the per-row-KV multi-seq / decode-loop TBs remain FP8-only)
 
 On the FP8 track the full `glm_model_fp8` also composed correctly on the *batch / sequence* axis. With
 `PER_ROW_SEQ=1` each `PE_M` row was a **different** sequence attending its own KV window, while the
@@ -163,7 +163,7 @@ full GLM-5.2 753B model in Q4_K, at the rung-dependent tok/s below). Verifying t
 *same* silicon *could* run batched — a **non-target, datacenter deployment** where many *different* users
 share the weight/projection fetch (the "batching bandwidth win") — which the personal box does not do.
 
-### The `mla_attn` multi-block block-scale fix — a TB-golden/stimulus bug, not an RTL bug (branch `fp8`)
+### The `mla_attn` multi-block block-scale fix — a TB-golden/stimulus bug, not an RTL bug (tag `fp8-verified-baseline`)
 
 > Prior-FP8 finding, documented for methodology. The same multi-super-block block-scale reasoning
 > applies to the Q4_K datapath, but the numbers below (64×, 2.5e-4) are FP8-track measurements.

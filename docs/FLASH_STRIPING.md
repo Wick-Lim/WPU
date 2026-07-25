@@ -161,7 +161,7 @@ the *same* silicon could do batched. With `B` tokens
 processed per weight fetch (the **PE_M-batch path** — on the current Q4_K track the per-layer
 expert-*union* skip is folded inline into **`glm_decoder_block_q4k`** — a *structural* choice of
 *which* experts to fetch, so it is format-agnostic. The 4/4 PE_M bit-exact verification across
-swiglu/router/mla/mtp was on the **prior FP8 track (branch `fp8`)**; the assembled end-to-end Q4_K
+swiglu/router/mla/mtp was on the **prior FP8 track (tag `fp8-verified-baseline`)**; the assembled end-to-end Q4_K
 golden is now **DONE** — `make model-q4k` 1155 + `make model-q4k-acthw` 1155), a layer's *union*
 of active experts approaches all 256 as `B` grows
 (`E[distinct] = 256·(1−0.96875^B)`, where `0.96875 = 1−8/256`), so the

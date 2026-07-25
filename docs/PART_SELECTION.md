@@ -7,7 +7,7 @@
 > ~100 K FF, 421 DSP, 0 BRAM**, hold met, routed **Fmax 46.5 MHz** (bit-exact repipeline
 > campaign 10.2 → 17.2 → 46.5 MHz, closed — worst path now route-dominated; see
 > [`../fpga/README.md`](../fpga/README.md)). The older FP8-era figures kept below are
-> historical scale indicators only (branch `fp8` / tag `fp8-verified-baseline`). Do not
+> historical scale indicators only (tag `fp8-verified-baseline` / tag `fp8-verified-baseline`). Do not
 > read any FP8 utilization figure below as a Q4_K result. Current-track context:
 > [`README.md`](../README.md), [`Q4K_RETARGET.md`](Q4K_RETARGET.md),
 > [`Q4K_SYSTEM_PLAN.md`](Q4K_SYSTEM_PLAN.md). RTL/test names of the form `*_fp8` map to their
@@ -136,7 +136,7 @@ DDR routing, the core of the layout difficulty.
 
 ## Fit-measurement status (what is measured vs still blocked)
 
-> **All utilization numbers in this section are from the PRIOR FP8 datapath** (branch `fp8` /
+> **All utilization numbers in this section are from the PRIOR FP8 datapath** (tag `fp8-verified-baseline` /
 > tag `fp8-verified-baseline`) — the only routed/fabric fit data that exists. They are **NOT
 > Q4_K results.** The Q4_K datapath (4-bit codes + 6-bit sub-scales + fp16 `d`/`dmin`, bf16
 > activations, fp32 accumulate) has a **different multiply/dequant structure** than FP8 e4m3,

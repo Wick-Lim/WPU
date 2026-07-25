@@ -13,7 +13,7 @@
 > Gowin/nextpnr scaffold is removed). The **per-lever** Q4_K deltas are now *measurable* on that flow
 > but have not been re-run — the per-lever figures are still presented **as prior-FP8 measurements,
 > never relabeled as Q4_K**. The FP8-only doc that carried the raw `stat` output (`PPA_FP8.md`) now
-> lives on branch `fp8`.
+> lives on tag `fp8-verified-baseline`.
 >
 > RTL/test names of the form `*_fp8` in the prior-track measurements below map to their `*_q4k`
 > equivalents on `main` (`glm_matmul_fp8`→`glm_matmul_q4k`, `swiglu_expert_fp8`→`swiglu_expert_q4k`,
@@ -75,7 +75,7 @@ stall — run a serialized variant and confirm the token window is still stall-d
 ## Lever catalog (ranked by die-area impact)
 
 Savings are **estimates**, and the concrete LUT/cell figures below were measured on the **prior FP8
-die** (branch `fp8`) — the exact **Q4_K** per-lever LUT delta is now **measurable** on the vendor
+die** (tag `fp8-verified-baseline`) — the exact **Q4_K** per-lever LUT delta is now **measurable** on the vendor
 flow (E1 = **Vivado ML 2026.1**, which routed the whole die on XCKU3P; yosys 0.66 still can't map
 the compute datapaths through ABC — see [`PHYSICAL_SKY130.md`](PHYSICAL_SKY130.md)) but has not been
 re-run per-lever. The reduction is by-construction, and every lever is designed to keep the
@@ -85,7 +85,7 @@ byte-identical re-check is part of E1/E2).
 | # | lever | mechanism | est saving | time cost | budget-safe? | effort | risk / status |
 |---|---|---|---|---|---|---|---|
 | **L0** ✅ | compact config | right-size PE_N/DDR_NCH/KV_RESIDENT/EFIFO/CACHE_SLOTS (result-invariant) | PE array halved + smaller fabric | more cycles | ✔ | done | **Q4_K compact fit MEASURED** — the routed Vivado XCKU3P fit *is* the compact config (+ ACT_HW=1): 142,320 LUT / 87.5 % synth-stage (routed 141,298), 421 DSP, 0 BRAM |
-| **L1** ◑ | **cross-op matmul sharing** | *(structure present in Q4_K RTL)* swiglu gate/up GEMMs run at different times → one shared `u_mm` via a 1-bit `up_pass` arbiter + 2:1 weight mux (`swiglu_expert_q4k.v` carries exactly one `glm_matmul_q4k`) | **prior-FP8 measured ~12K LUT4** (2 swiglu × 6186 FP8 matmul core, 6→4 engines/block; −1519 generic cells/expert) — **Q4_K re-measure not yet run (now measurable on the Vivado flow)** | **≈ 0** (already sequential) | ✔ (free) | large refactor | **structure in Q4_K RTL, passes `make q4k` (swiglu 240/240 functional); area is prior-FP8 (branch `fp8`)** |
+| **L1** ◑ | **cross-op matmul sharing** | *(structure present in Q4_K RTL)* swiglu gate/up GEMMs run at different times → one shared `u_mm` via a 1-bit `up_pass` arbiter + 2:1 weight mux (`swiglu_expert_q4k.v` carries exactly one `glm_matmul_q4k`) | **prior-FP8 measured ~12K LUT4** (2 swiglu × 6186 FP8 matmul core, 6→4 engines/block; −1519 generic cells/expert) — **Q4_K re-measure not yet run (now measurable on the Vivado flow)** | **≈ 0** (already sequential) | ✔ (free) | large refactor | **structure in Q4_K RTL, passes `make q4k` (swiglu 240/240 functional); area is prior-FP8 (tag `fp8-verified-baseline`)** |
 | **L2** ❌ | tail vector-ALU sharing | *(assessed — NOT bounded-viable)* only `glm_softmax` instances the pipelined primitives, and its 4 pipes are **distinct ops** (exp/add/mul/rsqrt — nothing to merge); RMSNorm/RoPE/act use **inline `glm_fp.vh` fp32 macros**, not shareable module instances | small (fp32 tail ≪ Q4_K GEMM) | small | ✔ | high (cross-module scheduler) | **skip — reward≪risk** |
 | **L3** ◐ | intra-op serialization | swiglu gate/up → 1 **captured by L1**; the remaining piece is the **cross-module 3-way hoist** (mla+router+swiglu → one engine) | further PE-array cut | 2×+ that op | ✔ *within budget* | high | **deferred** (needs PE_N=8 + top-level ports + arbiter) |
 | **L4** ✅ | shared dequant/fold | after L1 each `glm_matmul_q4k` already carries a single fp32-accumulate + Q4_K block-dequant/scale fold; **nothing further** | small | — | ✔ | falls out of L1 | **subsumed by L1** |
@@ -104,7 +104,7 @@ byte-identical re-check is part of E1/E2).
 - **Phase B — shared compute (structure in Q4_K; area prior-FP8).** L1 cross-op matmul sharing is
   **present in the Q4_K RTL** (swiglu gate/up → one `u_mm` via the `up_pass` arbiter, 6→4 engines/block)
   and passes the functional gate (`make q4k`, swiglu 240/240); its **measured area saving is prior-FP8**
-  (≈12K LUT4, branch `fp8`) — the per-lever Q4_K re-measure is now unblocked (E1 = Vivado) but not yet
+  (≈12K LUT4, tag `fp8-verified-baseline`) — the per-lever Q4_K re-measure is now unblocked (E1 = Vivado) but not yet
   run. L2 tail-ALU sharing **assessed and
   skipped** (fp32 tail is inline-macro'd + distinct ops → not a bounded win; reward ≪ Q4_K-GEMM area).
 - **Phase C — bounded serialization (mostly subsumed / deferred).** L3's swiglu part was captured by
@@ -145,7 +145,7 @@ byte-identical re-check is part of E1/E2).
   parametric L0. Higher engineering + verification cost.
 - **Per-lever area not yet re-measured.** The whole-die Q4_K fit is measured (Vivado/XCKU3P); the
   per-lever Q4_K LUT deltas are estimates until re-run on that flow — the concrete per-lever figures
-  quoted are prior-FP8 (branch `fp8`), not current-die numbers.
+  quoted are prior-FP8 (tag `fp8-verified-baseline`), not current-die numbers.
 - **The budget is a ceiling.** Serialization is free only while `compute_cyc < exposed_stall`;
   past that (e.g. L6 bit-serial) throughput drops — the levers are ordered to respect it.
 
@@ -159,7 +159,7 @@ byte-identical re-check is part of E1/E2).
   arbiter, 6→4 GEMM engines/block — and passes its functional TB (`make q4k`, swiglu 240/240). The
   **measured area** (≈12K LUT4 = 2 × 6186 FP8 matmul core; −1519 generic cells/expert via yosys `stat`)
   and the byte-identical evidence (token `{4,31,20}` gworst_rel 0.00689655; swiglu 1024 err/tol 0.1004;
-  swiglu_pem 513; decoder 9) are **prior-FP8 track** (branch `fp8`; the raw `stat` lived in the
+  swiglu_pem 513; decoder 9) are **prior-FP8 track** (tag `fp8-verified-baseline`; the raw `stat` lived in the
   now-branch-only `PPA_FP8.md`). **The per-lever Q4_K re-measurement has not been run** (now
   measurable on the Vivado flow) — do **not** read the ≈12K LUT4
   as a Q4_K number. **L2 assessed and skipped** (only softmax uses shareable primitive modules and its

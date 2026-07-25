@@ -203,7 +203,7 @@ loop, streaming, tokenizer, and OpenAI surface are unchanged.
   `build/mq4k/*.hex`). Verified: the fast `SPEC_SLICE` (VOCAB=16, `make
   model-q4k-smoke`) emits `{13, 3, 13}`; the committed VOCAB=256 slice emits its own
   genuine argmax vectors. *(History: the prior fp8-era backend targeted the
-  `glm_model_fp8` slice, which was removed from `main` and lives on branch `fp8`; this
+  `glm_model_fp8` slice, which was removed from `main` and lives on tag `fp8-verified-baseline`; this
   backend was retargeted to the on-main `glm_model_q4k`.)*
 - **`USBBackend`** (to build at D1) — the real USB-C driver: **does not exist yet.** No
   libusb/pyusb/CDC-NCM transport is implemented; everything today is loopback over
