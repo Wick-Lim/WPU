@@ -106,6 +106,16 @@ module ddr5_xbar #(
     //       arbiter would have picked, so raising RESP_LANES only ADDS lanes;
     //       it never reorders what lane 0 delivers.
     parameter integer RESP_LANES = 1,
+    // ---- REQ_LANES: how many requests may be ISSUED per cycle ----------------
+    //   1 (DEFAULT) : one requester port -- byte-for-byte the committed fabric.
+    //       The integrated top ORs 5-7 weight families onto that single port, so
+    //       the die can express at most one banked read per cycle no matter how
+    //       many channels exist (docs/ULTRA_PERF_MODULES.md rank 3).
+    //   >1 : REQ_LANES independent requester ports.  Lanes targeting DISTINCT
+    //       channels are all accepted the same cycle; when two lanes bank to the
+    //       SAME channel the lower lane wins and the other is simply not ready
+    //       (its req_ready stays low), so no request is ever lost or reordered.
+    parameter integer REQ_LANES  = 1,
     parameter integer ADDR_W  = 32,     // block-address width
     parameter integer DATA_W  = 256,    // read-data width (one burst beat)
     parameter integer TAG_W   = 8,      // requester tag width (in-flight id)
@@ -119,10 +129,10 @@ module ddr5_xbar #(
     input  wire                     rst,        // synchronous, active-high
 
     // ---- requester request (single port) ----
-    input  wire                     req_valid,
-    output wire                     req_ready,
-    input  wire [ADDR_W-1:0]        req_addr,
-    input  wire [TAG_W-1:0]         req_tag,
+    input  wire [REQ_LANES-1:0]         req_valid,
+    output wire [REQ_LANES-1:0]         req_ready,
+    input  wire [REQ_LANES*ADDR_W-1:0]  req_addr,
+    input  wire [REQ_LANES*TAG_W-1:0]   req_tag,
 
     // ---- channel request (N_CH ports, to per-channel DDR5) ----
     output wire [N_CH-1:0]          mem_req_valid,
@@ -164,19 +174,64 @@ module ddr5_xbar #(
     // ===================================================================
     // REQUEST PATH  --  pure feed-forward banking / routing (no state)
     // ===================================================================
-    wire [CH_IDX_W-1:0] req_ch = req_addr[BANK_LSB +: CH_IDX_W];
-
     generate
+    if (REQ_LANES == 1) begin : g_req1
+        // DEFAULT: the committed single-port banking, verbatim.
+        wire [CH_IDX_W-1:0] req_ch = req_addr[BANK_LSB +: CH_IDX_W];
         for (c = 0; c < N_CH; c = c + 1) begin : g_req
             assign mem_req_valid[c] =
                 req_valid && (req_ch == c[CH_IDX_W-1:0]);
             assign mem_req_addr[c*ADDR_W +: ADDR_W] = req_addr;
             assign mem_req_tag [c*TAG_W  +: TAG_W ] = req_tag;
         end
+        // accepted iff the banked channel can take it (head-of-line policy)
+        assign req_ready = mem_req_ready[req_ch];
+    end else begin : g_reqN
+        // rank 3: REQ_LANES ports.  For each channel, the LOWEST-numbered lane
+        // targeting it wins; the losing lane's req_ready simply stays low, so it
+        // retries next cycle -- nothing is dropped and no lane jumps the queue.
+        reg [REQ_LANES-1:0] win;          // this lane owns its target channel
+        integer             a, b2;
+        reg [CH_IDX_W-1:0]  ch_a, ch_b;
+        always @* begin
+            win = {REQ_LANES{1'b0}};
+            for (a = 0; a < REQ_LANES; a = a + 1) begin
+                ch_a = req_addr[a*ADDR_W + BANK_LSB +: CH_IDX_W];
+                win[a] = req_valid[a];
+                for (b2 = 0; b2 < REQ_LANES; b2 = b2 + 1) begin
+                    ch_b = req_addr[b2*ADDR_W + BANK_LSB +: CH_IDX_W];
+                    if ((b2 < a) && req_valid[b2] && (ch_b == ch_a)) win[a] = 1'b0;
+                end
+            end
+        end
+        for (c = 0; c < N_CH; c = c + 1) begin : g_reqc
+            // OR over lanes that won channel c (at most one by construction)
+            reg                 v_c;
+            reg [ADDR_W-1:0]    a_c;
+            reg [TAG_W-1:0]     t_c;
+            integer             li2;
+            reg [CH_IDX_W-1:0]  ch_l;
+            always @* begin
+                v_c = 1'b0; a_c = {ADDR_W{1'b0}}; t_c = {TAG_W{1'b0}};
+                for (li2 = 0; li2 < REQ_LANES; li2 = li2 + 1) begin
+                    ch_l = req_addr[li2*ADDR_W + BANK_LSB +: CH_IDX_W];
+                    if (win[li2] && (ch_l == c[CH_IDX_W-1:0])) begin
+                        v_c = 1'b1;
+                        a_c = req_addr[li2*ADDR_W +: ADDR_W];
+                        t_c = req_tag [li2*TAG_W  +: TAG_W ];
+                    end
+                end
+            end
+            assign mem_req_valid[c]                 = v_c;
+            assign mem_req_addr [c*ADDR_W +: ADDR_W] = a_c;
+            assign mem_req_tag  [c*TAG_W  +: TAG_W ] = t_c;
+        end
+        for (c = 0; c < REQ_LANES; c = c + 1) begin : g_rdy
+            assign req_ready[c] =
+                win[c] && mem_req_ready[req_addr[c*ADDR_W + BANK_LSB +: CH_IDX_W]];
+        end
+    end
     endgenerate
-
-    // accepted iff the banked channel can take it (head-of-line policy)
-    assign req_ready = mem_req_ready[req_ch];
 
     // ===================================================================
     // RESPONSE PATH  --  per-channel FIFO + round-robin drain arbiter

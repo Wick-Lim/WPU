@@ -36,13 +36,23 @@ module ddr5_xbar_lanes_tb;
 `else
     localparam integer LANES = 1;
 `endif
+`ifdef TB_REQ_LANES
+    localparam integer RLANES = `TB_REQ_LANES;
+`else
+    localparam integer RLANES = 1;
+`endif
     localparam integer WINDOW = 500;      // measurement window in cycles
 
     reg clk = 1'b0; always #5 clk = ~clk;
     reg rst;
 
-    // requester side is idle -- this gate measures the RESPONSE drain only
-    wire                     req_ready;
+    // requester side: RLANES lanes, each aimed at a DISTINCT channel so the
+    // fabric can accept them all in one cycle when REQ_LANES allows it.
+    reg  [RLANES-1:0]        req_valid_v;
+    wire [RLANES-1:0]        req_ready_v;
+    reg  [RLANES*ADDR_W-1:0] req_addr_v;
+    reg  [RLANES*TAG_W-1:0]  req_tag_v;
+    integer                  reqs_accepted;
     wire [N_CH-1:0]          mem_req_valid;
     wire [N_CH*ADDR_W-1:0]   mem_req_addr;
     wire [N_CH*TAG_W-1:0]    mem_req_tag;
@@ -57,11 +67,12 @@ module ddr5_xbar_lanes_tb;
     wire [LANES*TAG_W-1:0]   resp_tag;
 
     ddr5_xbar #(
-        .N_CH(N_CH), .RESP_LANES(LANES), .ADDR_W(ADDR_W), .DATA_W(DATA_W),
+        .N_CH(N_CH), .RESP_LANES(LANES), .REQ_LANES(RLANES), .ADDR_W(ADDR_W), .DATA_W(DATA_W),
         .TAG_W(TAG_W), .RESP_QD(RESP_QD), .BANK_LSB(0)
     ) dut (
         .clk(clk), .rst(rst),
-        .req_valid(1'b0), .req_ready(req_ready), .req_addr({ADDR_W{1'b0}}), .req_tag({TAG_W{1'b0}}),
+        .req_valid(req_valid_v), .req_ready(req_ready_v),
+        .req_addr(req_addr_v), .req_tag(req_tag_v),
         .mem_req_valid(mem_req_valid), .mem_req_ready({N_CH{1'b1}}),
         .mem_req_addr(mem_req_addr), .mem_req_tag(mem_req_tag),
         .mem_resp_valid(mem_resp_valid), .mem_resp_ready(mem_resp_ready),
@@ -103,6 +114,24 @@ module ddr5_xbar_lanes_tb;
         end
     end
 
+    // ---- request driver: every lane always wants a DISTINCT channel ---------
+    integer rl;
+    always @(posedge clk) begin
+        if (rst) begin
+            req_valid_v <= {RLANES{1'b0}};
+            for (rl = 0; rl < RLANES; rl = rl + 1) begin
+                req_addr_v[rl*ADDR_W +: ADDR_W] <= rl[ADDR_W-1:0];   // channel = lane
+                req_tag_v [rl*TAG_W  +: TAG_W ] <= rl[TAG_W-1:0];
+            end
+        end else begin
+            req_valid_v <= {RLANES{1'b1}};
+        end
+    end
+    always @(posedge clk) if (!rst) begin
+        for (rl = 0; rl < RLANES; rl = rl + 1)
+            if (req_valid_v[rl] && req_ready_v[rl]) reqs_accepted = reqs_accepted + 1;
+    end
+
     // ---- drain checker: order per channel, no duplicate, no same-channel pair -
     integer li, lj, ch, sq;
     reg [N_CH-1:0] seen_this_cycle;
@@ -139,19 +168,19 @@ module ddr5_xbar_lanes_tb;
 
     real rate;
     initial begin
-        errors = 0; tests = 0; beats_out = 0; cycles = 0;
+        errors = 0; tests = 0; beats_out = 0; cycles = 0; reqs_accepted = 0;
         for (c = 0; c < N_CH; c = c + 1) seq_rx[c] = 16'd0;
         rst = 1'b1;
         repeat (4) @(posedge clk);
         rst = 1'b0;
         // let the pipeline fill, then measure a clean window
         repeat (30) @(posedge clk);
-        beats_out = 0; cycles = 0;
+        beats_out = 0; cycles = 0; reqs_accepted = 0;
         repeat (WINDOW) @(posedge clk);
 
         rate = (cycles > 0) ? (1.0 * beats_out) / (1.0 * cycles) : 0.0;
-        $display("  [MEASURED] N_CH=%0d RESP_LANES=%0d: %0d beats in %0d cycles -> %.3f beats/cycle",
-                 N_CH, LANES, beats_out, cycles, rate);
+        $display("  [MEASURED] N_CH=%0d RESP_LANES=%0d REQ_LANES=%0d: drain %0d beats/%0d cyc -> %.3f beats/cycle; issue %0d reqs -> %.3f reqs/cycle",
+                 N_CH, LANES, RLANES, beats_out, cycles, rate, reqs_accepted, (1.0*reqs_accepted)/(1.0*cycles));
 
         tests = tests + 1;
         if (errors != 0) $display("FAIL: %0d integrity error(s) during the drain", errors);
@@ -159,6 +188,13 @@ module ddr5_xbar_lanes_tb;
         tests = tests + 1;
         if (rate < (0.90 * LANES)) begin
             $display("FAIL: sustained drain %.3f beats/cycle is below the %0d-lane expectation", rate, LANES);
+            errors = errors + 1;
+        end
+
+        tests = tests + 1;
+        if ((1.0*reqs_accepted)/(1.0*cycles) < (0.90 * RLANES)) begin
+            $display("FAIL: sustained issue %.3f reqs/cycle is below the %0d-lane expectation",
+                     (1.0*reqs_accepted)/(1.0*cycles), RLANES);
             errors = errors + 1;
         end
 

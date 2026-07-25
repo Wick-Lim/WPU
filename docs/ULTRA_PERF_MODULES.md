@@ -60,6 +60,18 @@ The bottom-up module review confirms the roofline: on the single-user product to
 - **Contract:** preserving · **Effort:** large · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 3. Multi-port hot-weight issuer (stop serializing 5-7 weight families onto one requester port)
+
+> **STATUS: fabric half BUILT + MEASURED (`make rank3`), default-off.** `ddr5_xbar` gained
+> `REQ_LANES`: lanes aimed at **distinct channels are all accepted in the same cycle**, and when two
+> lanes bank to the same channel the lower lane wins while the other's `req_ready` simply stays low —
+> nothing is dropped or reordered. **Measured: 1.000 → 4.000 requests/cycle** at `REQ_LANES=4`
+> (alongside 4.000 beats/cycle drained). `REQ_LANES=1` is **netlist-identical** to the committed
+> fabric (197 cells) — the 1-lane banking is the committed code verbatim.
+> **Still to do — the system half, which is the bigger piece:** `glm_q4k_system` still ORs every
+> weight family onto one port (`xreq_valid = any_pending`, a priority mux on `xreq_addr`), so the
+> die cannot yet *present* more than one read per cycle even though the fabric would now accept
+> several. Splitting those 5–7 families onto the new lanes is the remaining work, and it is where
+> the Vivado congestion risk lands.
 - **Modules:** `src/glm_q4k_system.v (priority issuer :1220,:1241-1250,:1289-1344; coalesced p_hot :1322)`
 - **Change:** Replace the OR-reduced single p_hot / one xreq_valid handshake with per-family request queues (or a small outstanding-request table) feeding K parallel xbar requester ports, so multiple simultaneous die pulls (em/gn/aw/rw/fw/fn/lw, plus LOAD/SLOT/HOT/EFILL) map to distinct channel reads in the same cycle instead of one coalesced beat. At minimum issue LOAD+SLOT+HOT to distinct channels each cycle.
 - **Why (perf model):** Even with ranks 1-2 landed, the integrated top presents at most ONE banked read/cycle (mutually-exclusive one-hot selects; distinct hot addresses discarded, xreq_addr for TAG_HOT is just bank_rot placeholder), so the die can express at most 1 beat/cycle of weight demand regardless of DDR_NCH. This is the 'die must be WIDER to consume bandwidth' lever at the fabric seam: without it, the multi-lane fabric is bottlenecked here.

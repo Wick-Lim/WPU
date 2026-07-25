@@ -1130,7 +1130,10 @@ clean:
 	rm -f *.vcd
 
 # ============================================================================
-# rank2 : MULTI-LANE RESPONSE DRAIN in ddr5_xbar (docs/ULTRA_PERF_MODULES.md #2)
+# rank2 + rank3 : MULTI-LANE FABRIC in ddr5_xbar (ULTRA_PERF_MODULES.md #2, #3)
+#   #2 is the RESPONSE drain; #3 is the REQUEST side -- the integrated top ORs
+#   5-7 weight families onto ONE requester port, so the die can express at most
+#   one banked read per cycle no matter how many channels exist.
 #   The committed fabric has N_CH channel pipelines but ONE response grant per
 #   cycle, so N_CH buys only outstanding depth while sustained delivery stays a
 #   single channel's worth -- the response ARBITER, not the channel count, is the
@@ -1146,18 +1149,19 @@ clean:
 #   RESP_LANES=1 is additionally proven NETLIST-IDENTICAL to the pre-change
 #   fabric (197 cells) via `make synth-equiv MOD=ddr5_xbar`.
 # ============================================================================
-.PHONY: rank2
+.PHONY: rank2 rank3
+rank3: rank2
 rank2:
 	@mkdir -p $(BUILD_DIR)
 	@for L in 1 4; do \
-	  $(IVERILOG) $(IFLAGS) -DTB_RESP_LANES=$$L -o $(BUILD_DIR)/rank2_l$$L \
+	  $(IVERILOG) $(IFLAGS) -DTB_RESP_LANES=$$L -DTB_REQ_LANES=$$L -o $(BUILD_DIR)/rank2_l$$L \
 	    test/ddr5_xbar_lanes_tb.v src/ddr5_xbar.v 2>/dev/null \
-	    || { echo "FAILED: rank2 compile (RESP_LANES=$$L)"; exit 1; }; \
-	  printf '[%s] ' "ddr5_xbar(RESP_LANES=$$L)"; \
+	    || { echo "FAILED: rank2/3 compile (LANES=$$L)"; exit 1; }; \
+	  printf '[%s] ' "ddr5_xbar(REQ=$$L,RESP=$$L)"; \
 	  $(VVP) $(BUILD_DIR)/rank2_l$$L | grep -E 'ALL [0-9]+ TESTS PASSED' \
-	    || { echo "FAILED: rank2 (RESP_LANES=$$L) did not sustain its lane count"; exit 1; }; \
+	    || { echo "FAILED: rank2/3 (LANES=$$L) did not sustain its lane count"; exit 1; }; \
 	done
-	@echo "rank2: the single-grant drain IS the fabric ceiling (1.000 beats/cycle at N_CH=8); RESP_LANES=4 sustains 4.000"
+	@echo "rank2/3: single-port issue + single-grant drain ARE the fabric ceiling (1.000 reqs and 1.000 beats/cycle at N_CH=8); 4 lanes sustain 4.000 each"
 
 # ============================================================================
 # rank4 : EXACT-ROUTER PREFETCH (docs/ULTRA_PERF_MODULES.md rank 4)
