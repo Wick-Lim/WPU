@@ -67,6 +67,9 @@ module glm_q4k_system_perf_tb;
     parameter integer N_EXPERT_CFG     = 4;   // routed experts
     parameter integer L_CFG            = 4;   // decoder layers (>= N_DENSE+1)
     parameter integer EXPERT_STALL_CFG = 1;   // 1 = die pays the refill stall
+    // rank 4: 1 = issue the known top-k union to the cache's prefetch port the
+    // moment routing completes (exact-router prefetch), 0 = demand-only (default)
+    parameter integer PF_EXACT_CFG     = 0;
     parameter integer RESIDENT_CFG     = 0;
     // TIMING_ONLY=1: report PERF lines even when the numeric self-check fails.
     //   WHY: this TB doubles as a TIMING harness, and under Verilator the FP
@@ -341,7 +344,7 @@ module glm_q4k_system_perf_tb;
         .BLK(BLK), .LM_TN(LM_TN),
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
-        .EXPERT_STALL(EXPERT_STALL_CFG), .RESIDENT(RESIDENT_CFG),
+        .EXPERT_STALL(EXPERT_STALL_CFG), .PF_EXACT(PF_EXACT_CFG), .RESIDENT(RESIDENT_CFG),
         .DSA_REAL_IDX(DSA_REAL_IDX_CFG),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),

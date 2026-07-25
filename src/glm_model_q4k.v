@@ -225,6 +225,10 @@ module glm_model_q4k #(
     output wire [FF_KWD-1:0]             fw_k,
     output wire                          fw_shared,
     output wire [EIDXW-1:0]              fw_eidx,
+    // ---- rank 4: early routing exposure, passed straight through from the
+    //      decoder block.  Observation only -- nothing here reads it.
+    output wire                          route_valid,
+    output wire [PE_M*TOPK*EIDXW-1:0]    route_set,
     input  wire [4*TN-1:0]               fw_q,       // GATE/DOWN Q4_K 4-bit lanes
     input  wire [4*TN-1:0]               fw_q_up,    // UP companion Q4_K 4-bit lanes
     input  wire [16*TN*FF_NSB_D-1:0]     fw_d_g,     // GATE/DOWN fp16 d
@@ -319,6 +323,7 @@ module glm_model_q4k #(
         .rw_q(rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
+        .route_valid(route_valid), .route_set(route_set),
         .fw_q(fw_q), .fw_q_up(fw_q_up),
         .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
         .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),

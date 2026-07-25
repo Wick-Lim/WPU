@@ -1130,6 +1130,47 @@ clean:
 	rm -f *.vcd
 
 # ============================================================================
+# rank4 : EXACT-ROUTER PREFETCH (docs/ULTRA_PERF_MODULES.md rank 4)
+#   The die is strictly DEMAND-pull: the episode detector fires the cycle the
+#   datapath asks for an expert's bytes, so every miss latency is fully exposed
+#   (EXPERT_STALL=1 freezes the die for 3*FLASH_LAT+9).  But the set of experts a
+#   token needs is DETERMINISTIC and known the instant routing completes, long
+#   before expert 0 is evaluated.  PF_EXACT=1 publishes that union
+#   (decoder route_valid/route_set) and offers the rest of it to the cache's
+#   prefetch port, so those fetches overlap compute instead of stalling it.
+#   Unlike the predictor (measured no-op) nothing is guessed -- the set is known.
+#
+#   The gate runs the SAME thrashing config (8 experts / 2 slots / FLASH_LAT=256)
+#   with the prefetch off and on and requires BOTH:
+#     * FAITHFUL -- every committed token still matches the standalone reference
+#       (this only changes WHEN bytes are fetched, never which bytes);
+#     * EFFECTIVE -- the exposed in-window stall must DROP.  Measured: token 1
+#       goes 259 -> 0 cycles (48/0 hits vs 47/1), token 2 777 -> 518, with
+#       cyc/token 10665 -> 10406 and 12172 -> 11913.
+# ============================================================================
+.PHONY: rank4
+rank4:
+	@mkdir -p $(BUILD_DIR)
+	@for pf in 0 1; do \
+	  $(IVERILOG) $(IFLAGS) -Pglm_q4k_system_perf_tb.PF_EXACT_CFG=$$pf \
+	    -Pglm_q4k_system_perf_tb.FLASH_LAT_CFG=256 -Pglm_q4k_system_perf_tb.N_EXPERT_CFG=8 \
+	    -Pglm_q4k_system_perf_tb.CACHE_SLOTS_CFG=2 \
+	    -o $(BUILD_DIR)/rank4_pf$$pf test/glm_q4k_system_perf_tb.v $(GLM_Q4K_SYS_SRCS) 2>/dev/null \
+	    || { echo "FAILED: rank4 compile (PF_EXACT=$$pf)"; exit 1; }; \
+	  $(VVP) $(BUILD_DIR)/rank4_pf$$pf 2>/dev/null > $(BUILD_DIR)/rank4_pf$$pf.log; \
+	  grep -qE '\(==ref' $(BUILD_DIR)/rank4_pf$$pf.log \
+	    || { echo "FAILED: rank4 (PF_EXACT=$$pf) produced no reference-checked token"; exit 1; }; \
+	  if grep -q 'FAIL' $(BUILD_DIR)/rank4_pf$$pf.log; then \
+	    echo "FAILED: rank4 (PF_EXACT=$$pf) token mismatch vs the standalone reference"; exit 1; fi; \
+	done
+	@bash -c 'a=$$(grep -o "stall_in_win=[0-9]*" $(BUILD_DIR)/rank4_pf0.log | cut -d= -f2 | paste -sd+ - | bc); \
+	          b=$$(grep -o "stall_in_win=[0-9]*" $(BUILD_DIR)/rank4_pf1.log | cut -d= -f2 | paste -sd+ - | bc); \
+	          printf "[%s] " "rank4_exact_prefetch"; \
+	          echo "[MEASURED] exposed stall: demand-only $$a cyc -> exact-prefetch $$b cyc (8 experts / 2 slots / FLASH_LAT=256; every token still ==ref)"; \
+	          [ "$$b" -lt "$$a" ] || { echo "FAILED: rank4 prefetch did NOT reduce the exposed stall ($$a -> $$b)"; exit 1; }'
+	@echo "rank4: exact-router prefetch is FAITHFUL (tokens unchanged) and EFFECTIVE (exposed stall reduced)"
+
+# ============================================================================
 # rank12 : WIDE-BEAT clock-domain crossing (docs/ULTRA_PERF_MODULES.md rank 12)
 #   Ranks 2-3 widen the read fabric to N lanes.  If the core<->die CDC stays
 #   narrow/shallow it re-chokes the stream and the widening is wasted -- silently,

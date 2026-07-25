@@ -58,8 +58,17 @@ for ov in "$@"; do
 done
 [ -n "$CHP" ] && CHP="chparam$CHP $MOD;"
 
-run() {  # $1 = verilog file, $2 = output stat file
-    yosys -q -p "read_verilog -sv -I $REPO/src $1; ${CHP} prep -top $MOD -flatten; opt -full; opt_clean -purge; tee -o $2 stat" 2>/dev/null
+# Hierarchical modules need their submodules present.  Read every other src/*.v
+# alongside the version of THIS module under test, so `prep -top` resolves the
+# whole subtree (yosys only elaborates what the top actually instantiates).
+OTHERS=""
+for f in "$REPO"/src/*.v; do
+    [ "$(basename "$f")" = "$MOD.v" ] && continue
+    OTHERS="$OTHERS $f"
+done
+
+run() {  # $1 = the module-under-test source, $2 = output stat file
+    yosys -q -p "read_verilog -sv -I $REPO/src $1 $OTHERS; ${CHP} prep -top $MOD -flatten; opt -full; opt_clean -purge; tee -o $2 stat" 2>/dev/null
 }
 
 run "$TMP/ref.v" "$TMP/ref.txt" || { echo "synth_equiv: yosys failed on the reference"; exit 2; }

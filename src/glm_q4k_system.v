@@ -302,6 +302,21 @@ module glm_q4k_system #(
     //       cache/FIFO/Flash-arbiter all keep running on the ungated clk so the
     //       fetch that clears the stall always completes (no deadlock).
     parameter integer EXPERT_STALL = 0,
+    // ---- PF_EXACT: exact-router prefetch (docs/ULTRA_PERF_MODULES.md rank 4) --
+    //   0 (DEFAULT) : the expert cache is driven purely on DEMAND, exactly as
+    //       committed -- the episode detector below fires the cycle the die asks
+    //       for an expert's bytes, so every miss latency is fully exposed.
+    //   1 : the moment routing completes, the decoder publishes the whole top-k
+    //       union (route_valid/route_set).  This issues the REST of that union to
+    //       expert_cache_pf's prefetch port while expert 0 is still being
+    //       evaluated, so those fetches overlap compute instead of stalling it.
+    //   FAITHFUL: this changes only WHEN bytes are fetched, never WHICH bytes the
+    //   die consumes or in what order it consumes them -- the prefetch port
+    //   installs into the same cache the demand path reads, and a demand request
+    //   still answers from that cache.  The committed token stream is unchanged;
+    //   what changes is the cache's hit/miss split and the exposed stall.
+    //   Unlike the (measured no-op) predictor, the set here is KNOWN, not guessed.
+    parameter integer PF_EXACT = 0,
     // ---- RESIDENT weight tier (serve expert refills from the DDR-tier fabric) ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-RESIDENT module.  An expert
     //       cache refill (demand miss or prefetch) goes to the SINGLE FLASH
@@ -686,6 +701,11 @@ module glm_q4k_system #(
                                                             : kc_krope;
     wire                      mdl_kc_valid = (SELF_KV != 0) ? kv_row_valid : kc_valid_r;
 
+    wire                 ec_pf_ready;   // (declared before the rank-4 issuer uses it)
+    // rank 4: early routing exposure from the decoder (declared before use)
+    wire                       mdl_route_valid;
+    wire [PE_M*TOPK*EIDXW-1:0] mdl_route_set;
+
     glm_model_q4k #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
@@ -712,6 +732,7 @@ module glm_q4k_system #(
         .rw_q(die_rw_q), .rw_d(rw_d), .rw_dmin(rw_dmin), .rw_scales(rw_scales),
         .fw_req(fw_req), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(fw_k),
         .fw_shared(fw_shared), .fw_eidx(fw_eidx),
+        .route_valid(mdl_route_valid), .route_set(mdl_route_set),
         .fw_q(die_fw_q), .fw_q_up(die_fw_q_up),
         .fw_d_g(fw_d_g), .fw_dmin_g(fw_dmin_g), .fw_scales_g(fw_scales_g),
         .fw_d_u(fw_d_u), .fw_dmin_u(fw_dmin_u), .fw_scales_u(fw_scales_u),
@@ -820,6 +841,54 @@ module glm_q4k_system #(
     end
 
     //========================================================================
+    // 2b) EXACT-ROUTER PREFETCH ISSUER  (PF_EXACT=1; rank 4)
+    //   On route_valid the whole top-k union is known.  Walk it and offer each id
+    //   to expert_cache_pf's prefetch port, skipping the one the die will ask for
+    //   first (index 0) because that one is already a demand fetch.  The cache
+    //   accepts a hint only when it is idle (pf_ready) and drops it otherwise, so
+    //   this can never stall or reorder the demand path -- worst case the hint is
+    //   simply not taken.
+    //========================================================================
+    wire                 pf_int_valid;
+    wire [EIDXW-1:0]     pf_int_id;
+
+    generate
+    if (PF_EXACT == 0) begin : g_pf_demand_only
+        // DEFAULT: the internal issuer does not exist; the external hint port is
+        // wired straight through, exactly as committed.
+        assign pf_int_valid = 1'b0;
+        assign pf_int_id    = {EIDXW{1'b0}};
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire _pf_unused = &{1'b0, mdl_route_valid, mdl_route_set};
+        /* verilator lint_on UNUSEDSIGNAL */
+    end else begin : g_pf_exact
+        reg [PE_M*TOPK*EIDXW-1:0] pf_set_q;
+        reg [$clog2(TOPK+1)-1:0]  pf_i;
+        reg                       pf_run;
+        always @(posedge clk) begin
+            if (rst) begin
+                pf_set_q <= {(PE_M*TOPK*EIDXW){1'b0}};
+                pf_i     <= {$clog2(TOPK+1){1'b0}};
+                pf_run   <= 1'b0;
+            end else if (mdl_route_valid) begin
+                pf_set_q <= mdl_route_set;
+                pf_i     <= {{($clog2(TOPK+1)-1){1'b0}}, 1'b1};  // skip index 0 (demand)
+                pf_run   <= (TOPK > 1);
+            end else if (pf_run && ec_pf_ready) begin
+                if (pf_i + 1'b1 >= TOPK[$clog2(TOPK+1)-1:0]) pf_run <= 1'b0;
+                pf_i <= pf_i + 1'b1;
+            end
+        end
+        assign pf_int_valid = pf_run;
+        assign pf_int_id    = pf_set_q[EIDXW*pf_i +: EIDXW];
+    end
+    endgenerate
+
+    // the cache sees either the external hint (as before) or the internal one
+    wire             pf_valid_eff = pf_valid | pf_int_valid;
+    wire [EIDXW-1:0] pf_id_eff    = pf_valid ? pf_expert_id : pf_int_id;
+
+    //========================================================================
     // 3) ROUTED-EXPERT EPISODE DETECT -> FIFO -> expert_cache_pf.
     //========================================================================
     wire moe_layer = (db_layer >= N_DENSE[LAYW-1:0]);
@@ -890,7 +959,6 @@ module glm_q4k_system #(
     wire                 ec_flash_req;
     wire [EIDXW-1:0]     ec_flash_expert_id;
     wire                 ec_flash_done;
-    wire                 ec_pf_ready;
     /* verilator lint_off UNUSEDSIGNAL */
     wire                 _ec_pf_ready_unused = ec_pf_ready;
     /* verilator lint_on UNUSEDSIGNAL */
@@ -903,7 +971,7 @@ module glm_q4k_system #(
         .req_valid(ec_req_valid), .req_expert_id(ec_req_id),
         .resp_valid(ec_resp_valid), .hit(ec_hit), .resp_slot(ec_resp_slot),
         .busy(ec_busy),
-        .pf_valid(pf_valid), .pf_expert_id(pf_expert_id), .pf_ready(ec_pf_ready),
+        .pf_valid(pf_valid_eff), .pf_expert_id(pf_id_eff), .pf_ready(ec_pf_ready),
         .flash_req(ec_flash_req), .flash_expert_id(ec_flash_expert_id),
         .flash_done(ec_flash_done),
         .hit_count(ec_hit_count), .miss_count(ec_miss_count),

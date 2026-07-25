@@ -271,6 +271,17 @@ module glm_decoder_block_q4k #(
     output wire [FF_KWD-1:0]            fw_k,       // dense-sized k (>= moe)
     output reg                          fw_shared,  // 1 = shared expert weights
     output reg  [EIDXW-1:0]             fw_eidx,    // routed expert id (MoE)
+    // ---- EARLY ROUTING EXPOSURE (docs/ULTRA_PERF_MODULES.md rank 4) ----------
+    //   The die is strictly DEMAND-pull: the system only learns which experts a
+    //   token needs when the datapath asks for their bytes, so every miss is
+    //   fully exposed.  But the set is DETERMINISTIC and known the cycle routing
+    //   completes (T_ROUTE), long before the first expert is evaluated.  These
+    //   two ports publish it at that instant so the system can start fetching the
+    //   REST of the union while expert 0 is still being computed.  They are pure
+    //   OBSERVATION -- nothing inside this block reads them, and the datapath,
+    //   its ordering and its outputs are untouched whether or not anyone listens.
+    output reg                          route_valid, // 1-cycle pulse at T_ROUTE done
+    output reg  [PE_M*TOPK*EIDXW-1:0]   route_set,   // the captured top-k union
     input  wire [4*TN-1:0]              fw_q,       // GATE/DOWN Q4_K 4-bit lanes
     input  wire [4*TN-1:0]              fw_q_up,    // UP companion Q4_K 4-bit lanes
     input  wire [16*TN*FF_NSB_D-1:0]    fw_d_g,     // GATE/DOWN fp16 d
@@ -674,6 +685,8 @@ module glm_decoder_block_q4k #(
             rt_start   <= 1'b0;
             ed_start   <= 1'b0; em_start <= 1'b0;
             fw_shared  <= 1'b0; fw_eidx <= {EIDXW{1'b0}};
+            route_valid <= 1'b0;
+            route_set   <= {(PE_M*TOPK*EIDXW){1'b0}};
             radd_i     <= {$clog2(MODEL_DIM+1){1'b0}};
             comb_i     <= {$clog2(MODEL_DIM+1){1'b0}};
             exp_i      <= {EVW{1'b0}};
@@ -696,6 +709,7 @@ module glm_decoder_block_q4k #(
             rt_start <= 1'b0;
             ed_start <= 1'b0;
             em_start <= 1'b0;
+            route_valid <= 1'b0;      // rank 4: 1-cycle observation pulse
 
             case (state)
             //----------------------------------------------------------------
@@ -809,6 +823,9 @@ module glm_decoder_block_q4k #(
                             sel_e[rr][ii] <= rt_sel_idx[EIDXW*(TOPK*rr + ii) +: EIDXW];
                             sel_w[rr][ii] <= rt_sel_weight[16*(TOPK*rr + ii) +: 16];
                         end
+                    // rank 4: publish the union the instant it is known (observation only)
+                    route_set   <= rt_sel_idx[PE_M*TOPK*EIDXW-1:0];
+                    route_valid <= 1'b1;
                     // clear combine accumulator
                     for (rr=0; rr<PE_M; rr=rr+1)
                         for (ii=0; ii<MODEL_DIM; ii=ii+1) facc[rr][ii] <= 32'h0;

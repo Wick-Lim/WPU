@@ -55,6 +55,16 @@ The bottom-up module review confirms the roofline: on the single-user product to
 - **Contract:** preserving · **Effort:** large · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 4. In-RTL deterministic prefetch during the norm/accumulate compute windows
+
+> **STATUS: BUILT + MEASURED (`make rank4`), default-off.** The decoder now publishes the top-k
+> union the cycle routing completes (`route_valid`/`route_set`, pure observation), and the system
+> gained a `PF_EXACT` issuer that offers the rest of that union to the expert cache's prefetch port
+> while expert 0 is still being evaluated. **Measured on a thrashing config (8 experts / 2 slots /
+> `FLASH_LAT=256`): exposed stall 2,590 → 2,070 cycles (−20%)**, with token 1 going 259 → **0**
+> (48/0 hits vs 47/1) and cyc/token 10,665 → 10,406. **Every committed token still matches the
+> standalone reference** — this changes *when* bytes are fetched, never which bytes or their order.
+> `PF_EXACT=0` (default) keeps the demand-only behaviour. Composes multiplicatively with rank 1:
+> the MSHR supplies the outstanding slots this prefetch would fill.
 - **Modules:** `src/glm_decoder_block_q4k.v (sel_e captured whole at T_ROUTE :807-811; experts fetched serially T_ESCAN/T_EXPW/T_ACC :837-912), src/glm_q4k_system.v (episode detector on DEMAND cur_routed :826; expert_cache_pf.pf_valid/pf_expert_id are external inputs only :522-523)`
 - **Change:** Drive expert_cache_pf.pf_valid/pf_expert_id INTERNALLY from the captured sel_e union the moment routing completes, so experts 1..NEVAL-1 stream from NVMe under expert-0's T_ACC; and issue the layer's aw_*/rw_* reads during the preceding ~5*MODEL_DIM cycles of pre-attn/pre-FFN RMSNorm + residual-add. Reorders fetch timing only; the die consumes the same bytes in the same order.
 - **Why (perf model):** The die is strictly demand-pull: the episode detector fires the cycle the die asks, so every miss is fully exposed (EXPERT_STALL=1 freezes 3*FLASH_LAT+9). But the upcoming weight set is DETERMINISTIC and known early (top-k union at T_ROUTE; layer hot-weights from db_layer). This is the exact-router prefetch of ULTRA_PERF #8 / P3.1, made concrete in-RTL, and unlike the predictor (measured no-op) it is entropy-free — the set is known, not guessed. Composes multiplicatively with rank 1 (MSHR provides the outstanding slots the prefetch fills).
