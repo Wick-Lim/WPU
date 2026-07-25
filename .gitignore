@@ -38,9 +38,3 @@ iter_*_CongestedCLBsAndNets.txt
 fpga/out/
 tight_setup_hold_pins.txt
 
-# Fundraising / IR materials — contain personal contact info, LOCAL ONLY, never commit
-paper/*.pdf
-paper/*.html
-paper/BLUEPOINT_APPLY.md
-# Exception: the arXiv preprint PDF itself is public (compiled from tracked wpu.tex, no personal info)
-!paper/wpu.pdf

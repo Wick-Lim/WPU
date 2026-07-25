@@ -1,6 +1,18 @@
-# WPU — **W**eight **P**rocessing **U**nit
+# WPU — Laguna-S-2.1 · `UD-Q4_K_XL`
 
-> A GLM-5.2 Q4_K local-inference accelerator in Verilog.
+> **Model branch `laguna-s-2.1/UD-Q4_K_XL`** — the port of the WPU accelerator to
+> [poolside **Laguna-S-2.1**](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF) (118B MoE, ~8B
+> active/token). Project overview, site and paper are on the hub:
+> [**`main`**](https://github.com/Wick-Lim/WPU) · the flagship target it is derived from:
+> [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL).
+>
+> **Port status:** dequant inherited unchanged (format-level) · MoE path **bit-exact in RTL** at
+> Laguna's config · the GQA attention machine **specified and reference-verified end to end**
+> (`make laguna`) · the bit-exact GQA *orchestrator RTL* is **scoped, not yet written**.
+> Full per-piece ledger: [`docs/LAGUNA_S21.md`](docs/LAGUNA_S21.md).
+>
+> Everything below this line describes the **GLM-5.2 build this port inherits from** — its datapath,
+> memory system and verification harness are what carry over unchanged.
 >
 > **Everyone else named their chip after the math** — Tensor, Neural, Language *Processing Unit*.
 > **This one is named after the bottleneck: the weights.** Frontier LLM inference is not
@@ -10,8 +22,8 @@
 
 > **🙏 Looking for an arXiv endorsement (cs.AR).** The preprint of this work —
 > *Bit-Exact by Construction: A Verification-First RTL Accelerator that Inherits the
-> GGUF k-Quant Checkpoint Ecosystem* ([`paper/wpu.tex`](paper/wpu.tex),
-> [compiled PDF](paper/wpu.pdf)) — needs a first-time-author endorsement for arXiv
+> GGUF k-Quant Checkpoint Ecosystem* ([source + compiled PDF on the hub](https://github.com/Wick-Lim/WPU/tree/main/paper))
+> — needs a first-time-author endorsement for arXiv
 > **cs.AR**. If you are qualified to endorse in cs.AR and, after looking at the paper
 > and this repository's verification ledger, consider the work credible, you can
 > endorse here: **<https://arxiv.org/auth/endorse?x=7L4XXQ>**
@@ -41,30 +53,18 @@ design (attention/accumulation orders differ), the 467 GB checkpoint has not bee
 throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon). See
 [*What's proven*](#whats-proven) for the exact status of every claim.
 
-> **🧬 This branch (`laguna-s-2.1`) — a SECOND model target.** The same accelerator, retargeted to
-> [`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF) (poolside
-> **Laguna-S-2.1** — a 118B MoE, ~8B active/token, `LagunaForCausalLM`). The Q4_K **dequant contract is
-> inherited unchanged** (format-level) and the **MoE path is bit-exact in RTL at Laguna's config** (256
-> experts / **top-10** / expert-FFN 1024 — `make laguna-moe`). The attention machine is genuinely
-> different — **GQA** with per-layer head counts (48/72), **sliding-window** + **dual YaRN/plain RoPE**,
-> **per-head softplus gating**, q/k RMSNorm — and is **specified and reference-verified end to end**
-> (`make laguna`, numpy golden); the bit-exact **GQA orchestrator RTL is scoped but not yet written**
-> (same class as `main`'s `mla_attn_q4k`). No claim of a running/RTL-bit-exact Laguna accelerator is made.
-> Full status + per-piece verification ledger: [`docs/LAGUNA_S21.md`](docs/LAGUNA_S21.md). `main` (the
-> GLM-5.2 accelerator described below) is untouched by this branch.
-
 > **The product** is a single-user box that runs with the ethernet unplugged — the full 753B model,
 > fully offline / air-gapped, provisioned once (~467 GB Q4_K weights) then disconnected. No per-token API
 > fees, no vendor that can rate-limit or cut you off. The number that matters is single-user interactive
 > throughput; it is set by the hardware rung (memory bandwidth / IO / PHY budget) — see
 > [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).
 
-> **Branches.** `main` develops the GLM-5.2 Q4_K accelerator (this README). **`laguna-s-2.1`** ports the
-> same accelerator to a second model, Laguna-S-2.1 (this branch — see the callout above and
-> [`docs/LAGUNA_S21.md`](docs/LAGUNA_S21.md)). The prior **FP8 datacenter track** is preserved on branch
-> **`fp8`** + tag `fp8-verified-baseline`; a compression-research study on `research/compression-study`.
-> All referenced as prior/preserved, never current. The full product (rungs ②③) is the roadmap, not main's
-> current code ([`docs/PRODUCT_ROADMAP.md`](docs/PRODUCT_ROADMAP.md), [`NEXT_STEPS_PLAN.md`](NEXT_STEPS_PLAN.md)).
+> **Where things live.** A hub plus one branch per model target:
+> [**`main`**](https://github.com/Wick-Lim/WPU) is the hub (project README, the
+> [site](https://wick-lim.github.io/WPU/), the [paper](https://github.com/Wick-Lim/WPU/tree/main/paper));
+> [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) is the flagship
+> GLM-5.2 build; **this branch** is the Laguna-S-2.1 port. Prior work is kept as **tags**, never as
+> current: `fp8-verified-baseline` and `compression-study-baseline`.
 
 ---
 

@@ -23,7 +23,7 @@ name: ci
 
 on:
   push:
-    branches: [ main ]
+    branches: [ 'laguna-s-2.1/**' ]   # the code lives on model branches; main is the hub
   pull_request:
   workflow_dispatch:
 
