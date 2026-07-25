@@ -1,5 +1,8 @@
 # CI for the GLM-5.2 (UD-Q4_K_XL) accelerator -- the Q4_K track.
 #
+# Runs on the MODEL branches (glm5.2/**), not on main: main is the project hub
+# and carries no RTL or Makefile.
+#
 # Jobs:
 #   python-selftests : the pure-Python golden/reference self-tests (numpy only,
 #                      no EDA tools): q4k_ref / glm_model_q4k_ref / ckpt_pack_q4k
@@ -23,7 +26,7 @@ name: ci
 
 on:
   push:
-    branches: [ main ]
+    branches: [ 'glm5.2/**' ]   # the code lives on model branches; main is the hub
   pull_request:
   workflow_dispatch:
 
