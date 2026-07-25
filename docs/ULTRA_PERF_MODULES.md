@@ -16,6 +16,24 @@ The bottom-up module review confirms the roofline: on the single-user product to
 ## Ranked plan (highest tok/s impact first)
 
 ### 1. Non-blocking MSHR expert-cache refill (overlap the 8 top-k miss latencies)
+
+> **STATUS: BUILT + MEASURED (standalone).** `src/expert_cache_mshr.v` + `make mshr`.
+> **Measured: 8 cold misses complete in 43 cycles vs the blocking baseline's 160**
+> (`FLASH_LAT=20`, high-water 8 concurrent) — a **3.7× overlap of the refill
+> latencies**, timed by the gate rather than asserted. Correctness under concurrency
+> is proven with two must-FAIL injections (victim collision, duplicate fetch) plus
+> out-of-order tagged completion. **Not yet wired into the product top** — the
+> verified datapath is untouched. Integration additionally requires widening the
+> *other two* single-outstanding seams the review found around it: the `awaiting`
+> request issuer (`glm_q4k_system.v` ~:857, exactly one outstanding request to the
+> cache) and the single untagged flash arbiter (~:1000, `fl_busy`, shared with the
+> KV pager). **The end-to-end tok/s effect stays `[EST]` until those land and it is
+> measured on the integrated top.**
+>
+> Building it surfaced a hazard inspection alone missed, and the gate caught it: a
+> slot must stay protected from re-victimisation **until every MSHR entry bound to
+> it has responded**, not merely until its data installs — otherwise a merged
+> entry's late response names a slot that has already been reused.
 - **Modules:** `src/expert_cache_ctrl.v (S_FETCH blocking FSM :184-217), src/expert_cache_pf.v (:389-429)`
 - **Change:** Replace the single-outstanding blocking S_FETCH (issue one flash_req, freeze until flash_done) with an M-entry MSHR array: on a miss allocate an MSHR, issue flash_req, keep accepting/issuing the next miss; install each expert when its tagged flash_done returns (match by tag). Issue all top-8 union misses concurrently so they stripe across the N_CH fabric. Keep the exact-LRU directory; only the refill FSM becomes non-blocking.
 - **Why (perf model):** This is the Little's-law numerator on the memory wall: tok/s = BW/[(1-h)*footprint], and delivered BW = outstanding_requests/latency. A single outstanding miss hard-caps demand BW at 1/FLASH_LAT no matter how many channels exist, so the fabric depth from ranks 2-5 is UNUSED until this lands. The measured EXPERT_STALL sweep shows exposed stall = 3*FLASH_LAT+9 per miss growing linearly (11 cyc @FLASH_LAT=8 -> 2,567 @1024); with real-NVMe FLASH_LAT in the thousands, serializing the 8 per-token experts is the dominant cyc_per_tok term. Overlapping them is the single biggest B=1 tok/s lever that is a genuinely module-level (not top-down) finding.
