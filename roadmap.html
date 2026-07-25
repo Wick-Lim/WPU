@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WPU — hardware roadmap</title>
+<style>
+  :root {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+      --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+      --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+      --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+      --grid:rgba(0,0,0,.035);
+      --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+  }
+  :root[data-theme="light"] {
+    --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+    --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+    --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+    --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+    --grid:rgba(0,0,0,.035);
+    --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap { max-width:1000px; margin:0 auto; padding:0 24px; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; text-underline-offset:3px; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:3px; }
+  h1,h2,h3 { text-wrap:balance; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .mono { font-family:var(--mono); }
+  .eyebrow {
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+  .tnum { font-variant-numeric:tabular-nums; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    border-bottom:1px solid var(--hairline);
+    background:linear-gradient(180deg,var(--panel),var(--ground));
+    position:relative; overflow:hidden;
+  }
+  header.mast::before {
+    content:""; position:absolute; inset:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px; pointer-events:none;
+    -webkit-mask-image:linear-gradient(180deg,#000,transparent); mask-image:linear-gradient(180deg,#000,transparent);
+  }
+  .mast-row { display:flex; align-items:baseline; gap:14px; padding:26px 0 4px; position:relative; }
+  .brand {
+    font-family:var(--mono); font-weight:700; font-size:1.5rem; letter-spacing:.02em;
+    color:var(--ink);
+  }
+  .brand b { color:var(--accent); font-weight:700; }
+  .brand-def { color:var(--ink-dim); font-family:var(--mono); font-size:.8rem; }
+  .nav { margin-left:auto; display:flex; gap:20px; font-family:var(--mono); font-size:.82rem; }
+  .nav a { color:var(--ink-dim); padding:2px 0; border-bottom:2px solid transparent; }
+  .nav a:hover { color:var(--ink); text-decoration:none; }
+  .nav a.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .repo { font-family:var(--mono); font-size:.78rem; }
+  @media (max-width:640px){ .mast-row { flex-wrap:wrap; } .nav { margin-left:0; order:3; width:100%; } .repo { margin-left:auto; } }
+
+  /* ---- hero ---- */
+  .hero { padding:34px 0 40px; position:relative; }
+  .hero .kicker { color:var(--accent); }
+  .hero h1 {
+    font-size:clamp(1.9rem,5.2vw,3.05rem); line-height:1.08; margin:14px 0 0;
+    letter-spacing:-.02em; max-width:16ch;
+  }
+  .hero .lede { margin:18px 0 0; font-size:1.06rem; color:var(--ink-2); max-width:60ch; }
+  .hero .lede b { color:var(--ink); font-weight:600; }
+  .proof {
+    margin-top:20px; padding:12px 16px; border:1px solid var(--hairline); border-left:3px solid var(--accent);
+    background:var(--panel); border-radius:0 8px 8px 0; font-size:.95rem; color:var(--ink-2); max-width:62ch;
+  }
+  .proof b { color:var(--ink); }
+
+  /* ---- stat strip ---- */
+  .stats {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden;
+    margin-top:28px; box-shadow:var(--shadow);
+  }
+  .stat { background:var(--panel); padding:16px 16px 14px; }
+  .stat .n { font-family:var(--mono); font-size:1.5rem; font-weight:650; color:var(--ink); letter-spacing:-.01em; }
+  .stat .n small { font-size:.9rem; color:var(--ink-dim); font-weight:500; }
+  .stat .l { font-size:.76rem; color:var(--ink-dim); margin-top:3px; line-height:1.35; }
+  .stat .tag { color:var(--accent); }
+
+  /* ---- sections ---- */
+  section { padding:40px 0; border-top:1px solid var(--hairline); }
+  .sec-head { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; }
+  .sec-head h2 { font-size:1.32rem; }
+  .sec-head .idx { font-family:var(--mono); color:var(--accent); font-size:.8rem; }
+  .sec-sub { color:var(--ink-dim); max-width:64ch; margin:0 0 22px; font-size:.95rem; }
+
+  /* ---- ledger ---- */
+  .legend { display:flex; flex-wrap:wrap; gap:14px 20px; margin-bottom:18px; font-family:var(--mono); font-size:.74rem; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; color:var(--ink-2); }
+  .led { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent); background:var(--c); }
+  .s-proven{--c:var(--ok);} .s-formal{--c:var(--formal);} .s-elab{--c:var(--elab);} .s-measured{--c:var(--measured);} .s-open{--c:var(--open);}
+
+  .ledger { display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .row { background:var(--panel); display:grid; grid-template-columns:20px 1fr auto; gap:14px; align-items:start; padding:14px 16px; }
+  .row:hover { background:var(--panel-2); }
+  .row .led { margin-top:7px; }
+  .row .what { font-weight:600; color:var(--ink); }
+  .row .what .sub { display:block; font-weight:400; color:var(--ink-dim); font-size:.86rem; margin-top:2px; }
+  .row .ev { font-family:var(--mono); font-size:.78rem; color:var(--ink-2); text-align:right; white-space:nowrap; }
+  .row .ev .st { display:block; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; margin-bottom:3px; }
+  .st-proven{color:var(--ok);} .st-formal{color:var(--formal);} .st-elab{color:var(--elab);} .st-measured{color:var(--measured);} .st-open{color:var(--open);}
+  @media (max-width:640px){
+    .row { grid-template-columns:16px 1fr; }
+    .row .ev { grid-column:2; text-align:left; white-space:normal; margin-top:2px; }
+  }
+
+  /* ---- tok/s build ---- */
+  .roof { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--hairline); border-radius:10px; padding:18px; box-shadow:var(--shadow); }
+  .card h3 { font-size:1rem; margin-bottom:4px; }
+  .card p { color:var(--ink-2); font-size:.9rem; margin:6px 0 0; }
+  .ladder { list-style:none; padding:0; margin:14px 0 0; display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:8px; overflow:hidden; }
+  .ladder li { background:var(--panel); display:flex; align-items:baseline; gap:12px; padding:11px 14px; font-size:.9rem; }
+  .ladder .rung { font-family:var(--mono); color:var(--accent); font-size:.8rem; flex:none; width:2.2em; }
+  .ladder .v { font-family:var(--mono); margin-left:auto; color:var(--ink); font-weight:600; }
+  .ladder .v em { color:var(--ink-dim); font-style:normal; font-weight:400; font-size:.82em; }
+  .note { font-size:.82rem; color:var(--ink-dim); margin-top:14px; }
+  .flow {
+    font-family:var(--mono); font-size:.84rem; color:var(--ink-2); background:var(--sunk);
+    border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; margin-top:16px; line-height:1.9;
+    overflow-x:auto;
+  }
+  .flow b { color:var(--accent); }
+  .flow .arrow { color:var(--ink-dim); }
+
+  /* ---- open ---- */
+  .open-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .open-item { background:var(--panel); padding:15px 16px; }
+  .open-item .h { display:flex; align-items:center; gap:9px; font-weight:600; color:var(--ink); font-size:.95rem; }
+  .open-item p { margin:6px 0 0; color:var(--ink-dim); font-size:.85rem; }
+  .open-item .led { width:8px; height:8px; }
+
+  @media (max-width:640px){ .stats,.roof,.open-grid { grid-template-columns:1fr; } }
+
+  footer { border-top:1px solid var(--hairline); padding:30px 0 46px; color:var(--ink-dim); font-size:.84rem; }
+  footer .disc { max-width:70ch; }
+  footer b { color:var(--ink-2); }
+  .k { font-family:var(--mono); color:var(--ink-2); }
+
+  /* ---- roadmap ladder table ---- */
+  .tblwrap { overflow-x:auto; border:1px solid var(--hairline); border-radius:10px; box-shadow:var(--shadow); }
+  table.ladder-tbl { border-collapse:collapse; width:100%; min-width:720px; background:var(--panel); font-size:.86rem; }
+  table.ladder-tbl th, table.ladder-tbl td { text-align:left; padding:12px 14px; border-bottom:1px solid var(--hairline); vertical-align:top; }
+  table.ladder-tbl thead th { font-family:var(--mono); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-dim); background:var(--panel-2); }
+  table.ladder-tbl tbody tr:last-child td { border-bottom:none; }
+  table.ladder-tbl .rungcell { font-family:var(--mono); color:var(--accent); font-weight:650; white-space:nowrap; }
+  table.ladder-tbl .toks { font-family:var(--mono); color:var(--ink); font-weight:600; white-space:nowrap; }
+  table.ladder-tbl .tag { color:var(--accent); font-family:var(--mono); font-size:.78rem; }
+  .card .meta { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:12px; font-family:var(--mono); font-size:.76rem; color:var(--ink-dim); }
+  .card .meta b { color:var(--ink-2); font-weight:600; }
+  .card .toks-big { font-family:var(--mono); font-size:1.28rem; font-weight:650; color:var(--ink); margin-top:10px; }
+  .card .toks-big .tag { color:var(--accent); font-size:.72rem; }
+  .rung3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+  @media (max-width:760px){ .rung3 { grid-template-columns:1fr; } }
+  .tag { font-family:var(--mono); }
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <div class="mast-row">
+      <span class="brand"><b>W</b>PU</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <nav class="nav">
+        <a href="index.html">Overview</a>
+        <a href="board.html">Board</a>
+        <a href="roadmap.html" class="active">Roadmap</a>
+      </nav>
+      <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
+    </div>
+    <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
+      <div class="eyebrow kicker">Hardware ladder · tok/s <span class="tag">[EST]</span></div>
+      <h1>WPU hardware roadmap</h1>
+      <p class="lede">Performance is set by memory bandwidth, which is set by the silicon's IO/PHY budget, which is set by the rung and its funding. Only rung ① is near-term buildable; <b>rungs ② and ③ are funding-gated projections, and rung ④ is a further, memory-tech-gated step.</b> Every tok/s figure is an estimate <span class="k">[EST]</span>.</p>
+      <div class="proof">The RTL is the <b>same across the ladder</b> — only the memory bandwidth changes (rung ④ re-parameterizes the storage tier, not the compute graph). The FPGA fit and routed Fmax are measured (see <a href="board.html">Board</a>); there is no running board yet, so every tok/s is modeled until bring-up.</div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section style="border-top:none">
+    <div class="sec-head"><h2>The three-rung ladder</h2></div>
+    <p class="sec-sub">Bandwidth is bound by the chip's IO/PHY budget, which is set by the rung. The datapath is identical throughout; the difference between rungs is the memory system feeding it.</p>
+
+    <div class="tblwrap">
+      <table class="ladder-tbl">
+        <thead>
+          <tr>
+            <th>Rung</th>
+            <th>Platform</th>
+            <th>Memory / bandwidth</th>
+            <th>Throughput</th>
+            <th>Correctness</th>
+            <th>Cost</th>
+            <th>Funding</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="rungcell">① Prove-it<br><span style="color:var(--ink-dim);font-weight:400">now</span></td>
+            <td>Low-end FPGA (Kintex US+ KU3P class) + DDR4 hot-set cache</td>
+            <td>1–2 NVMe (~7–14 GB/s) … striped ~14 drives (~100 GB/s)</td>
+            <td class="toks">~0.5–1 … ~5–8 tok/s <span class="tag">[EST]</span></td>
+            <td>bit-exact throughout</td>
+            <td>~$1–2k box</td>
+            <td>self / minimal</td>
+          </tr>
+          <tr>
+            <td class="rungcell">② Custom board<br><span style="color:var(--ink-dim);font-weight:400">post-raise</span></td>
+            <td>Mid FPGA (Versal / Agilex / HBM-class US+)</td>
+            <td>DDR5 8–12 ch or HBM (~400 GB/s – 1 TB/s)</td>
+            <td class="toks">~15–40 tok/s <span class="tag">[EST]</span></td>
+            <td>contingent — needs expert-cache hit rate OR non-bit-exact pruning</td>
+            <td>~$3–6k</td>
+            <td>seed</td>
+          </tr>
+          <tr>
+            <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">at scale</span></td>
+            <td>Custom silicon; 512 GB LPDDR5X full residency (16×32 GB)</td>
+            <td>1024-bit, ~1.1 TB/s; whole ~467 GB resident, cold store one M.2 NVMe (~70 s boot)</td>
+            <td class="toks">≈80 tok/s <span class="tag">[measured-inputs EST]</span></td>
+            <td>bit-exact (residency ⇒ h=1)</td>
+            <td>~$1.8–2.4k</td>
+            <td>Series B+ / volume</td>
+          </tr>
+          <tr>
+            <td class="rungcell">④ HBF + HBM<br><span style="color:var(--ink-dim);font-weight:400">future</span></td>
+            <td>Two-store box: 512 GB HBF (weights, non-volatile, resident) + 96 GB HBM (KV)</td>
+            <td>HBF ~1.6 TB/s <b>per stack</b>; 2-stack base ~3.2 TB/s against weights (1-stack entry ~100–115)</td>
+            <td class="toks">~200+ tok/s <span class="tag">[EST]</span></td>
+            <td>bit-exact (same RTL)</td>
+            <td>chiplet / kW bracket <span class="tag">not quoted</span></td>
+            <td>next-gen · memory-tech-gated</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top:.6rem">Rung ④ is a forward-looking architecture note, not designed or verified — its <span class="k">~200+</span> is the softest <span class="k">[EST]</span> here (HBF is announced, not shipping); detail in <b>Beyond rung ③</b> below. Higher stack counts push the binding constraint from bandwidth to the die (~26K MAC lanes, sublinear 4×→~2.40×) and power.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Rung detail</h2></div>
+    <p class="sec-sub">The near-term demo is rung ①; rungs ② and ③ are projections gated on funding and, for ②, on a correctness contingency.</p>
+
+    <div class="rung3">
+      <div class="card">
+        <h3><span style="font-family:var(--mono);color:var(--accent)">①</span> Prove-it <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(now)</span></h3>
+        <p>Low-end FPGA (Kintex US+ KU3P class) with a DDR4 hot-set cache. Storage scales from 1–2 NVMe (~7–14 GB/s) up to ~14 striped drives (~100 GB/s).</p>
+        <div class="toks-big">~0.5–1 … ~5–8 tok/s <span class="tag">[EST]</span></div>
+        <div class="meta">
+          <span><b>correctness</b> bit-exact throughout</span>
+          <span><b>cost</b> ~$1–2k box</span>
+          <span><b>funding</b> self / minimal</span>
+          <span><b>status</b> the near-term demo</span>
+        </div>
+        <p class="note">The FPGA fit is measured — see <a href="board.html">Board</a>.</p>
+      </div>
+
+      <div class="card">
+        <h3><span style="font-family:var(--mono);color:var(--accent)">②</span> Custom board <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(post-raise)</span></h3>
+        <p>Mid-range FPGA (Versal / Agilex / HBM-class US+) on a custom board with DDR5 8–12 channels or HBM (~400 GB/s – 1 TB/s).</p>
+        <div class="toks-big">~15–40 tok/s <span class="tag">[EST]</span></div>
+        <div class="meta">
+          <span><b>correctness</b> contingent</span>
+          <span><b>cost</b> ~$3–6k</span>
+          <span><b>funding</b> seed</span>
+        </div>
+        <p class="note">Contingent: needs an expert-cache hit rate OR non-bit-exact pruning.</p>
+      </div>
+
+      <div class="card">
+        <h3><span style="font-family:var(--mono);color:var(--accent)">③</span> SoC / ASIC <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(at scale)</span></h3>
+        <p>Custom silicon. Primary design point: 512 GB LPDDR5X full residency (16×32 GB, 1024-bit, ~1.1 TB/s). The whole ~467 GB checkpoint is resident; cold store is one M.2 NVMe (~70 s boot).</p>
+        <div class="toks-big">≈80 tok/s <span class="tag">[measured-inputs EST]</span></div>
+        <div class="meta">
+          <span><b>upside</b> ~95 if MTP hits published depth</span>
+          <span><b>ceiling</b> ~120 HBM (aspirational)</span>
+          <span><b>correctness</b> bit-exact (residency ⇒ h=1)</span>
+          <span><b>cost</b> ~$1.8–2.4k</span>
+          <span><b>funding</b> Series B+ / volume</span>
+        </div>
+        <p class="note">Full design point on the <a href="board.html">Board</a> page.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Beyond rung ③ — HBF + HBM (future)</h2></div>
+    <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). Source: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
+    <div class="flow">
+      today &nbsp; <span class="arrow">NVMe (persist)</span> + <span class="arrow">DDR/LPDDR (stream BW)</span> → die &nbsp;·&nbsp; KV in DRAM<br>
+      rung ④ &nbsp; <b>512GB HBF</b> <span class="arrow">(weights already resident · non-volatile)</span> <b>&nbsp;—1.6 TB/s→&nbsp;</b> die &nbsp;·&nbsp; die <span class="arrow">&#8644;</span> <b>KV in 96GB HBM</b> &nbsp; <span class="arrow">(no load / no HBF→HBM path)</span>
+    </div>
+    <div class="roof">
+      <div class="card">
+        <h3>Weights → HBF</h3>
+        <p>HBF (High Bandwidth Flash — 3D-NAND stacked HBM-style, announced 2025, not shipping) is <b>non-volatile AND high-bandwidth AND high-capacity</b>. A <b>512&nbsp;GB HBF</b> (467&nbsp;GB weights + ~10% headroom — a tight exact fit; ~1&nbsp;TB for larger models) at <b>~1.6&nbsp;TB/s</b> streams the weights <b>straight to the die</b> — no staging through HBM. One HBF store does both jobs the design splits today: the persistent bulk store (NVMe) and the high-BW stream source (DDR/LPDDR working cache). So: <b>no NVMe tier, no 467&nbsp;GB DRAM copy, no ~70&nbsp;s boot-load</b> (weights already resident → instant-on). Flash read latency is hideable for the sequential weight stream (the deep-queue <span class="k">flash_xbar</span> already does this); write endurance is a non-issue (weights are written once, then read-only).</p>
+      </div>
+      <div class="card">
+        <h3>KV → HBM</h3>
+        <p>The MLA latent KV is <b>87.8&nbsp;KB/token</b>, accumulating with context → <b>~90&nbsp;GB at the full 1M context</b>, so a <b>96&nbsp;GB HBM is enough</b> (~6&nbsp;GB headroom — tight for full 1M, less if capped). It's <b>random-access and latency-sensitive</b> — the one pattern flash latency can't serve, so it lives in low-latency HBM. This is about latency/capacity, not raw tok/s; the speed win comes from the <b>weight-stream BW (HBF)</b>: the announced <b>~1.6&nbsp;TB/s is per-stack</b> → one stack ~100–115 tok/s <span class="k">[EST]</span>; HBF stacks like HBM, and rung ④ assumes <b>multi-stack by default: 2 stacks (3.2&nbsp;TB/s) → ~200+ tok/s</b> <span class="k">[EST]</span> (1-stack entry ~100–115) — the cost that comes with the default is the die (~26K MAC lanes, sublinear scaling) and power, which become the binding constraints instead of memory.</p>
+      </div>
+    </div>
+    <p class="note"><b>Honest caveats.</b> HBF is emerging tech (unshipped). Capped by the same sublinear lane scaling (4× lanes → ~2.40×) — the die must be provisioned to consume the higher BW or compute bottlenecks. Higher power (HBF + HBM run hotter than LPDDR5X — this pulls <em>against</em> the low-power / fanless direction). The RTL fits (<span class="k">flash_xbar</span> is a medium-agnostic address→bytes crossbar; <span class="k">kv_cache_pager</span>/<span class="k">weight_loader</span> already separate KV from the weight stream), so the two-store split is a re-parameterization — but the DDR-tier removal + re-tiering and the vendor HBF/HBM PHY + controllers are not built. All <span class="k">[EST]</span>.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Measured vs modeled</h2></div>
+    <p class="sec-sub">The FPGA fit and routed Fmax are MEASURED. There is no running board yet, so every tok/s figure is an estimate <span class="k">[EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
+    <div class="legend">
+      <span><i class="led s-measured"></i>MEASURED — real silicon fit / routed Fmax</span>
+      <span><i class="led s-open"></i>EST — modeled tok/s, not yet on hardware</span>
+    </div>
+    <div class="ledger">
+      <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit + routed Fmax <span class="sub">whole product top placed-and-routed on Kintex UltraScale+ XCKU3P</span></div><div class="ev"><span class="st st-measured">Measured · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">All tok/s across rungs <span class="sub">bandwidth-bound roofline with measured model-side inputs; no running board to measure against yet</span></div><div class="ev"><span class="st st-open">Est · until bring-up</span>Fmax ÷ cyc_per_tok on HW</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Open items</h2></div>
+    <p class="sec-sub">The gaps between here and rung ③, taken from the repo. Most sit at the physical / process boundary an RTL repo cannot close.</p>
+    <div class="open-grid">
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The ~467 GB GLM file run end-to-end and compared against llama.cpp's runtime argmax. Needs a GPU / large-memory host.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo; running on a physical board needs the board + a pin XDC + a MIG bridge.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP integration</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed. Licensed PHY IP is integrated and signed off at the silicon rung.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>ASIC tapeout</div><p>Custom-silicon tapeout is the rung-③ volume endgame.</p></div>
+    </div>
+    <p class="note">Source: <span class="k">docs/HARDWARE_LADDER.md</span>.</p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="disc">The RTL is the same across the ladder; only the memory bandwidth changes. The FPGA fit and routed Fmax are measured; there is <b>no running board yet</b>, so every tok/s figure is a modeled estimate <span class="k">[EST]</span> or <span class="k">[measured-inputs EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; source: docs/HARDWARE_LADDER.md</p>
+  </div>
+</footer>
+
+</body>
+</html>

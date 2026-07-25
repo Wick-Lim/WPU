@@ -1,46 +1,31 @@
-# Build artifacts
-build/
-
-# Agent / tooling scratch dirs (smoke TBs, synth/pnr logs, build artifacts)
-scratchpad/
-scratchpad_build/
-
-# Ephemeral git worktrees created by the harness for parallel agents/workflows
-.claude/worktrees/
-
-# Generated simulation waveforms
-tpu_waveform.vcd
-hazard_waveform.vcd
-*.vcd
-
-# Generated routing trace (regenerate with tools/route_trace.py --dump)
-tools/*.hex
-
-# python bytecode cache
-__pycache__/
-*.pyc
-.deferred/
-build_f0/
-
-# GLM tokenizer data (fetch via host/fetch_tokenizer.sh)
-host/tokenizer.json
-
-# Gowin vendor flow (Docker) -- never commit the vendor binary or license
-fpga/gowin/docker/gowin_linux.tar.gz
-fpga/gowin/docker/gwlicense.lic
-impl/
-fpga/nextpnr/out/
-# Vivado batch-run scratch (fit runs write to the repo root as cwd)
-.Xil/
-clockInfo.txt
-cong/
-iter_*_CongestedCLBsAndNets.txt
-fpga/out/
-tight_setup_hold_pins.txt
-
+# ---- hub branch (main): site + paper only ----
 # Fundraising / IR materials — contain personal contact info, LOCAL ONLY, never commit
 paper/*.pdf
 paper/*.html
 paper/BLUEPOINT_APPLY.md
 # Exception: the arXiv preprint PDF itself is public (compiled from tracked wpu.tex, no personal info)
 !paper/wpu.pdf
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+
+# ---- local working dirs carried over from the code branch (never on the hub) ----
+build/
+scratchpad/
+scratchpad_build/
+impl/
+fpga/out/
+.claude/worktrees/
+__pycache__/
+*.pyc
+*.vcd
+.Xil/
+.deferred/
+clockInfo.txt
+cong/
+iter_*_CongestedCLBsAndNets.txt
+tight_setup_hold_pins.txt

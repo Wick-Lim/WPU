@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WPU — appliance board (design point)</title>
+<style>
+  :root {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+      --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+      --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+      --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+      --grid:rgba(0,0,0,.035);
+      --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+  }
+  :root[data-theme="light"] {
+    --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+    --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+    --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+    --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+    --grid:rgba(0,0,0,.035);
+    --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap { max-width:1000px; margin:0 auto; padding:0 24px; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; text-underline-offset:3px; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:3px; }
+  h1,h2,h3 { text-wrap:balance; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .mono { font-family:var(--mono); }
+  .eyebrow {
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+  .tnum { font-variant-numeric:tabular-nums; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    border-bottom:1px solid var(--hairline);
+    background:linear-gradient(180deg,var(--panel),var(--ground));
+    position:relative; overflow:hidden;
+  }
+  header.mast::before {
+    content:""; position:absolute; inset:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px; pointer-events:none;
+    -webkit-mask-image:linear-gradient(180deg,#000,transparent); mask-image:linear-gradient(180deg,#000,transparent);
+  }
+  .mast-row { display:flex; align-items:baseline; gap:14px; padding:26px 0 4px; position:relative; }
+  .brand {
+    font-family:var(--mono); font-weight:700; font-size:1.5rem; letter-spacing:.02em;
+    color:var(--ink);
+  }
+  .brand b { color:var(--accent); font-weight:700; }
+  .brand-def { color:var(--ink-dim); font-family:var(--mono); font-size:.8rem; }
+  .nav { margin-left:auto; display:flex; gap:20px; font-family:var(--mono); font-size:.82rem; }
+  .nav a { color:var(--ink-dim); padding:2px 0; border-bottom:2px solid transparent; }
+  .nav a:hover { color:var(--ink); text-decoration:none; }
+  .nav a.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .repo { font-family:var(--mono); font-size:.78rem; }
+  @media (max-width:640px){ .mast-row { flex-wrap:wrap; } .nav { margin-left:0; order:3; width:100%; } .repo { margin-left:auto; } }
+
+  /* ---- hero ---- */
+  .hero { padding:34px 0 40px; position:relative; }
+  .hero .kicker { color:var(--accent); }
+  .hero h1 {
+    font-size:clamp(1.9rem,5.2vw,3.05rem); line-height:1.08; margin:14px 0 0;
+    letter-spacing:-.02em; max-width:16ch;
+  }
+  .hero .lede { margin:18px 0 0; font-size:1.06rem; color:var(--ink-2); max-width:60ch; }
+  .hero .lede b { color:var(--ink); font-weight:600; }
+  .proof {
+    margin-top:20px; padding:12px 16px; border:1px solid var(--hairline); border-left:3px solid var(--accent);
+    background:var(--panel); border-radius:0 8px 8px 0; font-size:.95rem; color:var(--ink-2); max-width:62ch;
+  }
+  .proof b { color:var(--ink); }
+
+  /* ---- stat strip ---- */
+  .stats {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden;
+    margin-top:28px; box-shadow:var(--shadow);
+  }
+  .stat { background:var(--panel); padding:16px 16px 14px; }
+  .stat .n { font-family:var(--mono); font-size:1.5rem; font-weight:650; color:var(--ink); letter-spacing:-.01em; }
+  .stat .n small { font-size:.9rem; color:var(--ink-dim); font-weight:500; }
+  .stat .l { font-size:.76rem; color:var(--ink-dim); margin-top:3px; line-height:1.35; }
+  .stat .tag { color:var(--accent); }
+
+  /* ---- figure (concept illustrations) ---- */
+  .figure { margin:28px 0 0; border:1px solid var(--hairline); border-radius:12px; background:var(--panel); padding:22px 20px 16px; box-shadow:var(--shadow); }
+  .figure svg { display:block; width:100%; height:auto; max-width:620px; margin:0 auto; }
+  .figure figcaption { margin-top:14px; font-family:var(--mono); font-size:.75rem; color:var(--ink-dim); text-align:center; line-height:1.5; }
+  .figure figcaption .tag { color:var(--accent); }
+
+  /* ---- sections ---- */
+  section { padding:40px 0; border-top:1px solid var(--hairline); }
+  .sec-head { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; }
+  .sec-head h2 { font-size:1.32rem; }
+  .sec-head .idx { font-family:var(--mono); color:var(--accent); font-size:.8rem; }
+  .sec-sub { color:var(--ink-dim); max-width:64ch; margin:0 0 22px; font-size:.95rem; }
+
+  /* ---- ledger ---- */
+  .legend { display:flex; flex-wrap:wrap; gap:14px 20px; margin-bottom:18px; font-family:var(--mono); font-size:.74rem; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; color:var(--ink-2); }
+  .led { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent); background:var(--c); }
+  .s-proven{--c:var(--ok);} .s-formal{--c:var(--formal);} .s-elab{--c:var(--elab);} .s-measured{--c:var(--measured);} .s-open{--c:var(--open);}
+
+  .ledger { display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .row { background:var(--panel); display:grid; grid-template-columns:20px 1fr auto; gap:14px; align-items:start; padding:14px 16px; }
+  .row:hover { background:var(--panel-2); }
+  .row .led { margin-top:7px; }
+  .row .what { font-weight:600; color:var(--ink); }
+  .row .what .sub { display:block; font-weight:400; color:var(--ink-dim); font-size:.86rem; margin-top:2px; }
+  .row .ev { font-family:var(--mono); font-size:.78rem; color:var(--ink-2); text-align:right; white-space:nowrap; }
+  .row .ev .st { display:block; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; margin-bottom:3px; }
+  .st-proven{color:var(--ok);} .st-formal{color:var(--formal);} .st-elab{color:var(--elab);} .st-measured{color:var(--measured);} .st-open{color:var(--open);}
+  @media (max-width:640px){
+    .row { grid-template-columns:16px 1fr; }
+    .row .ev { grid-column:2; text-align:left; white-space:normal; margin-top:2px; }
+  }
+
+  /* ---- tok/s build ---- */
+  .roof { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--hairline); border-radius:10px; padding:18px; box-shadow:var(--shadow); }
+  .card h3 { font-size:1rem; margin-bottom:4px; }
+  .card p { color:var(--ink-2); font-size:.9rem; margin:6px 0 0; }
+  .ladder { list-style:none; padding:0; margin:14px 0 0; display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:8px; overflow:hidden; }
+  .ladder li { background:var(--panel); display:flex; align-items:baseline; gap:12px; padding:11px 14px; font-size:.9rem; }
+  .ladder .rung { font-family:var(--mono); color:var(--accent); font-size:.8rem; flex:none; width:2.2em; }
+  .ladder .v { font-family:var(--mono); margin-left:auto; color:var(--ink); font-weight:600; }
+  .ladder .v em { color:var(--ink-dim); font-style:normal; font-weight:400; font-size:.82em; }
+  .note { font-size:.82rem; color:var(--ink-dim); margin-top:14px; }
+  .flow {
+    font-family:var(--mono); font-size:.84rem; color:var(--ink-2); background:var(--sunk);
+    border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; margin-top:16px; line-height:1.9;
+    overflow-x:auto;
+  }
+  .flow b { color:var(--accent); }
+  .flow .arrow { color:var(--ink-dim); }
+
+  /* ---- open ---- */
+  .open-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .open-item { background:var(--panel); padding:15px 16px; }
+  .open-item .h { display:flex; align-items:center; gap:9px; font-weight:600; color:var(--ink); font-size:.95rem; }
+  .open-item p { margin:6px 0 0; color:var(--ink-dim); font-size:.85rem; }
+  .open-item .led { width:8px; height:8px; }
+
+  @media (max-width:640px){ .stats,.roof,.open-grid { grid-template-columns:1fr; } }
+
+  footer { border-top:1px solid var(--hairline); padding:30px 0 46px; color:var(--ink-dim); font-size:.84rem; }
+  footer .disc { max-width:70ch; }
+  footer b { color:var(--ink-2); }
+  .k { font-family:var(--mono); color:var(--ink-2); }
+
+  /* ---- board datasheet additions ---- */
+  .spec { display:grid; grid-template-columns:repeat(2,1fr); gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .spec .cell { background:var(--panel); padding:15px 16px; }
+  .spec .cell .k2 { font-family:var(--mono); font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-dim); }
+  .spec .cell .v2 { margin-top:5px; color:var(--ink); font-size:.95rem; }
+  .spec .cell .v2 .tag { color:var(--accent); font-family:var(--mono); font-size:.82rem; }
+  .spec .cell .d2 { margin-top:5px; color:var(--ink-dim); font-size:.83rem; }
+  @media (max-width:640px){ .spec { grid-template-columns:1fr; } }
+  .tag { font-family:var(--mono); }
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <div class="mast-row">
+      <span class="brand"><b>W</b>PU</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <nav class="nav">
+        <a href="index.html">Overview</a>
+        <a href="board.html" class="active">Board</a>
+        <a href="roadmap.html">Roadmap</a>
+      </nav>
+      <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
+    </div>
+    <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
+      <div class="eyebrow kicker">Rung ③ design point · concept · <span class="tag">[EST]</span></div>
+      <h1>WPU appliance board</h1>
+      <p class="lede">A concept design point for the rung-③ silicon appliance: a 512&nbsp;GB LPDDR5X full-residency box holding the whole ~467&nbsp;GB Q4_K checkpoint in DRAM. <b>No board has been built.</b> Every throughput, power, and cost figure below is an estimate <span class="k">[EST]</span>; the physical PHYs are vendor IP, TB-stubbed in RTL.</p>
+      <div class="proof">The measured, in-repo result is the <b>FPGA fit</b> (rung ①) shown directly below. The board on this page is the rung-③ endpoint of the hardware ladder — a modeled target, not fabricated hardware.</div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section style="border-top:none">
+    <div class="sec-head"><h2>What exists today (measured)</h2></div>
+    <p class="sec-sub">The prove-it silicon is real: the whole product top, in its compact config with <span class="k">ACT_HW=1</span>, synthesized and placed-and-routed on a Xilinx Kintex UltraScale+ <span class="k">XCKU3P</span>. These are Vivado P&amp;R numbers, not the board below.</p>
+
+    <div class="stats" aria-label="measured FPGA fit">
+      <div class="stat">
+        <div class="n tnum">142,320 <small>LUT</small></div>
+        <div class="l"><span class="tag">87.5%</span> utilization, routed, hold met <span class="k">(MEASURED)</span></div>
+      </div>
+      <div class="stat">
+        <div class="n tnum">421 <small>DSP</small></div>
+        <div class="l"><span class="tag">0 BRAM</span> · ~100K FF on XCKU3P</div>
+      </div>
+      <div class="stat">
+        <div class="n tnum">46.5 <small>MHz</small></div>
+        <div class="l">routed <span class="tag">Fmax</span>, compact config + ACT_HW=1</div>
+      </div>
+      <div class="stat">
+        <div class="n tnum">4.6×</div>
+        <div class="l">bit-exact <span class="tag">repipeline</span> campaign closed at this factor</div>
+      </div>
+    </div>
+    <p class="note">This is rung ① (prove-it). The appliance below is rung ③ (not built). See <a href="roadmap.html">Roadmap</a> for the full ladder.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Rung-③ primary design point</h2></div>
+    <p class="sec-sub">A 512&nbsp;GB LPDDR5X full-residency box. The whole ~467&nbsp;GB Q4_K checkpoint is DRAM-resident, so expert-reuse <span class="k">h&nbsp;=&nbsp;1</span> by construction — there is no streaming tier. Cold storage is one M.2 NVMe; boot-load is ~70&nbsp;s.</p>
+
+    <figure class="figure">
+      <svg viewBox="0 0 480 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concept top-down PCB floorplan of the residency appliance board">
+        <rect x="10" y="14" width="460" height="310" rx="8" fill="var(--sunk)" stroke="var(--accent)" stroke-width="1.25"/>
+        <rect x="16" y="20" width="448" height="298" rx="6" fill="none" stroke="var(--hairline)" stroke-width="0.75"/>
+        <circle cx="24" cy="28" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <circle cx="456" cy="28" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <circle cx="24" cy="310" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <circle cx="456" cy="310" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
+        <rect x="52" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="100" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="148" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="196" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="244" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="292" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="340" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="388" y="40" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="52" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="100" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="148" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="196" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="244" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="292" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="340" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <rect x="388" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <text x="48" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="start">16 &#215; 32 GB LPDDR5X</text>
+        <line x1="72" y1="66" x2="72" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="120" y1="66" x2="120" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="168" y1="66" x2="168" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="216" y1="66" x2="216" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="264" y1="66" x2="264" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="312" y1="66" x2="312" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="360" y1="66" x2="360" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="408" y1="66" x2="408" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="72" y1="272" x2="72" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="120" y1="272" x2="120" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="168" y1="272" x2="168" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="216" y1="272" x2="216" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="264" y1="272" x2="264" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="312" y1="272" x2="312" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="360" y1="272" x2="360" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="408" y1="272" x2="408" y2="258" stroke="var(--accent)" stroke-width="0.75"/>
+        <rect x="188" y="117" width="104" height="104" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1.25"/>
+        <rect x="206" y="172" width="68" height="40" fill="none" stroke="var(--ink-2)" stroke-width="0.75" stroke-dasharray="3 2"/>
+        <text x="240" y="138" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">SoC &#183; 12&#8211;16 nm</text>
+        <text x="240" y="152" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">~9.4K MAC lanes</text>
+        <text x="240" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-2)" text-anchor="middle">@490 MHz</text>
+        <text x="240" y="196" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-dim)" text-anchor="middle">die</text>
+        <text x="362" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">1024-bit bus</text>
+        <text x="362" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle">16 &#215; 64-bit &#183; ~1.1 TB/s</text>
+        <rect x="448" y="120" width="16" height="100" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <line x1="451" y1="138" x2="461" y2="138" stroke="var(--ink-2)" stroke-width="0.5"/>
+        <line x1="451" y1="143" x2="461" y2="143" stroke="var(--ink-2)" stroke-width="0.5"/>
+        <line x1="451" y1="148" x2="461" y2="148" stroke="var(--ink-2)" stroke-width="0.5"/>
+        <text x="442" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="middle" transform="rotate(-90 442 170)">M.2 NVMe</text>
+        <text x="432" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle" transform="rotate(-90 432 170)">cold store &#183; ~70 s boot</text>
+        <rect x="4" y="150" width="18" height="22" rx="1.5" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
+        <text x="28" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">USB-C &#8212; tokens only</text>
+        <rect x="16" y="200" width="28" height="44" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1"/>
+        <text x="50" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">power &#8805; 50&#8211;78 W [EST]</text>
+        <polygon points="12,8 19,4.5 19,11.5" fill="var(--accent)"/>
+        <polygon points="468,8 461,4.5 461,11.5" fill="var(--accent)"/>
+        <line x1="19" y1="8" x2="216" y2="8" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="264" y1="8" x2="461" y2="8" stroke="var(--accent)" stroke-width="0.75"/>
+        <text x="240" y="11" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle">120 mm</text>
+        <polygon points="4,24 0.5,31 7.5,31" fill="var(--accent)"/>
+        <polygon points="4,310 0.5,303 7.5,303" fill="var(--accent)"/>
+        <line x1="4" y1="31" x2="4" y2="88" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="4" y1="112" x2="4" y2="148" stroke="var(--accent)" stroke-width="0.75"/>
+        <line x1="4" y1="174" x2="4" y2="303" stroke="var(--accent)" stroke-width="0.75"/>
+        <text x="5" y="100" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle" transform="rotate(-90 5 100)">80 mm</text>
+      </svg>
+      <figcaption>Concept board floorplan — SoC + 16&nbsp;×&nbsp;32&nbsp;GB LPDDR5X (1024-bit) on a 120&nbsp;×&nbsp;80&nbsp;mm board. <span class="tag">Schematic, not a built board; every figure [EST].</span></figcaption>
+    </figure>
+
+    <div class="spec">
+      <div class="cell">
+        <div class="k2">Memory</div>
+        <div class="v2">16 × 32&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate bus · <b>~1.1&nbsp;TB/s</b></div>
+        <div class="d2">Full residency of the ~467&nbsp;GB checkpoint in 512&nbsp;GB of DRAM.</div>
+      </div>
+      <div class="cell">
+        <div class="k2">Cold storage</div>
+        <div class="v2">One M.2 NVMe · boot-load <b>~70&nbsp;s</b></div>
+        <div class="d2">Load-once at boot; no per-token streaming path.</div>
+      </div>
+      <div class="cell">
+        <div class="k2">Throughput</div>
+        <div class="v2">≈80 tok/s <span class="tag">[measured-inputs EST]</span></div>
+        <div class="d2">Adaptive spec-chain; U(K) and the MTP accept rate r are GLM-family measured. ~95 if GLM-5.2's deeper MTP hits its published accept depth. A ~1.54&nbsp;TB/s "v3-proto" variant models ~111 <span class="tag">[EST]</span>.</div>
+      </div>
+      <div class="cell">
+        <div class="k2">Power</div>
+        <div class="v2">≥50–78&nbsp;W <span class="tag">[EST, re-derived]</span></div>
+        <div class="d2">DRAM rail 35–53&nbsp;W from 4–6&nbsp;pJ/bit. The SoC term is UNVERIFIED — the older ~40–60&nbsp;W figure rested on a rail that did not reproduce, so this is a re-derived estimate.</div>
+      </div>
+      <div class="cell">
+        <div class="k2">SoC / compute</div>
+        <div class="v2">12–16&nbsp;nm · ~9.4K MAC lanes @ 490&nbsp;MHz</div>
+        <div class="d2">Sized to consume 1.1&nbsp;TB/s (~12.7K MAC lanes for the 1.54&nbsp;TB/s v3-proto variant).</div>
+      </div>
+      <div class="cell">
+        <div class="k2">Physical / BOM</div>
+        <div class="v2">Board <b>120 × 80&nbsp;mm</b> · ~$1.8–2.4k <span class="tag">[EST]</span></div>
+        <div class="d2">On-substrate 1024-bit memory. BOM is a planning number, not a quote — memory/storage/board-dominated; the compute die is a minority of cost.</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Positioning</h2></div>
+    <p class="sec-sub">Targets Opus / Gemini-Pro-class per-user interactive speed. Throughput-farm silicon (Groq, Cerebras) is a different bracket.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Not built</h2></div>
+    <p class="sec-sub">This board is a design point. The DDR5 / NVMe / USB-C PHYs are vendor IP, TB-stubbed in RTL. Every power, BOM, and tok/s figure on this page is an estimate <span class="k">[EST]</span>.</p>
+    <div class="open-grid">
+      <div class="open-item"><div class="h"><i class="led s-open"></i>No board fabricated</div><p>The appliance is the rung-③ endpoint of the hardware ladder — modeled, not built. No hardware measurement of tok/s, power, or cost exists.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed in RTL. Licensed PHY IP is integrated and signed off at the silicon rung.</p></div>
+    </div>
+    <p class="note">Source: <span class="k">docs/R3_APPLIANCE_SPEC.md</span>.</p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="disc">Rung-③ appliance design point. <b>No board has been built.</b> The measured, in-repo result is the FPGA fit on XCKU3P; every throughput, power, and cost figure for the appliance is a modeled estimate <span class="k">[EST]</span> or <span class="k">[measured-inputs EST]</span>, not measured on hardware. Physical PHYs are vendor IP, TB-stubbed in RTL.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; source: docs/R3_APPLIANCE_SPEC.md</p>
+  </div>
+</footer>
+
+</body>
+</html>

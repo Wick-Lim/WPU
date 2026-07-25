@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WPU — GLM-5.2 Q4_K local-inference accelerator</title>
+<style>
+  :root {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+      --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+      --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+      --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+      --grid:rgba(0,0,0,.035);
+      --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+  }
+  :root[data-theme="light"] {
+    --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+    --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+    --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+    --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+    --grid:rgba(0,0,0,.035);
+    --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap { max-width:1000px; margin:0 auto; padding:0 24px; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; text-underline-offset:3px; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:3px; }
+  h1,h2,h3 { text-wrap:balance; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .mono { font-family:var(--mono); }
+  .eyebrow {
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+  .tnum { font-variant-numeric:tabular-nums; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    border-bottom:1px solid var(--hairline);
+    background:linear-gradient(180deg,var(--panel),var(--ground));
+    position:relative; overflow:hidden;
+  }
+  header.mast::before {
+    content:""; position:absolute; inset:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px; pointer-events:none;
+    -webkit-mask-image:linear-gradient(180deg,#000,transparent); mask-image:linear-gradient(180deg,#000,transparent);
+  }
+  .mast-row { display:flex; align-items:baseline; gap:14px; padding:26px 0 4px; position:relative; }
+  .brand {
+    font-family:var(--mono); font-weight:700; font-size:1.5rem; letter-spacing:.02em;
+    color:var(--ink);
+  }
+  .brand b { color:var(--accent); font-weight:700; }
+  .brand-def { color:var(--ink-dim); font-family:var(--mono); font-size:.8rem; }
+  .nav { margin-left:auto; display:flex; gap:20px; font-family:var(--mono); font-size:.82rem; }
+  .nav a { color:var(--ink-dim); padding:2px 0; border-bottom:2px solid transparent; }
+  .nav a:hover { color:var(--ink); text-decoration:none; }
+  .nav a.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .repo { font-family:var(--mono); font-size:.78rem; }
+  @media (max-width:640px){ .mast-row { flex-wrap:wrap; } .nav { margin-left:0; order:3; width:100%; } .repo { margin-left:auto; } }
+
+  /* ---- hero ---- */
+  .hero { padding:34px 0 40px; position:relative; }
+  .hero .kicker { color:var(--accent); }
+  .hero h1 {
+    font-size:clamp(1.9rem,5.2vw,3.05rem); line-height:1.08; margin:14px 0 0;
+    letter-spacing:-.02em; max-width:16ch;
+  }
+  .hero .lede { margin:18px 0 0; font-size:1.06rem; color:var(--ink-2); max-width:60ch; }
+  .hero .lede b { color:var(--ink); font-weight:600; }
+  .proof {
+    margin-top:20px; padding:12px 16px; border:1px solid var(--hairline); border-left:3px solid var(--accent);
+    background:var(--panel); border-radius:0 8px 8px 0; font-size:.95rem; color:var(--ink-2); max-width:62ch;
+  }
+  .proof b { color:var(--ink); }
+
+  /* ---- stat strip ---- */
+  .stats {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden;
+    margin-top:28px; box-shadow:var(--shadow);
+  }
+  .stat { background:var(--panel); padding:16px 16px 14px; }
+  .stat .n { font-family:var(--mono); font-size:1.5rem; font-weight:650; color:var(--ink); letter-spacing:-.01em; }
+  .stat .n small { font-size:.9rem; color:var(--ink-dim); font-weight:500; }
+  .stat .l { font-size:.76rem; color:var(--ink-dim); margin-top:3px; line-height:1.35; }
+  .stat .tag { color:var(--accent); }
+
+  /* ---- figure (concept illustrations) ---- */
+  .figure { margin:28px 0 0; border:1px solid var(--hairline); border-radius:12px; background:var(--panel); padding:22px 20px 16px; box-shadow:var(--shadow); }
+  .figure svg { display:block; width:100%; height:auto; max-width:600px; margin:0 auto; }
+  .figure figcaption { margin-top:14px; font-family:var(--mono); font-size:.75rem; color:var(--ink-dim); text-align:center; line-height:1.5; }
+  .figure figcaption .tag { color:var(--accent); }
+  /* front LED panel : scrolling token ticker + blinking status LED */
+  @keyframes tok-scroll { from { transform:translateX(0); } to { transform:translateX(-300px); } }
+  @keyframes led-blink  { 0%,45% { opacity:1; } 55%,100% { opacity:.2; } }
+  .tok-ticker { animation:tok-scroll 9s linear infinite; }
+  .led-gen    { animation:led-blink 1.1s steps(1,end) infinite; }
+  @media (prefers-reduced-motion: reduce) { .tok-ticker, .led-gen { animation:none; } }
+
+  /* ---- sections ---- */
+  section { padding:40px 0; border-top:1px solid var(--hairline); }
+  .sec-head { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; }
+  .sec-head h2 { font-size:1.32rem; }
+  .sec-head .idx { font-family:var(--mono); color:var(--accent); font-size:.8rem; }
+  .sec-sub { color:var(--ink-dim); max-width:64ch; margin:0 0 22px; font-size:.95rem; }
+
+  /* ---- ledger ---- */
+  .legend { display:flex; flex-wrap:wrap; gap:14px 20px; margin-bottom:18px; font-family:var(--mono); font-size:.74rem; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; color:var(--ink-2); }
+  .led { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent); background:var(--c); }
+  .s-proven{--c:var(--ok);} .s-formal{--c:var(--formal);} .s-elab{--c:var(--elab);} .s-measured{--c:var(--measured);} .s-open{--c:var(--open);}
+
+  .ledger { display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .row { background:var(--panel); display:grid; grid-template-columns:20px 1fr auto; gap:14px; align-items:start; padding:14px 16px; }
+  .row:hover { background:var(--panel-2); }
+  .row .led { margin-top:7px; }
+  .row .what { font-weight:600; color:var(--ink); }
+  .row .what .sub { display:block; font-weight:400; color:var(--ink-dim); font-size:.86rem; margin-top:2px; }
+  .row .ev { font-family:var(--mono); font-size:.78rem; color:var(--ink-2); text-align:right; white-space:nowrap; }
+  .row .ev .st { display:block; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; margin-bottom:3px; }
+  .st-proven{color:var(--ok);} .st-formal{color:var(--formal);} .st-elab{color:var(--elab);} .st-measured{color:var(--measured);} .st-open{color:var(--open);}
+  @media (max-width:640px){
+    .row { grid-template-columns:16px 1fr; }
+    .row .ev { grid-column:2; text-align:left; white-space:normal; margin-top:2px; }
+  }
+
+  /* ---- tok/s build ---- */
+  .roof { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--hairline); border-radius:10px; padding:18px; box-shadow:var(--shadow); }
+  .card h3 { font-size:1rem; margin-bottom:4px; }
+  .card p { color:var(--ink-2); font-size:.9rem; margin:6px 0 0; }
+  .ladder { list-style:none; padding:0; margin:14px 0 0; display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:8px; overflow:hidden; }
+  .ladder li { background:var(--panel); display:flex; align-items:baseline; gap:12px; padding:11px 14px; font-size:.9rem; }
+  .ladder .rung { font-family:var(--mono); color:var(--accent); font-size:.8rem; flex:none; width:2.2em; }
+  .ladder .v { font-family:var(--mono); margin-left:auto; color:var(--ink); font-weight:600; }
+  .ladder .v em { color:var(--ink-dim); font-style:normal; font-weight:400; font-size:.82em; }
+  .note { font-size:.82rem; color:var(--ink-dim); margin-top:14px; }
+  .flow {
+    font-family:var(--mono); font-size:.84rem; color:var(--ink-2); background:var(--sunk);
+    border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; margin-top:16px; line-height:1.9;
+    overflow-x:auto;
+  }
+  .flow b { color:var(--accent); }
+  .flow .arrow { color:var(--ink-dim); }
+
+  /* ---- open ---- */
+  .open-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .open-item { background:var(--panel); padding:15px 16px; }
+  .open-item .h { display:flex; align-items:center; gap:9px; font-weight:600; color:var(--ink); font-size:.95rem; }
+  .open-item p { margin:6px 0 0; color:var(--ink-dim); font-size:.85rem; }
+  .open-item .led { width:8px; height:8px; }
+
+  @media (max-width:640px){ .stats,.roof,.open-grid { grid-template-columns:1fr; } }
+
+  footer { border-top:1px solid var(--hairline); padding:30px 0 46px; color:var(--ink-dim); font-size:.84rem; }
+  footer .disc { max-width:70ch; }
+  footer b { color:var(--ink-2); }
+  .k { font-family:var(--mono); color:var(--ink-2); }
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <div class="mast-row">
+      <span class="brand"><b>W</b>PU</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <nav class="nav">
+        <a href="index.html" class="active">Overview</a>
+        <a href="board.html">Board</a>
+        <a href="roadmap.html">Roadmap</a>
+      </nav>
+      <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
+    </div>
+    <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
+      <div class="eyebrow kicker">Synthesizable inference accelerator</div>
+      <h1>The full 753B GLM-5.2, offline, on a local box.</h1>
+      <p class="lede">The published GGUF k-quant of <b>GLM-5.2</b> (<span class="k">UD-Q4_K_XL</span>, ~467&nbsp;GB, a 753B-param MoE, ~40B active/token) streamed through a Verilog datapath. The Q4_K GEMM core is <b>bit-exact to an independent ggml reference</b>; the model is wrapped by a multi-channel DDR5 + NVMe memory system with formal proofs on the control plane. Single-user, air-gapped: provisioned once with the weights, then run with no network path in or out.</p>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="stats" aria-label="load-bearing measured facts">
+    <div class="stat">
+      <div class="n tnum">376,586,240</div>
+      <div class="l">weights bitwise-equal to llama.cpp dequant, on <span class="tag">real GGUF bytes</span> (Q4_K/Q6_K/Q8_0)</div>
+    </div>
+    <div class="stat">
+      <div class="n tnum">1155<small>/1155</small></div>
+      <div class="l">assembled full-forward tests <span class="tag">bit-exact</span> vs a numpy reference (<span class="k">make model-q4k</span>)</div>
+    </div>
+    <div class="stat">
+      <div class="n tnum">142,320 <small>LUT</small></div>
+      <div class="l">real Vivado P&amp;R on XCKU3P — <span class="tag">87.5%</span>, routed, hold met (<span class="k">MEASURED</span>)</div>
+    </div>
+    <div class="stat">
+      <div class="n tnum">67<small> gates</small></div>
+      <div class="l">full release-gate green, every test count <span class="tag">exact-pinned</span></div>
+    </div>
+  </div>
+
+  <figure class="figure">
+    <svg viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concept front 3/4 drawing of the appliance with a front LED status and token-stream panel">
+      <defs><clipPath id="ledwin"><rect x="166" y="156" width="118" height="28"/></clipPath></defs>
+      <!-- front 3/4 view: the front face carries the LED panel; USB-C + power are on the rear (not shown) -->
+      <polygon points="114,145 300,145 372,80 186,80" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1.25" stroke-linejoin="round"/>
+      <polygon points="300,145 372,80 372,130 300,195" fill="var(--sunk)" stroke="var(--ink)" stroke-width="1.25" stroke-linejoin="round"/>
+      <polygon points="114,145 300,145 300,195 114,195" fill="var(--panel)" stroke="var(--ink)" stroke-width="1.25" stroke-linejoin="round"/>
+      <!-- vents on the top face -->
+      <line x1="150" y1="131" x2="300" y2="131" stroke="var(--hairline)" stroke-width="0.75"/>
+      <line x1="158" y1="123" x2="308" y2="123" stroke="var(--hairline)" stroke-width="0.75"/>
+      <line x1="166" y1="115" x2="316" y2="115" stroke="var(--hairline)" stroke-width="0.75"/>
+      <line x1="174" y1="107" x2="324" y2="107" stroke="var(--hairline)" stroke-width="0.75"/>
+      <line x1="182" y1="99"  x2="332" y2="99"  stroke="var(--hairline)" stroke-width="0.75"/>
+      <!-- ===== front LED panel (recessed) : status LEDs + scrolling token ticker ===== -->
+      <rect x="126" y="152" width="162" height="34" rx="3" fill="var(--sunk)" stroke="var(--hairline)" stroke-width="1"/>
+      <circle cx="140" cy="162" r="2.6" fill="var(--accent)"/>
+      <circle cx="140" cy="170" r="2.6" fill="var(--ok)"/>
+      <circle cx="140" cy="178" r="2.6" fill="var(--measured)" class="led-gen"/>
+      <line x1="153" y1="155" x2="153" y2="183" stroke="var(--hairline)" stroke-width="0.6"/>
+      <g clip-path="url(#ledwin)">
+        <g class="tok-ticker">
+          <text x="168" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; Here's a concise answer, decoded on-device, one token at a time.   </text>
+          <text x="468" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; Here's a concise answer, decoded on-device, one token at a time.   </text>
+        </g>
+      </g>
+      <text x="207" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-dim)" text-anchor="middle">front LED panel &#183; status + live token stream</text>
+      <text x="240" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="var(--ink-2)" text-anchor="middle">~120 &#215; 80 mm class &#183; &#8805;50&#8211;78 W [EST]</text>
+    </svg>
+    <figcaption>Expected product — a compact desktop appliance (&#8805;50&#8211;78 W [EST] &#8212; a floor, the SoC term is unverified; actively cooled, heat-pipe + fan class) with a front LED panel streaming status and the decoded text as it generates; USB-C and power on the rear. <span class="tag">Concept sketch, not a built product; every figure [EST]. Sample output is illustrative.</span></figcaption>
+  </figure>
+
+  <section>
+    <div class="sec-head"><h2>Verification ledger</h2></div>
+    <p class="sec-sub">Each claim is tagged for the kind of evidence behind it. “Bit-exact” means bit-exact to the ggml-Q4_K reference <span class="k">tools/q4k_ref.py</span>, which is itself proven equal to real GGUF bytes at the dequant layer.</p>
+
+    <div class="legend">
+      <span><i class="led s-proven"></i>PROVEN — gated bit-exact / functional sim</span>
+      <span><i class="led s-formal"></i>FORMAL — solver proof (memory/control plane)</span>
+      <span><i class="led s-measured"></i>MEASURED — real cycles / real silicon fit</span>
+      <span><i class="led s-elab"></i>ELABORATED — structural, no golden</span>
+      <span><i class="led s-open"></i>OPEN — not yet done</span>
+    </div>
+
+    <div class="ledger">
+      <div class="row"><i class="led s-proven"></i><div class="what">Q4_K GEMM core <span class="sub">block dequant → fp32 MAC → bf16 · the one true bit-exact datapath result</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact vs ggml</span>glm_matmul_q4k 160/160</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Assembled full forward pass <span class="sub">embed → L×(MLA+DSA+MoE) → norm → LM-head → argmax; logits + argmax + h_state</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact vs numpy ref</span>make model-q4k 1155/1155</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Mixed-type path <span class="sub">Q6_K / Q8_0 / F16 tensors of the dynamic UD-Q4_K_XL mix — all four types</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact</span>make mixedtype</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Speculative decode loop <span class="sub">committed stream === PE_M=1 greedy decode (spec==greedy), K=1..3 × accept schedules</span></div><div class="ev"><span class="st st-proven">Proven · spec==greedy</span>make spec-greedy 31/31</div></div>
+      <div class="row"><i class="led s-measured"></i><div class="what">A_eff amortization <span class="sub">the “K drafts verified in ONE weight-load” lever, read from the hardware weight_loads counter — ALL-ACCEPT hits the K+1/load ceiling</span></div><div class="ev"><span class="st st-measured">Measured · HW counter</span>K=3 → 4.00 tok/load</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Dequant vs real GGUF bytes <span class="sub">q4k_ref vs llama.cpp’s own dequantize_row_* on two real published GGUFs</span></div><div class="ev"><span class="st st-proven">Proven · on real bytes</span>376,586,240 weights</div></div>
+      <div class="row"><i class="led s-formal"></i><div class="what">Memory-system controllers <span class="sub">routing / FIFO no-overflow / token-accounting / ECC identity / done-gates</span></div><div class="ev"><span class="st st-formal">Formal · BMC + k-induction</span>7 ctrl + 1 ECC · 5 unbounded</div></div>
+      <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit <span class="sub">whole 2-clock product top synthesized AND placed-and-routed on Kintex UltraScale+ XCKU3P</span></div><div class="ev"><span class="st st-measured">Measured · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
+      <div class="row"><i class="led s-elab"></i><div class="what">Full 753B UD-Q4_K_XL shape <span class="sub">DIM 6144 / L=78 / 256-expert / VOCAB 154880 — type/width check, no stimulus</span></div><div class="ev"><span class="st st-elab">Elaborated · clean</span>0 errors</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">llama.cpp whole-runtime equality <span class="sub">attention / accumulation orders differ by design; the 467 GB file not yet run end-to-end</span></div><div class="ev"><span class="st st-open">Open · out-of-contract</span>needs a GPU host</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Throughput</h2></div>
+    <p class="sec-sub">Every tok/s figure is modeled <span class="k">[EST]</span>, not measured on silicon. The amortization mechanism is measured in RTL (the hardware weight-load counter); the accept rate feeding it is a measured model property; the absolute tok/s is their product.</p>
+
+    <div class="roof">
+      <div class="card">
+        <h3>How the number is built</h3>
+        <div class="flow">
+          <span>25.50 GB/token</span> <span class="arrow">— no speculation, PE_M=1 (measured mechanism)</span><br>
+          <span class="arrow">÷</span> <b>A_eff = 1.87</b> <span class="arrow">— measured accept rate r₁=0.87</span><br>
+          <span>= 13.87 GB/token</span><br>
+          <span class="arrow">→ at 1.54 TB/s →</span> <b>~111 tok/s [EST]</b>
+        </div>
+        <p>The composed top <span class="k">glm_q4k_spec_system</span> holds the memory system, the <span class="k">PE_M=K+1</span> batched verify, and the accept/reject loop at once. Its hardware counter shows ALL-ACCEPT committing exactly K+1 tokens per weight-load (K=3 → 4.00), and the committed stream equals a plain greedy decode.</p>
+      </div>
+      <div class="card">
+        <h3>Rung ladder — set by memory bandwidth</h3>
+        <p>Throughput is bandwidth-bound, and bandwidth is set by the chip’s IO/PHY budget, which is set by the rung.</p>
+        <ul class="ladder">
+          <li><span class="rung">①</span> Prove-it FPGA <span class="v">~5–8 <em>tok/s</em></span></li>
+          <li><span class="rung">②</span> Funded custom board <span class="v">~15–40 <em>tok/s</em></span></li>
+          <li><span class="rung">③</span> 512GB residency box <span class="v">≈80 <em>tok/s</em></span></li>
+        </ul>
+        <p class="note">Rung-③ design point ≈80 tok/s <span class="k">[measured-inputs EST]</span> — U(K) and the MTP accept rate r are both GLM-family measured. ~95 if GLM-5.2’s deeper MTP hits its published accept depth.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>How it runs</h2></div>
+    <p class="sec-sub">NVMe/PCIe-bandwidth-bound by design, to keep it cheap: stream MoE experts from the SSD through a DDR working cache into a mostly-idle Q4_K die.</p>
+    <div class="flow">
+      1 TB NVMe <span class="arrow">──►</span> flash_xbar <span class="arrow">──►</span> DDR working set/cache <span class="arrow">──►</span> ddr5_xbar <span class="arrow">──►</span> <b>Q4_K compute die</b> <span class="arrow">──►</span> token<br>
+      <span class="arrow">~467 GB weights &nbsp; N-ch + deep queue &nbsp; LRU+freq+prefetch &nbsp; N-ch banked &nbsp; MLA + DSA + MoE · ggml dequant → fp32 MAC → bf16</span>
+    </div>
+    <p class="note">The whole memory system is <b>byte-agnostic</b> — it moves addresses, slots, and IDs, never weight bytes. Verification is byte-identical on regression; the controllers add bounded model checking, some lifted to unbounded k-induction. No formal proof touches the numeric datapath — that plane is held by the bit-exact simulation goldens.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Not yet done</h2></div>
+    <p class="sec-sub">Open gaps — most sit at the physical/process boundary that an RTL repo cannot close.</p>
+    <div class="open-grid">
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The 467 GB GLM file run end-to-end and compared against llama.cpp’s runtime argmax. Needs a GPU / large-memory host; no in-repo tool yet.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed. Licensed PHY IP is integrated + signed off at the silicon rung.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo; running on a physical dev board needs the board + pin XDC + a MIG bridge.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Fab tapeout &amp; dual-port BIST collar</div><p>ASIC tapeout is the rung-③ volume endgame. On-die test: the die already carries an inline clock gate; per-macro BIST collars are memory-compiler-generated in the physical flow.</p></div>
+    </div>
+    <p class="note">Every tok/s, cost, energy, and LOI figure is <span class="k">[EST]</span> — roofline-modeled with measured model-side inputs, not measured on hardware.</p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="disc">Status of the Q4_K track on <span class="k">main</span>. Bit-exact means bit-exact to an independent ggml reimplementation, proven on real GGUF bytes at the dequant layer; llama.cpp whole-runtime equality is out-of-contract by design. Throughput and cost figures are modeled estimates, not measured on hardware.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; a GLM-5.2 Q4_K local-inference accelerator in Verilog</p>
+  </div>
+</footer>
+</body>
+</html>
