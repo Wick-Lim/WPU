@@ -1,4 +1,4 @@
-# Porting AIPU to Laguna-S-2.1 (UD-Q4_K_XL)
+# Porting WPU to Laguna-S-2.1 (UD-Q4_K_XL)
 
 > **Status (branch `laguna-s-2.1`).** Config LOCKED + verified · dequant inherited
 > (format-level) · **MoE path bit-exact in RTL** · attention + full forward
