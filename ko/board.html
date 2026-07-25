@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WPU — appliance board (design point)</title>
+<title>WPU — 어플라이언스 보드 (설계 지점)</title>
 <style>
   :root {
     --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
@@ -192,8 +192,8 @@
   @media (max-width:640px){ .spec { grid-template-columns:1fr; } }
   .tag { font-family:var(--mono); }
 </style>
-<link rel="alternate" hreflang="en" href="./board.html">
-<link rel="alternate" hreflang="ko" href="./ko/board.html">
+<link rel="alternate" hreflang="en" href="../board.html">
+<link rel="alternate" hreflang="ko" href="./board.html">
 </head>
 <body>
 
@@ -203,18 +203,18 @@
       <span class="brand"><b>W</b>PU</span>
       <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
       <nav class="nav">
-        <a href="index.html">Overview</a>
-        <a href="board.html" class="active">Board</a>
-        <a href="roadmap.html">Roadmap</a>
+        <a href="index.html">개요</a>
+        <a href="board.html" class="active">보드</a>
+        <a href="roadmap.html">로드맵</a>
       </nav>
-      <a class="lang" href="ko/board.html" hreflang="ko" lang="ko">한국어</a>
+      <a class="lang" href="../board.html" hreflang="en" lang="en">English</a>
       <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
     </div>
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
-      <div class="eyebrow kicker">Rung ③ design point · concept · <span class="tag">[EST]</span></div>
-      <h1>WPU appliance board</h1>
-      <p class="lede">A concept design point for the rung-③ silicon appliance: a 512&nbsp;GB LPDDR5X full-residency box holding the whole ~467&nbsp;GB Q4_K checkpoint in DRAM. <b>No board has been built.</b> Every throughput, power, and cost figure below is an estimate <span class="k">[EST]</span>; the physical PHYs are vendor IP, TB-stubbed in RTL.</p>
-      <div class="proof">The measured, in-repo result is the <b>FPGA fit</b> (rung ①) shown directly below. The board on this page is the rung-③ endpoint of the hardware ladder — a modeled target, not fabricated hardware.</div>
+      <div class="eyebrow kicker">3단계 설계 지점 · 개념 설계 · <span class="tag">[추정]</span></div>
+      <h1>WPU 어플라이언스 보드</h1>
+      <p class="lede">3단계 실리콘 어플라이언스의 개념 설계 지점: ~467&nbsp;GB Q4_K 체크포인트 전체를 DRAM에 상주시키는 512&nbsp;GB LPDDR5X 완전 상주 박스다. <b>보드는 제작된 적이 없다.</b> 아래의 모든 처리량·전력·비용 수치는 추정치 <span class="k">[추정]</span>이며, 물리 PHY는 벤더 IP로서 RTL에서는 testbench 스텁으로만 존재한다.</p>
+      <div class="proof">저장소 안에서 실측된 결과는 바로 아래에 제시된 <b>FPGA fit</b>(1단계)이다. 이 페이지의 보드는 하드웨어 사다리의 3단계 종착점 — 모델링된 목표이며, 제작된 하드웨어가 아니다.</div>
     </div>
   </div>
 </header>
@@ -222,36 +222,36 @@
 <div class="wrap">
 
   <section style="border-top:none">
-    <div class="sec-head"><h2>What exists today (measured)</h2></div>
-    <p class="sec-sub">The prove-it silicon is real: the whole product top, in its compact config with <span class="k">ACT_HW=1</span>, synthesized and placed-and-routed on a Xilinx Kintex UltraScale+ <span class="k">XCKU3P</span>. These are Vivado P&amp;R numbers, not the board below.</p>
+    <div class="sec-head"><h2>오늘 존재하는 것 (실측)</h2></div>
+    <p class="sec-sub">증명용 실리콘은 실재한다: 제품 top 전체를 <span class="k">ACT_HW=1</span> 컴팩트 config로 Xilinx Kintex UltraScale+ <span class="k">XCKU3P</span>에 합성하고 place-and-route까지 마쳤다. 아래 보드가 아니라 Vivado P&amp;R 수치다.</p>
 
-    <div class="stats" aria-label="measured FPGA fit">
+    <div class="stats" aria-label="실측 FPGA fit">
       <div class="stat">
         <div class="n tnum">142,320 <small>LUT</small></div>
-        <div class="l"><span class="tag">87.5%</span> utilization, routed, hold met <span class="k">(MEASURED)</span></div>
+        <div class="l"><span class="tag">87.5%</span> 사용률, routed, hold 충족 <span class="k">(실측)</span></div>
       </div>
       <div class="stat">
         <div class="n tnum">421 <small>DSP</small></div>
-        <div class="l"><span class="tag">0 BRAM</span> · ~100K FF on XCKU3P</div>
+        <div class="l"><span class="tag">0 BRAM</span> · XCKU3P에서 ~100K FF</div>
       </div>
       <div class="stat">
         <div class="n tnum">46.5 <small>MHz</small></div>
-        <div class="l">routed <span class="tag">Fmax</span>, compact config + ACT_HW=1</div>
+        <div class="l">routed <span class="tag">Fmax</span>, 컴팩트 config + ACT_HW=1</div>
       </div>
       <div class="stat">
         <div class="n tnum">4.6×</div>
-        <div class="l">bit-exact <span class="tag">repipeline</span> campaign closed at this factor</div>
+        <div class="l">bit-exact <span class="tag">repipeline</span> 작업이 이 배수에서 종료되었다</div>
       </div>
     </div>
-    <p class="note">This is rung ① (prove-it). The appliance below is rung ③ (not built). See <a href="roadmap.html">Roadmap</a> for the full ladder.</p>
+    <p class="note">여기까지가 1단계(증명)다. 아래 어플라이언스는 3단계(미제작)다. 사다리 전체는 <a href="roadmap.html">로드맵</a>을 참조.</p>
   </section>
 
   <section>
-    <div class="sec-head"><h2>Rung-③ primary design point</h2></div>
-    <p class="sec-sub">A 512&nbsp;GB LPDDR5X full-residency box. The whole ~467&nbsp;GB Q4_K checkpoint is DRAM-resident, so expert-reuse <span class="k">h&nbsp;=&nbsp;1</span> by construction — there is no streaming tier. Cold storage is one M.2 NVMe; boot-load is ~70&nbsp;s.</p>
+    <div class="sec-head"><h2>3단계 주 설계 지점</h2></div>
+    <p class="sec-sub">512&nbsp;GB LPDDR5X 완전 상주 박스다. ~467&nbsp;GB Q4_K 체크포인트 전체가 DRAM에 상주하므로 expert 재사용 <span class="k">h&nbsp;=&nbsp;1</span>이 구조적으로 성립한다 — 스트리밍 계층 자체가 없다. 콜드 스토리지는 M.2 NVMe 한 장이며, 부트 로드는 ~70&nbsp;s다.</p>
 
     <figure class="figure">
-      <svg viewBox="0 0 480 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concept top-down PCB floorplan of the residency appliance board">
+      <svg viewBox="0 0 480 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="상주형 어플라이언스 보드의 개념 top-down PCB 플로어플랜">
         <rect x="10" y="14" width="460" height="310" rx="8" fill="var(--sunk)" stroke="var(--accent)" stroke-width="1.25"/>
         <rect x="16" y="20" width="448" height="298" rx="6" fill="none" stroke="var(--hairline)" stroke-width="0.75"/>
         <circle cx="24" cy="28" r="3.5" fill="none" stroke="var(--ink-dim)" stroke-width="1"/>
@@ -294,21 +294,21 @@
         <rect x="188" y="117" width="104" height="104" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1.25"/>
         <rect x="206" y="172" width="68" height="40" fill="none" stroke="var(--ink-2)" stroke-width="0.75" stroke-dasharray="3 2"/>
         <text x="240" y="138" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">SoC &#183; 12&#8211;16 nm</text>
-        <text x="240" y="152" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">~9.4K MAC lanes</text>
+        <text x="240" y="152" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">~9.4K MAC 레인</text>
         <text x="240" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-2)" text-anchor="middle">@490 MHz</text>
         <text x="240" y="196" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-dim)" text-anchor="middle">die</text>
-        <text x="362" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">1024-bit bus</text>
+        <text x="362" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">1024-bit 버스</text>
         <text x="362" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle">16 &#215; 64-bit &#183; ~1.1 TB/s</text>
         <rect x="448" y="120" width="16" height="100" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
         <line x1="451" y1="138" x2="461" y2="138" stroke="var(--ink-2)" stroke-width="0.5"/>
         <line x1="451" y1="143" x2="461" y2="143" stroke="var(--ink-2)" stroke-width="0.5"/>
         <line x1="451" y1="148" x2="461" y2="148" stroke="var(--ink-2)" stroke-width="0.5"/>
         <text x="442" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="middle" transform="rotate(-90 442 170)">M.2 NVMe</text>
-        <text x="432" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle" transform="rotate(-90 432 170)">cold store &#183; ~70 s boot</text>
+        <text x="432" y="170" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle" transform="rotate(-90 432 170)">콜드 스토리지 &#183; ~70 s 부트</text>
         <rect x="4" y="150" width="18" height="22" rx="1.5" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
-        <text x="28" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">USB-C &#8212; tokens only</text>
+        <text x="28" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">USB-C &#8212; 토큰 전용</text>
         <rect x="16" y="200" width="28" height="44" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1"/>
-        <text x="50" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">power &#8805; 50&#8211;78 W [EST]</text>
+        <text x="50" y="224" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink)" text-anchor="start">전력 &#8805; 50&#8211;78 W [추정]</text>
         <polygon points="12,8 19,4.5 19,11.5" fill="var(--accent)"/>
         <polygon points="468,8 461,4.5 461,11.5" fill="var(--accent)"/>
         <line x1="19" y1="8" x2="216" y2="8" stroke="var(--accent)" stroke-width="0.75"/>
@@ -321,64 +321,64 @@
         <line x1="4" y1="174" x2="4" y2="303" stroke="var(--accent)" stroke-width="0.75"/>
         <text x="5" y="100" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle" transform="rotate(-90 5 100)">80 mm</text>
       </svg>
-      <figcaption>Concept board floorplan — SoC + 16&nbsp;×&nbsp;32&nbsp;GB LPDDR5X (1024-bit) on a 120&nbsp;×&nbsp;80&nbsp;mm board. <span class="tag">Schematic, not a built board; every figure [EST].</span></figcaption>
+      <figcaption>개념 보드 플로어플랜 — 120&nbsp;×&nbsp;80&nbsp;mm 보드 위의 SoC + 16&nbsp;×&nbsp;32&nbsp;GB LPDDR5X (1024-bit). <span class="tag">제작된 보드가 아닌 개념도이며, 모든 수치는 [추정].</span></figcaption>
     </figure>
 
     <div class="spec">
       <div class="cell">
-        <div class="k2">Memory</div>
-        <div class="v2">16 × 32&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate bus · <b>~1.1&nbsp;TB/s</b></div>
-        <div class="d2">Full residency of the ~467&nbsp;GB checkpoint in 512&nbsp;GB of DRAM.</div>
+        <div class="k2">메모리</div>
+        <div class="v2">16 × 32&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate 버스 · <b>~1.1&nbsp;TB/s</b></div>
+        <div class="d2">512&nbsp;GB DRAM에 ~467&nbsp;GB 체크포인트를 완전 상주.</div>
       </div>
       <div class="cell">
-        <div class="k2">Cold storage</div>
-        <div class="v2">One M.2 NVMe · boot-load <b>~70&nbsp;s</b></div>
-        <div class="d2">Load-once at boot; no per-token streaming path.</div>
+        <div class="k2">콜드 스토리지</div>
+        <div class="v2">M.2 NVMe 1장 · 부트 로드 <b>~70&nbsp;s</b></div>
+        <div class="d2">부팅 시 1회 로드하며, 토큰 단위 스트리밍 경로는 없다.</div>
       </div>
       <div class="cell">
-        <div class="k2">Throughput</div>
-        <div class="v2">≈80 tok/s <span class="tag">[measured-inputs EST]</span></div>
-        <div class="d2">Adaptive spec-chain; U(K) and the MTP accept rate r are GLM-family measured. ~95 if GLM-5.2's deeper MTP hits its published accept depth. A ~1.54&nbsp;TB/s "v3-proto" variant models ~111 <span class="tag">[EST]</span>.</div>
+        <div class="k2">처리량</div>
+        <div class="v2">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></div>
+        <div class="d2">적응형 spec-chain 방식이며, U(K)와 MTP accept rate r은 GLM 계열에서 실측된 값이다. GLM-5.2의 더 깊은 MTP가 공개된 accept depth에 도달한다면 ~95. ~1.54&nbsp;TB/s "v3-proto" 변형은 ~111로 모델링된다 <span class="tag">[추정]</span>.</div>
       </div>
       <div class="cell">
-        <div class="k2">Power</div>
-        <div class="v2">≥50–78&nbsp;W <span class="tag">[EST, re-derived]</span></div>
-        <div class="d2">DRAM rail 35–53&nbsp;W from 4–6&nbsp;pJ/bit. The SoC term is UNVERIFIED — the older ~40–60&nbsp;W figure rested on a rail that did not reproduce, so this is a re-derived estimate.</div>
+        <div class="k2">전력</div>
+        <div class="v2">≥50–78&nbsp;W <span class="tag">[추정, 재유도]</span></div>
+        <div class="d2">DRAM 레일은 4–6&nbsp;pJ/bit 기준 35–53&nbsp;W. SoC 항은 미검증이다 — 이전의 ~40–60&nbsp;W 수치는 재현되지 않은 전력 레일 근거에 기대고 있었으므로, 이 값은 다시 유도한 추정치다.</div>
       </div>
       <div class="cell">
-        <div class="k2">SoC / compute</div>
-        <div class="v2">12–16&nbsp;nm · ~9.4K MAC lanes @ 490&nbsp;MHz</div>
-        <div class="d2">Sized to consume 1.1&nbsp;TB/s (~12.7K MAC lanes for the 1.54&nbsp;TB/s v3-proto variant).</div>
+        <div class="k2">SoC / 연산</div>
+        <div class="v2">12–16&nbsp;nm · ~9.4K MAC 레인 @ 490&nbsp;MHz</div>
+        <div class="d2">1.1&nbsp;TB/s를 모두 소화하도록 규모를 잡았다 (1.54&nbsp;TB/s v3-proto 변형은 ~12.7K MAC 레인).</div>
       </div>
       <div class="cell">
-        <div class="k2">Physical / BOM</div>
-        <div class="v2">Board <b>120 × 80&nbsp;mm</b> · ~$1.8–2.4k <span class="tag">[EST]</span></div>
-        <div class="d2">On-substrate 1024-bit memory. BOM is a planning number, not a quote — memory/storage/board-dominated; the compute die is a minority of cost.</div>
+        <div class="k2">물리 / BOM</div>
+        <div class="v2">보드 <b>120 × 80&nbsp;mm</b> · ~$1.8–2.4k <span class="tag">[추정]</span></div>
+        <div class="d2">On-substrate 1024-bit 메모리. BOM은 견적이 아니라 계획 수치이며, 메모리·스토리지·보드가 비용을 지배한다. 연산 die는 비용에서 차지하는 비중이 작다.</div>
       </div>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><h2>Positioning</h2></div>
-    <p class="sec-sub">Targets Opus / Gemini-Pro-class per-user interactive speed. Throughput-farm silicon (Groq, Cerebras) is a different bracket.</p>
+    <div class="sec-head"><h2>포지셔닝</h2></div>
+    <p class="sec-sub">Opus / Gemini-Pro급의 사용자당 대화형 속도를 목표로 한다. 처리량 팜용 실리콘(Groq, Cerebras)은 다른 범주다.</p>
   </section>
 
   <section>
-    <div class="sec-head"><h2>Not built</h2></div>
-    <p class="sec-sub">This board is a design point. The DDR5 / NVMe / USB-C PHYs are vendor IP, TB-stubbed in RTL. Every power, BOM, and tok/s figure on this page is an estimate <span class="k">[EST]</span>.</p>
+    <div class="sec-head"><h2>미제작</h2></div>
+    <p class="sec-sub">이 보드는 설계 지점이다. DDR5 / NVMe / USB-C PHY는 벤더 IP이며 RTL에서는 testbench 스텁이다. 이 페이지의 모든 전력·BOM·tok/s 수치는 추정치 <span class="k">[추정]</span>이다.</p>
     <div class="open-grid">
-      <div class="open-item"><div class="h"><i class="led s-open"></i>No board fabricated</div><p>The appliance is the rung-③ endpoint of the hardware ladder — modeled, not built. No hardware measurement of tok/s, power, or cost exists.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed in RTL. Licensed PHY IP is integrated and signed off at the silicon rung.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>제작된 보드 없음</div><p>이 어플라이언스는 하드웨어 사다리의 3단계 종착점 — 모델링된 것이지 제작된 것이 아니다. tok/s, 전력, 비용에 대한 하드웨어 실측치는 존재하지 않는다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>벤더 PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHY는 RTL에서 testbench 스텁으로 처리된다. 라이선스 PHY IP의 통합과 사인오프는 실리콘 단계에서 이루어진다.</p></div>
     </div>
-    <p class="note">Source: <span class="k">docs/R3_APPLIANCE_SPEC.md</span>.</p>
+    <p class="note">출처: <span class="k">docs/R3_APPLIANCE_SPEC.md</span>.</p>
   </section>
 
 </div>
 
 <footer>
   <div class="wrap">
-    <p class="disc">Rung-③ appliance design point. <b>No board has been built.</b> The measured, in-repo result is the FPGA fit on XCKU3P; every throughput, power, and cost figure for the appliance is a modeled estimate <span class="k">[EST]</span> or <span class="k">[measured-inputs EST]</span>, not measured on hardware. Physical PHYs are vendor IP, TB-stubbed in RTL.</p>
-    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; source: docs/R3_APPLIANCE_SPEC.md</p>
+    <p class="disc">3단계 어플라이언스 설계 지점. <b>보드는 제작된 적이 없다.</b> 저장소 안에서 실측된 결과는 XCKU3P 상의 FPGA fit이며, 어플라이언스의 모든 처리량·전력·비용 수치는 하드웨어에서 측정된 값이 아니라 모델링된 추정치 <span class="k">[추정]</span> 또는 <span class="k">[실측 입력 기반 추정]</span>이다. 물리 PHY는 벤더 IP이며 RTL에서는 testbench 스텁이다.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; 출처: docs/R3_APPLIANCE_SPEC.md</p>
   </div>
 </footer>
 

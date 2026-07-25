@@ -84,6 +84,9 @@
   .nav a:hover { color:var(--ink); text-decoration:none; }
   .nav a.active { color:var(--accent); border-bottom-color:var(--accent); }
   .repo { font-family:var(--mono); font-size:.78rem; }
+  /* language switcher (i18n: EN <-> KO are separate static pages, no JS needed) */
+  .lang { font-family:var(--mono); font-size:.78rem; margin-left:16px; color:var(--ink-dim); }
+  .lang:hover { color:var(--ink); text-decoration:none; }
   @media (max-width:640px){ .mast-row { flex-wrap:wrap; } .nav { margin-left:0; order:3; width:100%; } .repo { margin-left:auto; } }
 
   /* ---- hero ---- */
@@ -190,6 +193,8 @@
   @media (max-width:760px){ .rung3 { grid-template-columns:1fr; } }
   .tag { font-family:var(--mono); }
 </style>
+<link rel="alternate" hreflang="en" href="./roadmap.html">
+<link rel="alternate" hreflang="ko" href="./ko/roadmap.html">
 </head>
 <body>
 
@@ -203,6 +208,7 @@
         <a href="board.html">Board</a>
         <a href="roadmap.html" class="active">Roadmap</a>
       </nav>
+      <a class="lang" href="ko/roadmap.html" hreflang="ko" lang="ko">한국어</a>
       <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
     </div>
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">

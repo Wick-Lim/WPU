@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WPU — GLM-5.2 Q4_K local-inference accelerator</title>
+<title>WPU — GLM-5.2 Q4_K 로컬 추론 가속기</title>
 <style>
   :root {
     --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
@@ -188,8 +188,8 @@
   footer b { color:var(--ink-2); }
   .k { font-family:var(--mono); color:var(--ink-2); }
 </style>
-<link rel="alternate" hreflang="en" href="./index.html">
-<link rel="alternate" hreflang="ko" href="./ko/index.html">
+<link rel="alternate" hreflang="en" href="../index.html">
+<link rel="alternate" hreflang="ko" href="./index.html">
 </head>
 <body>
 
@@ -199,44 +199,44 @@
       <span class="brand"><b>W</b>PU</span>
       <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
       <nav class="nav">
-        <a href="index.html" class="active">Overview</a>
-        <a href="board.html">Board</a>
-        <a href="roadmap.html">Roadmap</a>
+        <a href="index.html" class="active">개요</a>
+        <a href="board.html">보드</a>
+        <a href="roadmap.html">로드맵</a>
       </nav>
-      <a class="lang" href="ko/index.html" hreflang="ko" lang="ko">한국어</a>
+      <a class="lang" href="../index.html" hreflang="en" lang="en">English</a>
       <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
     </div>
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
-      <div class="eyebrow kicker">Synthesizable inference accelerator</div>
-      <h1>The full 753B GLM-5.2, offline, on a local box.</h1>
-      <p class="lede">The published GGUF k-quant of <b>GLM-5.2</b> (<span class="k">UD-Q4_K_XL</span>, ~467&nbsp;GB, a 753B-param MoE, ~40B active/token) streamed through a Verilog datapath. The Q4_K GEMM core is <b>bit-exact to an independent ggml reference</b>; the model is wrapped by a multi-channel DDR5 + NVMe memory system with formal proofs on the control plane. Single-user, air-gapped: provisioned once with the weights, then run with no network path in or out.</p>
+      <div class="eyebrow kicker">합성 가능한 추론 가속기</div>
+      <h1>753B GLM-5.2 전체를, 오프라인으로, 로컬 장비에서.</h1>
+      <p class="lede">공개된 <b>GLM-5.2</b>의 GGUF k-quant(<span class="k">UD-Q4_K_XL</span>, ~467&nbsp;GB, 753B 파라미터 MoE, 토큰당 ~40B 활성)를 Verilog 데이터패스로 흘려보낸다. Q4_K GEMM 코어는 <b>독립 구현된 ggml 레퍼런스에 대해 bit-exact</b>이며, 모델은 제어 평면에 형식증명이 걸린 다채널 DDR5 + NVMe 메모리 시스템으로 감싸인다. 단일 사용자, air-gapped 구성이다. 가중치를 한 번 적재한 뒤에는 안팎 어느 쪽으로도 네트워크 경로 없이 동작한다.</p>
     </div>
   </div>
 </header>
 
 <div class="wrap">
 
-  <div class="stats" aria-label="load-bearing measured facts">
+  <div class="stats" aria-label="근거가 되는 실측 사실">
     <div class="stat">
       <div class="n tnum">376,586,240</div>
-      <div class="l">weights bitwise-equal to llama.cpp dequant, on <span class="tag">real GGUF bytes</span> (Q4_K/Q6_K/Q8_0)</div>
+      <div class="l">llama.cpp dequant와 비트 단위로 동일한 가중치, <span class="tag">실제 GGUF 바이트</span> 기준 (Q4_K/Q6_K/Q8_0)</div>
     </div>
     <div class="stat">
       <div class="n tnum">1155<small>/1155</small></div>
-      <div class="l">assembled full-forward tests <span class="tag">bit-exact</span> vs a numpy reference (<span class="k">make model-q4k</span>)</div>
+      <div class="l">조립된 full-forward 테스트가 numpy 레퍼런스 대비 <span class="tag">bit-exact</span> (<span class="k">make model-q4k</span>)</div>
     </div>
     <div class="stat">
       <div class="n tnum">142,320 <small>LUT</small></div>
-      <div class="l">real Vivado P&amp;R on XCKU3P — <span class="tag">87.5%</span>, routed, hold met (<span class="k">MEASURED</span>)</div>
+      <div class="l">XCKU3P 실제 Vivado P&amp;R — <span class="tag">87.5%</span>, routed, hold 충족 (<span class="k">실측</span>)</div>
     </div>
     <div class="stat">
-      <div class="n tnum">67<small> gates</small></div>
-      <div class="l">full release-gate green, every test count <span class="tag">exact-pinned</span></div>
+      <div class="n tnum">67<small> gate</small></div>
+      <div class="l">전체 release-gate green, 모든 테스트 개수 <span class="tag">정확히 고정</span></div>
     </div>
   </div>
 
   <figure class="figure">
-    <svg viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concept front 3/4 drawing of the appliance with a front LED status and token-stream panel">
+    <svg viewBox="0 0 480 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="전면 LED 상태 표시와 토큰 스트림 패널을 갖춘 어플라이언스의 3/4 정면 컨셉 도면">
       <defs><clipPath id="ledwin"><rect x="166" y="156" width="118" height="28"/></clipPath></defs>
       <!-- front 3/4 view: the front face carries the LED panel; USB-C + power are on the rear (not shown) -->
       <polygon points="114,145 300,145 372,80 186,80" fill="var(--panel-2)" stroke="var(--ink)" stroke-width="1.25" stroke-linejoin="round"/>
@@ -256,98 +256,98 @@
       <line x1="153" y1="155" x2="153" y2="183" stroke="var(--hairline)" stroke-width="0.6"/>
       <g clip-path="url(#ledwin)">
         <g class="tok-ticker">
-          <text x="168" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; Here's a concise answer, decoded on-device, one token at a time.   </text>
-          <text x="468" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; Here's a concise answer, decoded on-device, one token at a time.   </text>
+          <text x="168" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; 온디바이스에서 한 번에 토큰 하나씩 디코딩되는 간결한 답변.    </text>
+          <text x="468" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; 온디바이스에서 한 번에 토큰 하나씩 디코딩되는 간결한 답변.    </text>
         </g>
       </g>
-      <text x="207" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-dim)" text-anchor="middle">front LED panel &#183; status + live token stream</text>
-      <text x="240" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="var(--ink-2)" text-anchor="middle">~120 &#215; 80 mm class &#183; &#8805;50&#8211;78 W [EST]</text>
+      <text x="207" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-dim)" text-anchor="middle">전면 LED 패널 &#183; 상태 + 실시간 토큰 스트림</text>
+      <text x="240" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="9" fill="var(--ink-2)" text-anchor="middle">~120 &#215; 80 mm 급 &#183; &#8805;50&#8211;78 W [추정]</text>
     </svg>
-    <figcaption>Expected product — a compact desktop appliance (&#8805;50&#8211;78 W [EST] &#8212; a floor, the SoC term is unverified; actively cooled, heat-pipe + fan class) with a front LED panel streaming status and the decoded text as it generates; USB-C and power on the rear. <span class="tag">Concept sketch, not a built product; every figure [EST]. Sample output is illustrative.</span></figcaption>
+    <figcaption>예상 제품 — 소형 데스크톱 어플라이언스(&#8805;50&#8211;78 W [추정] &#8212; 하한값이며 SoC 항은 미검증. 능동 냉각, heat-pipe + 팬 등급). 전면 LED 패널이 상태와 생성 중인 디코딩 텍스트를 그대로 흘려보낸다. USB-C와 전원은 후면에 있다. <span class="tag">제작된 제품이 아니라 컨셉 스케치이며, 모든 수치는 [추정]이다. 예시 출력은 설명용이다.</span></figcaption>
   </figure>
 
   <section>
-    <div class="sec-head"><h2>Verification ledger</h2></div>
-    <p class="sec-sub">Each claim is tagged for the kind of evidence behind it. “Bit-exact” means bit-exact to the ggml-Q4_K reference <span class="k">tools/q4k_ref.py</span>, which is itself proven equal to real GGUF bytes at the dequant layer.</p>
+    <div class="sec-head"><h2>검증 원장</h2></div>
+    <p class="sec-sub">각 주장에는 그 뒤에 있는 증거의 종류가 태그로 붙는다. “Bit-exact”는 ggml-Q4_K 레퍼런스 <span class="k">tools/q4k_ref.py</span>에 대해 bit-exact라는 뜻이며, 이 레퍼런스 자체가 dequant 계층에서 실제 GGUF 바이트와 동일함이 검증되어 있다.</p>
 
     <div class="legend">
-      <span><i class="led s-proven"></i>PROVEN — gated bit-exact / functional sim</span>
-      <span><i class="led s-formal"></i>FORMAL — solver proof (memory/control plane)</span>
-      <span><i class="led s-measured"></i>MEASURED — real cycles / real silicon fit</span>
-      <span><i class="led s-elab"></i>ELABORATED — structural, no golden</span>
-      <span><i class="led s-open"></i>OPEN — not yet done</span>
+      <span><i class="led s-proven"></i>검증됨 — gate에 묶인 bit-exact / 기능 시뮬레이션</span>
+      <span><i class="led s-formal"></i>형식증명 — solver 증명 (메모리/제어 평면)</span>
+      <span><i class="led s-measured"></i>실측 — 실제 사이클 / 실제 실리콘 fit</span>
+      <span><i class="led s-elab"></i>엘라보레이션(구조 확인) — 구조만 확인, golden 없음</span>
+      <span><i class="led s-open"></i>열린 격차 — 미완</span>
     </div>
 
     <div class="ledger">
-      <div class="row"><i class="led s-proven"></i><div class="what">Q4_K GEMM core <span class="sub">block dequant → fp32 MAC → bf16 · the one true bit-exact datapath result</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact vs ggml</span>glm_matmul_q4k 160/160</div></div>
-      <div class="row"><i class="led s-proven"></i><div class="what">Assembled full forward pass <span class="sub">embed → L×(MLA+DSA+MoE) → norm → LM-head → argmax; logits + argmax + h_state</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact vs numpy ref</span>make model-q4k 1155/1155</div></div>
-      <div class="row"><i class="led s-proven"></i><div class="what">Mixed-type path <span class="sub">Q6_K / Q8_0 / F16 tensors of the dynamic UD-Q4_K_XL mix — all four types</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact</span>make mixedtype</div></div>
-      <div class="row"><i class="led s-proven"></i><div class="what">Speculative decode loop <span class="sub">committed stream === PE_M=1 greedy decode (spec==greedy), K=1..3 × accept schedules</span></div><div class="ev"><span class="st st-proven">Proven · spec==greedy</span>make spec-greedy 31/31</div></div>
-      <div class="row"><i class="led s-measured"></i><div class="what">A_eff amortization <span class="sub">the “K drafts verified in ONE weight-load” lever, read from the hardware weight_loads counter — ALL-ACCEPT hits the K+1/load ceiling</span></div><div class="ev"><span class="st st-measured">Measured · HW counter</span>K=3 → 4.00 tok/load</div></div>
-      <div class="row"><i class="led s-proven"></i><div class="what">Dequant vs real GGUF bytes <span class="sub">q4k_ref vs llama.cpp’s own dequantize_row_* on two real published GGUFs</span></div><div class="ev"><span class="st st-proven">Proven · on real bytes</span>376,586,240 weights</div></div>
-      <div class="row"><i class="led s-formal"></i><div class="what">Memory-system controllers <span class="sub">routing / FIFO no-overflow / token-accounting / ECC identity / done-gates</span></div><div class="ev"><span class="st st-formal">Formal · BMC + k-induction</span>7 ctrl + 1 ECC · 5 unbounded</div></div>
-      <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit <span class="sub">whole 2-clock product top synthesized AND placed-and-routed on Kintex UltraScale+ XCKU3P</span></div><div class="ev"><span class="st st-measured">Measured · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
-      <div class="row"><i class="led s-elab"></i><div class="what">Full 753B UD-Q4_K_XL shape <span class="sub">DIM 6144 / L=78 / 256-expert / VOCAB 154880 — type/width check, no stimulus</span></div><div class="ev"><span class="st st-elab">Elaborated · clean</span>0 errors</div></div>
-      <div class="row"><i class="led s-open"></i><div class="what">llama.cpp whole-runtime equality <span class="sub">attention / accumulation orders differ by design; the 467 GB file not yet run end-to-end</span></div><div class="ev"><span class="st st-open">Open · out-of-contract</span>needs a GPU host</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Q4_K GEMM 코어 <span class="sub">블록 dequant → fp32 MAC → bf16 · bit-exact가 성립하는 유일한 데이터패스 결과</span></div><div class="ev"><span class="st st-proven">검증됨 · ggml 대비 bit-exact</span>glm_matmul_q4k 160/160</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">조립된 full forward pass <span class="sub">embed → L×(MLA+DSA+MoE) → norm → LM-head → argmax. logits + argmax + h_state</span></div><div class="ev"><span class="st st-proven">검증됨 · numpy 레퍼런스 대비 bit-exact</span>make model-q4k 1155/1155</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">혼합 타입 경로 <span class="sub">동적 UD-Q4_K_XL 혼합의 Q6_K / Q8_0 / F16 텐서 — 네 가지 타입 전부</span></div><div class="ev"><span class="st st-proven">검증됨 · bit-exact</span>make mixedtype</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Speculative decode 루프 <span class="sub">커밋된 스트림 === PE_M=1 greedy decode (spec==greedy), K=1..3 × accept 스케줄</span></div><div class="ev"><span class="st st-proven">검증됨 · spec==greedy</span>make spec-greedy 31/31</div></div>
+      <div class="row"><i class="led s-measured"></i><div class="what">A_eff 분할상각 <span class="sub">“가중치 1회 로드로 K개 draft 검증” 레버를 하드웨어 weight_loads 카운터에서 직접 읽음 — ALL-ACCEPT는 K+1/load 상한에 도달</span></div><div class="ev"><span class="st st-measured">실측 · HW 카운터</span>K=3 → 4.00 tok/load</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">실제 GGUF 바이트 대비 dequant <span class="sub">실제 공개된 GGUF 2종에서 q4k_ref 대 llama.cpp 자체 dequantize_row_*</span></div><div class="ev"><span class="st st-proven">검증됨 · 실제 바이트 기준</span>가중치 376,586,240개</div></div>
+      <div class="row"><i class="led s-formal"></i><div class="what">메모리 시스템 컨트롤러 <span class="sub">라우팅 / FIFO 오버플로 없음 / 토큰 회계 / ECC 항등 / done-gate</span></div><div class="ev"><span class="st st-formal">형식증명 · BMC + k-induction</span>ctrl 7 + ECC 1 · unbounded 5</div></div>
+      <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit <span class="sub">2-clock 제품 top 전체를 Kintex UltraScale+ XCKU3P에서 합성하고 place-and-route까지 완료</span></div><div class="ev"><span class="st st-measured">실측 · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
+      <div class="row"><i class="led s-elab"></i><div class="what">753B UD-Q4_K_XL 전체 형상 <span class="sub">DIM 6144 / L=78 / 256-expert / VOCAB 154880 — 타입/폭 검사만, 자극 입력 없음</span></div><div class="ev"><span class="st st-elab">엘라보레이션(구조 확인) · clean</span>오류 0</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">llama.cpp 전체 런타임 동등성 <span class="sub">attention / 누산 순서는 설계상 다르다. 467 GB 파일은 아직 end-to-end로 실행하지 않았다</span></div><div class="ev"><span class="st st-open">열린 격차 · 계약 범위 밖</span>GPU 호스트 필요</div></div>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><h2>Throughput</h2></div>
-    <p class="sec-sub">Every tok/s figure is modeled <span class="k">[EST]</span>, not measured on silicon. The amortization mechanism is measured in RTL (the hardware weight-load counter); the accept rate feeding it is a measured model property; the absolute tok/s is their product.</p>
+    <div class="sec-head"><h2>처리량</h2></div>
+    <p class="sec-sub">모든 tok/s 수치는 모델링된 <span class="k">[추정]</span>이며 실리콘에서 실측한 값이 아니다. 분할상각 메커니즘은 RTL에서 실측했고(하드웨어 weight-load 카운터), 거기에 들어가는 accept rate는 실측된 모델 특성이다. 절대 tok/s는 이 둘의 곱이다.</p>
 
     <div class="roof">
       <div class="card">
-        <h3>How the number is built</h3>
+        <h3>이 수치가 만들어지는 과정</h3>
         <div class="flow">
-          <span>25.50 GB/token</span> <span class="arrow">— no speculation, PE_M=1 (measured mechanism)</span><br>
-          <span class="arrow">÷</span> <b>A_eff = 1.87</b> <span class="arrow">— measured accept rate r₁=0.87</span><br>
+          <span>25.50 GB/token</span> <span class="arrow">— speculation 없음, PE_M=1 (실측된 메커니즘)</span><br>
+          <span class="arrow">÷</span> <b>A_eff = 1.87</b> <span class="arrow">— 실측 accept rate r₁=0.87</span><br>
           <span>= 13.87 GB/token</span><br>
-          <span class="arrow">→ at 1.54 TB/s →</span> <b>~111 tok/s [EST]</b>
+          <span class="arrow">→ 1.54 TB/s에서 →</span> <b>~111 tok/s [추정]</b>
         </div>
-        <p>The composed top <span class="k">glm_q4k_spec_system</span> holds the memory system, the <span class="k">PE_M=K+1</span> batched verify, and the accept/reject loop at once. Its hardware counter shows ALL-ACCEPT committing exactly K+1 tokens per weight-load (K=3 → 4.00), and the committed stream equals a plain greedy decode.</p>
+        <p>결합된 top <span class="k">glm_q4k_spec_system</span>은 메모리 시스템, <span class="k">PE_M=K+1</span> 배치(batch) verify, accept/reject 루프를 한꺼번에 담는다. 이 top의 하드웨어 카운터는 ALL-ACCEPT에서 가중치 로드 1회당 정확히 K+1개 토큰이 커밋됨을 보여주며(K=3 → 4.00), 커밋된 스트림은 평범한 greedy decode와 일치한다.</p>
       </div>
       <div class="card">
-        <h3>Rung ladder — set by memory bandwidth</h3>
-        <p>Throughput is bandwidth-bound, and bandwidth is set by the chip’s IO/PHY budget, which is set by the rung.</p>
+        <h3>Rung 사다리 — 메모리 bandwidth가 결정한다</h3>
+        <p>처리량은 bandwidth에 묶여 있고, bandwidth는 칩의 IO/PHY 예산이 정하며, 그 예산은 rung이 정한다.</p>
         <ul class="ladder">
-          <li><span class="rung">①</span> Prove-it FPGA <span class="v">~5–8 <em>tok/s</em></span></li>
-          <li><span class="rung">②</span> Funded custom board <span class="v">~15–40 <em>tok/s</em></span></li>
-          <li><span class="rung">③</span> 512GB residency box <span class="v">≈80 <em>tok/s</em></span></li>
+          <li><span class="rung">①</span> 입증용 FPGA <span class="v">~5–8 <em>tok/s</em></span></li>
+          <li><span class="rung">②</span> 자금이 투입된 커스텀 보드 <span class="v">~15–40 <em>tok/s</em></span></li>
+          <li><span class="rung">③</span> 512GB 상주 박스 <span class="v">≈80 <em>tok/s</em></span></li>
         </ul>
-        <p class="note">Rung-③ design point ≈80 tok/s <span class="k">[measured-inputs EST]</span> — U(K) and the MTP accept rate r are both GLM-family measured. ~95 if GLM-5.2’s deeper MTP hits its published accept depth.</p>
+        <p class="note">Rung-③ 설계점 ≈80 tok/s <span class="k">[실측 입력 기반 추정]</span> — U(K)와 MTP accept rate r은 둘 다 GLM 계열에서 실측된 값이다. GLM-5.2의 더 깊은 MTP가 공개된 accept depth에 도달하면 ~95.</p>
       </div>
     </div>
   </section>
 
   <section>
-    <div class="sec-head"><h2>How it runs</h2></div>
-    <p class="sec-sub">NVMe/PCIe-bandwidth-bound by design, to keep it cheap: stream MoE experts from the SSD through a DDR working cache into a mostly-idle Q4_K die.</p>
+    <div class="sec-head"><h2>동작 방식</h2></div>
+    <p class="sec-sub">비용을 낮추기 위해 설계상 NVMe/PCIe bandwidth에 묶어 두었다. MoE expert를 SSD에서 DDR 작업 캐시를 거쳐 대부분 유휴 상태인 Q4_K die로 스트리밍한다.</p>
     <div class="flow">
-      1 TB NVMe <span class="arrow">──►</span> flash_xbar <span class="arrow">──►</span> DDR working set/cache <span class="arrow">──►</span> ddr5_xbar <span class="arrow">──►</span> <b>Q4_K compute die</b> <span class="arrow">──►</span> token<br>
-      <span class="arrow">~467 GB weights &nbsp; N-ch + deep queue &nbsp; LRU+freq+prefetch &nbsp; N-ch banked &nbsp; MLA + DSA + MoE · ggml dequant → fp32 MAC → bf16</span>
+      1 TB NVMe <span class="arrow">──►</span> flash_xbar <span class="arrow">──►</span> DDR 작업 세트/캐시 <span class="arrow">──►</span> ddr5_xbar <span class="arrow">──►</span> <b>Q4_K 연산 die</b> <span class="arrow">──►</span> 토큰<br>
+      <span class="arrow">~467 GB 가중치 &nbsp; N-ch + 깊은 큐 &nbsp; LRU+빈도+prefetch &nbsp; N-ch 뱅크 분할 &nbsp; MLA + DSA + MoE · ggml dequant → fp32 MAC → bf16</span>
     </div>
-    <p class="note">The whole memory system is <b>byte-agnostic</b> — it moves addresses, slots, and IDs, never weight bytes. Verification is byte-identical on regression; the controllers add bounded model checking, some lifted to unbounded k-induction. No formal proof touches the numeric datapath — that plane is held by the bit-exact simulation goldens.</p>
+    <p class="note">메모리 시스템 전체는 <b>byte-agnostic</b>이다. 주소와 슬롯, ID만 옮길 뿐 가중치 바이트 자체는 건드리지 않는다. 검증은 회귀 테스트에서 바이트 단위로 동일함을 확인하며, 컨트롤러에는 bounded model checking이 더해지고 그중 일부는 unbounded k-induction으로 끌어올렸다. 형식증명은 수치 데이터패스에 전혀 닿지 않는다. 그 평면은 bit-exact 시뮬레이션 golden이 담당한다.</p>
   </section>
 
   <section>
-    <div class="sec-head"><h2>Not yet done</h2></div>
-    <p class="sec-sub">Open gaps — most sit at the physical/process boundary that an RTL repo cannot close.</p>
+    <div class="sec-head"><h2>미완 항목</h2></div>
+    <p class="sec-sub">열린 격차 — 대부분은 RTL 저장소가 닫을 수 없는 물리/공정 경계에 놓여 있다.</p>
     <div class="open-grid">
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The 467 GB GLM file run end-to-end and compared against llama.cpp’s runtime argmax. Needs a GPU / large-memory host; no in-repo tool yet.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed. Licensed PHY IP is integrated + signed off at the silicon rung.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo; running on a physical dev board needs the board + pin XDC + a MIG bridge.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Fab tapeout &amp; dual-port BIST collar</div><p>ASIC tapeout is the rung-③ volume endgame. On-die test: the die already carries an inline clock gate; per-macro BIST collars are memory-compiler-generated in the physical flow.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>전체 런타임 GGUF 교차 검증</div><p>467 GB GLM 파일을 end-to-end로 실행해 llama.cpp 런타임 argmax와 대조하는 작업. GPU / 대용량 메모리 호스트가 필요하며, 저장소 안에는 아직 도구가 없다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>벤더 PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHY는 testbench 스텁 상태다. 라이선스된 PHY IP는 실리콘 rung에서 통합·사인오프한다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>보드 bring-up</div><p>FPGA fit은 저장소 안에서 실측했다. 실제 개발 보드에서 돌리려면 보드와 핀 XDC, MIG 브리지가 필요하다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>팹 tapeout 및 dual-port BIST collar</div><p>ASIC tapeout은 rung-③ 양산 단계의 종착점이다. on-die 테스트: die에는 이미 인라인 clock gate가 들어 있고, 매크로별 BIST collar는 물리 설계 흐름에서 memory compiler가 생성한다.</p></div>
     </div>
-    <p class="note">Every tok/s, cost, energy, and LOI figure is <span class="k">[EST]</span> — roofline-modeled with measured model-side inputs, not measured on hardware.</p>
+    <p class="note">모든 tok/s, 비용, 에너지, LOI 수치는 <span class="k">[추정]</span>이다. 실측된 모델 측 입력으로 roofline 모델링한 값이며, 하드웨어에서 실측한 값이 아니다.</p>
   </section>
 
 </div>
 
 <footer>
   <div class="wrap">
-    <p class="disc">Status of the Q4_K track on <span class="k">main</span>. Bit-exact means bit-exact to an independent ggml reimplementation, proven on real GGUF bytes at the dequant layer; llama.cpp whole-runtime equality is out-of-contract by design. Throughput and cost figures are modeled estimates, not measured on hardware.</p>
-    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; a GLM-5.2 Q4_K local-inference accelerator in Verilog</p>
+    <p class="disc"><span class="k">main</span>의 Q4_K 트랙 현황. Bit-exact는 독립적으로 재구현한 ggml에 대해 bit-exact라는 뜻이며, dequant 계층에서 실제 GGUF 바이트로 검증됐다. llama.cpp 전체 런타임 동등성은 설계상 계약 범위 밖이다. 처리량과 비용 수치는 모델링된 추정이며 하드웨어 실측이 아니다.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; Verilog로 구현한 GLM-5.2 Q4_K 로컬 추론 가속기</p>
   </div>
 </footer>
 </body>

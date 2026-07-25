@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WPU — 하드웨어 로드맵</title>
+<style>
+  :root {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+      --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+      --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+      --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+      --grid:rgba(0,0,0,.035);
+      --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
+    --ink:#E9EBEE; --ink-2:#B7BDC6; --ink-dim:#7E8590; --hairline:#272E38;
+    --accent:#E8A317; --accent-2:#F2C15A; --accent-ink:#1A130A;
+    --ok:#46B37B; --formal:#6398F0; --elab:#9C8DE0; --measured:#3FA9BE; --open:#CE7A45;
+    --grid:rgba(255,255,255,.028);
+    --shadow:0 1px 0 rgba(255,255,255,.03), 0 18px 40px -24px rgba(0,0,0,.7);
+  }
+  :root[data-theme="light"] {
+    --ground:#F3F3EF; --panel:#FFFFFF; --panel-2:#ECECE6; --sunk:#EAEAE3;
+    --ink:#181B20; --ink-2:#3F454E; --ink-dim:#727880; --hairline:#DFDFD8;
+    --accent:#A9740A; --accent-2:#8A5E06; --accent-ink:#FFFFFF;
+    --ok:#2E8F5C; --formal:#3E70CE; --elab:#6F5FC0; --measured:#2C8092; --open:#B15E2C;
+    --grid:rgba(0,0,0,.035);
+    --shadow:0 1px 0 rgba(255,255,255,.6), 0 16px 34px -26px rgba(20,20,15,.4);
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  .wrap { max-width:1000px; margin:0 auto; padding:0 24px; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; text-underline-offset:3px; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:3px; }
+  h1,h2,h3 { text-wrap:balance; margin:0; font-weight:650; letter-spacing:-.01em; }
+  .mono { font-family:var(--mono); }
+  .eyebrow {
+    font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--ink-dim);
+  }
+  .tnum { font-variant-numeric:tabular-nums; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    border-bottom:1px solid var(--hairline);
+    background:linear-gradient(180deg,var(--panel),var(--ground));
+    position:relative; overflow:hidden;
+  }
+  header.mast::before {
+    content:""; position:absolute; inset:0;
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:26px 26px; pointer-events:none;
+    -webkit-mask-image:linear-gradient(180deg,#000,transparent); mask-image:linear-gradient(180deg,#000,transparent);
+  }
+  .mast-row { display:flex; align-items:baseline; gap:14px; padding:26px 0 4px; position:relative; }
+  .brand {
+    font-family:var(--mono); font-weight:700; font-size:1.5rem; letter-spacing:.02em;
+    color:var(--ink);
+  }
+  .brand b { color:var(--accent); font-weight:700; }
+  .brand-def { color:var(--ink-dim); font-family:var(--mono); font-size:.8rem; }
+  .nav { margin-left:auto; display:flex; gap:20px; font-family:var(--mono); font-size:.82rem; }
+  .nav a { color:var(--ink-dim); padding:2px 0; border-bottom:2px solid transparent; }
+  .nav a:hover { color:var(--ink); text-decoration:none; }
+  .nav a.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .repo { font-family:var(--mono); font-size:.78rem; }
+  /* language switcher (i18n: EN <-> KO are separate static pages, no JS needed) */
+  .lang { font-family:var(--mono); font-size:.78rem; margin-left:16px; color:var(--ink-dim); }
+  .lang:hover { color:var(--ink); text-decoration:none; }
+  @media (max-width:640px){ .mast-row { flex-wrap:wrap; } .nav { margin-left:0; order:3; width:100%; } .repo { margin-left:auto; } }
+
+  /* ---- hero ---- */
+  .hero { padding:34px 0 40px; position:relative; }
+  .hero .kicker { color:var(--accent); }
+  .hero h1 {
+    font-size:clamp(1.9rem,5.2vw,3.05rem); line-height:1.08; margin:14px 0 0;
+    letter-spacing:-.02em; max-width:16ch;
+  }
+  .hero .lede { margin:18px 0 0; font-size:1.06rem; color:var(--ink-2); max-width:60ch; }
+  .hero .lede b { color:var(--ink); font-weight:600; }
+  .proof {
+    margin-top:20px; padding:12px 16px; border:1px solid var(--hairline); border-left:3px solid var(--accent);
+    background:var(--panel); border-radius:0 8px 8px 0; font-size:.95rem; color:var(--ink-2); max-width:62ch;
+  }
+  .proof b { color:var(--ink); }
+
+  /* ---- stat strip ---- */
+  .stats {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+    background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden;
+    margin-top:28px; box-shadow:var(--shadow);
+  }
+  .stat { background:var(--panel); padding:16px 16px 14px; }
+  .stat .n { font-family:var(--mono); font-size:1.5rem; font-weight:650; color:var(--ink); letter-spacing:-.01em; }
+  .stat .n small { font-size:.9rem; color:var(--ink-dim); font-weight:500; }
+  .stat .l { font-size:.76rem; color:var(--ink-dim); margin-top:3px; line-height:1.35; }
+  .stat .tag { color:var(--accent); }
+
+  /* ---- sections ---- */
+  section { padding:40px 0; border-top:1px solid var(--hairline); }
+  .sec-head { display:flex; align-items:baseline; gap:12px; margin-bottom:6px; }
+  .sec-head h2 { font-size:1.32rem; }
+  .sec-head .idx { font-family:var(--mono); color:var(--accent); font-size:.8rem; }
+  .sec-sub { color:var(--ink-dim); max-width:64ch; margin:0 0 22px; font-size:.95rem; }
+
+  /* ---- ledger ---- */
+  .legend { display:flex; flex-wrap:wrap; gap:14px 20px; margin-bottom:18px; font-family:var(--mono); font-size:.74rem; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; color:var(--ink-2); }
+  .led { width:9px; height:9px; border-radius:50%; flex:none; box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent); background:var(--c); }
+  .s-proven{--c:var(--ok);} .s-formal{--c:var(--formal);} .s-elab{--c:var(--elab);} .s-measured{--c:var(--measured);} .s-open{--c:var(--open);}
+
+  .ledger { display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .row { background:var(--panel); display:grid; grid-template-columns:20px 1fr auto; gap:14px; align-items:start; padding:14px 16px; }
+  .row:hover { background:var(--panel-2); }
+  .row .led { margin-top:7px; }
+  .row .what { font-weight:600; color:var(--ink); }
+  .row .what .sub { display:block; font-weight:400; color:var(--ink-dim); font-size:.86rem; margin-top:2px; }
+  .row .ev { font-family:var(--mono); font-size:.78rem; color:var(--ink-2); text-align:right; white-space:nowrap; }
+  .row .ev .st { display:block; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; margin-bottom:3px; }
+  .st-proven{color:var(--ok);} .st-formal{color:var(--formal);} .st-elab{color:var(--elab);} .st-measured{color:var(--measured);} .st-open{color:var(--open);}
+  @media (max-width:640px){
+    .row { grid-template-columns:16px 1fr; }
+    .row .ev { grid-column:2; text-align:left; white-space:normal; margin-top:2px; }
+  }
+
+  /* ---- tok/s build ---- */
+  .roof { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--hairline); border-radius:10px; padding:18px; box-shadow:var(--shadow); }
+  .card h3 { font-size:1rem; margin-bottom:4px; }
+  .card p { color:var(--ink-2); font-size:.9rem; margin:6px 0 0; }
+  .ladder { list-style:none; padding:0; margin:14px 0 0; display:flex; flex-direction:column; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:8px; overflow:hidden; }
+  .ladder li { background:var(--panel); display:flex; align-items:baseline; gap:12px; padding:11px 14px; font-size:.9rem; }
+  .ladder .rung { font-family:var(--mono); color:var(--accent); font-size:.8rem; flex:none; width:2.2em; }
+  .ladder .v { font-family:var(--mono); margin-left:auto; color:var(--ink); font-weight:600; }
+  .ladder .v em { color:var(--ink-dim); font-style:normal; font-weight:400; font-size:.82em; }
+  .note { font-size:.82rem; color:var(--ink-dim); margin-top:14px; }
+  .flow {
+    font-family:var(--mono); font-size:.84rem; color:var(--ink-2); background:var(--sunk);
+    border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; margin-top:16px; line-height:1.9;
+    overflow-x:auto;
+  }
+  .flow b { color:var(--accent); }
+  .flow .arrow { color:var(--ink-dim); }
+
+  /* ---- open ---- */
+  .open-grid { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--hairline); border:1px solid var(--hairline); border-radius:10px; overflow:hidden; }
+  .open-item { background:var(--panel); padding:15px 16px; }
+  .open-item .h { display:flex; align-items:center; gap:9px; font-weight:600; color:var(--ink); font-size:.95rem; }
+  .open-item p { margin:6px 0 0; color:var(--ink-dim); font-size:.85rem; }
+  .open-item .led { width:8px; height:8px; }
+
+  @media (max-width:640px){ .stats,.roof,.open-grid { grid-template-columns:1fr; } }
+
+  footer { border-top:1px solid var(--hairline); padding:30px 0 46px; color:var(--ink-dim); font-size:.84rem; }
+  footer .disc { max-width:70ch; }
+  footer b { color:var(--ink-2); }
+  .k { font-family:var(--mono); color:var(--ink-2); }
+
+  /* ---- roadmap ladder table ---- */
+  .tblwrap { overflow-x:auto; border:1px solid var(--hairline); border-radius:10px; box-shadow:var(--shadow); }
+  table.ladder-tbl { border-collapse:collapse; width:100%; min-width:720px; background:var(--panel); font-size:.86rem; }
+  table.ladder-tbl th, table.ladder-tbl td { text-align:left; padding:12px 14px; border-bottom:1px solid var(--hairline); vertical-align:top; }
+  table.ladder-tbl thead th { font-family:var(--mono); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-dim); background:var(--panel-2); }
+  table.ladder-tbl tbody tr:last-child td { border-bottom:none; }
+  table.ladder-tbl .rungcell { font-family:var(--mono); color:var(--accent); font-weight:650; white-space:nowrap; }
+  table.ladder-tbl .toks { font-family:var(--mono); color:var(--ink); font-weight:600; white-space:nowrap; }
+  table.ladder-tbl .tag { color:var(--accent); font-family:var(--mono); font-size:.78rem; }
+  .card .meta { display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:12px; font-family:var(--mono); font-size:.76rem; color:var(--ink-dim); }
+  .card .meta b { color:var(--ink-2); font-weight:600; }
+  .card .toks-big { font-family:var(--mono); font-size:1.28rem; font-weight:650; color:var(--ink); margin-top:10px; }
+  .card .toks-big .tag { color:var(--accent); font-size:.72rem; }
+  .rung3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+  @media (max-width:760px){ .rung3 { grid-template-columns:1fr; } }
+  .tag { font-family:var(--mono); }
+</style>
+<link rel="alternate" hreflang="en" href="../roadmap.html">
+<link rel="alternate" hreflang="ko" href="./roadmap.html">
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <div class="mast-row">
+      <span class="brand"><b>W</b>PU</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <nav class="nav">
+        <a href="index.html">개요</a>
+        <a href="board.html">보드</a>
+        <a href="roadmap.html" class="active">로드맵</a>
+      </nav>
+      <a class="lang" href="../roadmap.html" hreflang="en" lang="en">English</a>
+      <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
+    </div>
+    <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
+      <div class="eyebrow kicker">하드웨어 사다리 · tok/s <span class="tag">[추정]</span></div>
+      <h1>WPU 하드웨어 로드맵</h1>
+      <p class="lede">성능은 메모리 bandwidth가 결정하고, bandwidth는 실리콘의 IO/PHY 예산이, 그 예산은 단(rung)과 자금 조달이 결정한다. 단기간에 만들 수 있는 것은 ① 단뿐이며, <b>② · ③ 단은 자금 조달에 걸린 예측이고, ④ 단은 그보다 더 먼, 메모리 기술에 걸린 단계다.</b> 모든 tok/s 수치는 추정치다 <span class="k">[추정]</span>.</p>
+      <div class="proof">RTL은 <b>사다리 전 구간에서 동일하다</b> — 바뀌는 것은 메모리 bandwidth뿐이다(④ 단은 연산 그래프가 아니라 저장 계층을 재파라미터화한다). FPGA fit과 routed Fmax는 실측값이다(<a href="board.html">보드</a> 참조). 아직 동작하는 보드가 없으므로, bring-up 전까지 모든 tok/s는 모델링 값이다.</div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section style="border-top:none">
+    <div class="sec-head"><h2>3단 사다리</h2></div>
+    <p class="sec-sub">Bandwidth는 칩의 IO/PHY 예산에 묶이며, 그 예산은 단이 결정한다. datapath는 전 구간에서 동일하고, 단 사이의 차이는 그 datapath에 데이터를 공급하는 메모리 시스템이다.</p>
+
+    <div class="tblwrap">
+      <table class="ladder-tbl">
+        <thead>
+          <tr>
+            <th>단</th>
+            <th>플랫폼</th>
+            <th>메모리 / bandwidth</th>
+            <th>처리량</th>
+            <th>정확성</th>
+            <th>비용</th>
+            <th>자금</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="rungcell">① Prove-it<br><span style="color:var(--ink-dim);font-weight:400">현재</span></td>
+            <td>저사양 FPGA(Kintex US+ KU3P급) + DDR4 hot-set 캐시</td>
+            <td>NVMe 1–2개(~7–14 GB/s) … ~14개 드라이브 striping(~100 GB/s)</td>
+            <td class="toks">~0.5–1 … ~5–8 tok/s <span class="tag">[추정]</span></td>
+            <td>전 구간 bit-exact</td>
+            <td>~$1–2k 박스</td>
+            <td>자체 / 최소</td>
+          </tr>
+          <tr>
+            <td class="rungcell">② 커스텀 보드<br><span style="color:var(--ink-dim);font-weight:400">투자 유치 후</span></td>
+            <td>중급 FPGA(Versal / Agilex / HBM급 US+)</td>
+            <td>DDR5 8–12 ch 또는 HBM(~400 GB/s – 1 TB/s)</td>
+            <td class="toks">~15–40 tok/s <span class="tag">[추정]</span></td>
+            <td>조건부 — expert 캐시 hit rate 또는 bit-exact가 아닌 pruning이 필요</td>
+            <td>~$3–6k</td>
+            <td>시드</td>
+          </tr>
+          <tr>
+            <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">양산 규모</span></td>
+            <td>커스텀 실리콘; 512 GB LPDDR5X 전량 상주(16×32 GB)</td>
+            <td>1024-bit, ~1.1 TB/s; ~467 GB 전체 상주, cold store는 M.2 NVMe 1개(~70 s 부팅)</td>
+            <td class="toks">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></td>
+            <td>bit-exact (상주 ⇒ h=1)</td>
+            <td>~$1.8–2.4k</td>
+            <td>시리즈 B+ / 양산</td>
+          </tr>
+          <tr>
+            <td class="rungcell">④ HBF + HBM<br><span style="color:var(--ink-dim);font-weight:400">미래</span></td>
+            <td>2중 저장 박스: 512 GB HBF(가중치, 비휘발성, 상주) + 96 GB HBM(KV)</td>
+            <td>HBF <b>스택당</b> ~1.6 TB/s; 2-stack 기준 가중치에 대해 ~3.2 TB/s (1-stack 진입 구성은 ~100–115)</td>
+            <td class="toks">~200+ tok/s <span class="tag">[추정]</span></td>
+            <td>bit-exact (동일 RTL)</td>
+            <td>chiplet / kW 구간 <span class="tag">미제시</span></td>
+            <td>차세대 · 메모리 기술에 걸림</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="note" style="margin-top:.6rem">④ 단은 설계되지도 검증되지도 않은 미래 지향 아키텍처 노트다. 여기 실린 <span class="k">~200+</span>는 이 페이지에서 가장 약한 <span class="k">[추정]</span>이다(HBF는 발표되었을 뿐 아직 출하되지 않았다). 자세한 내용은 아래 <b>③ 단 너머</b>. 스택 수를 늘리면 구속 조건이 bandwidth에서 die(~26K MAC lane, 4×→~2.40×로 선형 미만 확장)와 전력으로 옮겨간다.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>단별 상세</h2></div>
+    <p class="sec-sub">단기 데모는 ① 단이다. ② · ③ 단은 자금 조달에 걸린 예측이며, ②에는 정확성 조건까지 추가로 걸려 있다.</p>
+
+    <div class="rung3">
+      <div class="card">
+        <h3><span style="font-family:var(--mono);color:var(--accent)">①</span> Prove-it <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(현재)</span></h3>
+        <p>DDR4 hot-set 캐시를 붙인 저사양 FPGA(Kintex US+ KU3P급). 스토리지는 NVMe 1–2개(~7–14 GB/s)에서 ~14개 드라이브 striping(~100 GB/s)까지 확장된다.</p>
+        <div class="toks-big">~0.5–1 … ~5–8 tok/s <span class="tag">[추정]</span></div>
+        <div class="meta">
+          <span><b>정확성</b> 전 구간 bit-exact</span>
+          <span><b>비용</b> ~$1–2k 박스</span>
+          <span><b>자금</b> 자체 / 최소</span>
+          <span><b>상태</b> 단기 데모</span>
+        </div>
+        <p class="note">FPGA fit은 실측값이다 — <a href="board.html">보드</a> 참조.</p>
+      </div>
+
+      <div class="card">
+        <h3><span style="font-family:var(--mono);color:var(--accent)">②</span> 커스텀 보드 <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(투자 유치 후)</span></h3>
+        <p>중급 FPGA(Versal / Agilex / HBM급 US+)를 커스텀 보드에 올리고 DDR5 8–12 채널 또는 HBM(~400 GB/s – 1 TB/s)을 붙인다.</p>
+        <div class="toks-big">~15–40 tok/s <span class="tag">[추정]</span></div>
+        <div class="meta">
+          <span><b>정확성</b> 조건부</span>
+          <span><b>비용</b> ~$3–6k</span>
+          <span><b>자금</b> 시드</span>
+        </div>
+        <p class="note">조건부: expert 캐시 hit rate 또는 bit-exact가 아닌 pruning이 필요하다.</p>
+      </div>
+
+      <div class="card">
+        <h3><span style="font-family:var(--mono);color:var(--accent)">③</span> SoC / ASIC <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(양산 규모)</span></h3>
+        <p>커스텀 실리콘. 주 설계 지점: 512 GB LPDDR5X 전량 상주(16×32 GB, 1024-bit, ~1.1 TB/s). ~467 GB 체크포인트 전체가 상주하며, cold store는 M.2 NVMe 1개다(~70 s 부팅).</p>
+        <div class="toks-big">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></div>
+        <div class="meta">
+          <span><b>상방</b> MTP가 공개된 depth에 도달하면 ~95</span>
+          <span><b>상한</b> HBM 기준 ~120 (희망 목표)</span>
+          <span><b>정확성</b> bit-exact (상주 ⇒ h=1)</span>
+          <span><b>비용</b> ~$1.8–2.4k</span>
+          <span><b>자금</b> 시리즈 B+ / 양산</span>
+        </div>
+        <p class="note">전체 설계 지점은 <a href="board.html">보드</a> 페이지에 있다.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>③ 단 너머 — HBF + HBM (미래)</h2></div>
+    <p class="sec-sub">설계되지도 검증되지도 않은 미래 지향 아키텍처 노트 <span class="k">[추정]</span>이며, 신흥 메모리 기술에 달려 있다. 다만 RTL이 이미 어떤 기계인지에는 깔끔하게 대응된다: 가중치를 스트리밍하는 bandwidth 구속형 기계(<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). 출처: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
+    <div class="flow">
+      현재 &nbsp; <span class="arrow">NVMe (영속 저장)</span> + <span class="arrow">DDR/LPDDR (스트림 BW)</span> → die &nbsp;·&nbsp; KV는 DRAM에<br>
+      ④ 단 &nbsp; <b>512GB HBF</b> <span class="arrow">(가중치 이미 상주 · 비휘발성)</span> <b>&nbsp;—1.6 TB/s→&nbsp;</b> die &nbsp;·&nbsp; die <span class="arrow">&#8644;</span> <b>KV는 96GB HBM에</b> &nbsp; <span class="arrow">(로드 없음 / HBF→HBM 경로 없음)</span>
+    </div>
+    <div class="roof">
+      <div class="card">
+        <h3>가중치 → HBF</h3>
+        <p>HBF(High Bandwidth Flash — 3D-NAND를 HBM 방식으로 적층, 2025년 발표, 출하 전)는 <b>비휘발성이면서 고대역폭이면서 고용량</b>이다. <b>512&nbsp;GB HBF</b>(가중치 467&nbsp;GB + ~10% 여유 — 여유가 빠듯한 정확한 fit이며, 더 큰 모델에는 ~1&nbsp;TB)가 <b>~1.6&nbsp;TB/s</b>로 가중치를 <b>die로 곧장</b> 스트리밍한다 — HBM을 거치는 staging이 없다. HBF 저장소 하나가 현재 설계에서 둘로 나뉘어 있는 역할, 즉 영속 대용량 저장소(NVMe)와 고 BW 스트림 소스(DDR/LPDDR 워킹 캐시)를 함께 맡는다. 따라서 <b>NVMe 계층 없음, 467&nbsp;GB DRAM 복사본 없음, ~70&nbsp;s 부팅 로드 없음</b>(가중치가 이미 상주 → 즉시 기동). 순차적인 가중치 스트림에서는 flash read latency를 숨길 수 있으며(deep-queue <span class="k">flash_xbar</span>가 이미 그렇게 한다), write endurance는 문제가 되지 않는다(가중치는 한 번 쓴 뒤 읽기 전용이다).</p>
+      </div>
+      <div class="card">
+        <h3>KV → HBM</h3>
+        <p>MLA latent KV는 <b>87.8&nbsp;KB/token</b>이고 context에 따라 누적되어 <b>1M context를 다 채우면 ~90&nbsp;GB</b>가 되므로 <b>96&nbsp;GB HBM이면 충분하다</b>(여유 ~6&nbsp;GB — 1M을 꽉 채우면 빠듯하고, context를 제한하면 덜 빠듯하다). KV는 <b>random-access이고 latency에 민감하다</b> — flash latency가 감당할 수 없는 유일한 패턴이므로 저지연 HBM에 둔다. 이는 latency/용량의 문제이지 tok/s 자체의 문제가 아니다. 속도 이득은 <b>가중치 스트림 BW(HBF)</b>에서 나온다: 발표된 <b>~1.6&nbsp;TB/s는 스택당</b> 값이므로 1 스택이면 ~100–115 tok/s <span class="k">[추정]</span>. HBF는 HBM처럼 적층되며, ④ 단은 <b>다중 스택을 기본으로 가정한다: 2 스택(3.2&nbsp;TB/s) → ~200+ tok/s</b> <span class="k">[추정]</span>(1-stack 진입 구성은 ~100–115). 그 기본값에 따라붙는 대가는 die(~26K MAC lane, 선형 미만 확장)와 전력이며, 이때는 메모리 대신 이 둘이 구속 조건이 된다.</p>
+      </div>
+    </div>
+    <p class="note"><b>정직한 단서 조항.</b> HBF는 아직 출하되지 않은 신흥 기술이다. 동일한 선형 미만 lane 확장(4× lane → ~2.40×)에 막힌다 — 늘어난 BW를 소화하도록 die를 갖추지 않으면 연산이 병목이 된다. 전력도 더 든다(HBF + HBM은 LPDDR5X보다 뜨겁게 동작하며, 이는 저전력 / 무팬 방향과 <em>반대로</em> 당긴다). RTL 자체는 들어맞는다(<span class="k">flash_xbar</span>는 매체에 무관한 address→bytes crossbar이고, <span class="k">kv_cache_pager</span>/<span class="k">weight_loader</span>는 이미 KV를 가중치 스트림과 분리한다). 따라서 2중 저장 분리는 재파라미터화에 해당한다 — 다만 DDR 계층 제거와 계층 재구성, 벤더 HBF/HBM PHY와 컨트롤러는 만들어져 있지 않다. 전부 <span class="k">[추정]</span>이다.</p>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>실측 대 모델링</h2></div>
+    <p class="sec-sub">FPGA fit과 routed Fmax는 실측이다. 아직 동작하는 보드가 없으므로, bring-up이 하드웨어에서 실제 Fmax ÷ cyc_per_tok을 측정하기 전까지 모든 tok/s 수치는 추정치다 <span class="k">[추정]</span>.</p>
+    <div class="legend">
+      <span><i class="led s-measured"></i>실측 — 실제 실리콘 fit / routed Fmax</span>
+      <span><i class="led s-open"></i>추정 — 모델링된 tok/s, 아직 하드웨어에서 확인되지 않음</span>
+    </div>
+    <div class="ledger">
+      <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit + routed Fmax <span class="sub">제품 전체 top을 Kintex UltraScale+ XCKU3P에 place-and-route</span></div><div class="ev"><span class="st st-measured">실측 · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">전 단의 모든 tok/s <span class="sub">실측된 모델 측 입력을 넣은 bandwidth 구속 roofline. 아직 대조할 동작 보드가 없다</span></div><div class="ev"><span class="st st-open">추정 · bring-up 전까지</span>HW에서의 Fmax ÷ cyc_per_tok</div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>미해결 항목</h2></div>
+    <p class="sec-sub">여기서 ③ 단까지 남은 격차를 저장소에서 그대로 옮긴 것이다. 대부분은 RTL 저장소가 닫을 수 없는 물리 / 공정 경계에 놓여 있다.</p>
+    <div class="open-grid">
+      <div class="open-item"><div class="h"><i class="led s-open"></i>런타임 전체 GGUF 교차 검증</div><p>~467 GB GLM 파일을 end-to-end로 돌려 llama.cpp의 런타임 argmax와 대조하는 작업. GPU / 대용량 메모리 호스트가 필요하다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>보드 bring-up</div><p>FPGA fit은 저장소 안에서 실측되어 있다. 실물 보드에서 돌리려면 보드와 핀 XDC, MIG 브리지가 필요하다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>벤더 PHY IP 통합</div><p>DDR5 / NVMe (PCIe) / USB-C PHY는 testbench에서 stub 상태다. 라이선스 PHY IP는 실리콘 단에서 통합·사인오프된다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>ASIC tapeout</div><p>커스텀 실리콘 tapeout은 ③ 단 양산의 최종 관문이다.</p></div>
+    </div>
+    <p class="note">출처: <span class="k">docs/HARDWARE_LADDER.md</span>.</p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="disc">RTL은 사다리 전 구간에서 동일하며, 바뀌는 것은 메모리 bandwidth뿐이다. FPGA fit과 routed Fmax는 실측값이다. 아직 <b>동작하는 보드가 없으므로</b>, bring-up이 하드웨어에서 실제 Fmax ÷ cyc_per_tok을 측정하기 전까지 모든 tok/s 수치는 모델링된 추정치 <span class="k">[추정]</span> 또는 <span class="k">[실측 입력 기반 추정]</span>이다.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; 출처: docs/HARDWARE_LADDER.md</p>
+  </div>
+</footer>
+
+</body>
+</html>
