@@ -41,6 +41,18 @@ The bottom-up module review confirms the roofline: on the single-user product to
 - **Contract:** preserving · **Effort:** large · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 2. Multi-lane read fabric (turn N_CH into sustained N beats/cycle, not just latency-hiding)
+
+> **STATUS: BUILT + MEASURED for `ddr5_xbar` (`make rank2`), default-off.** The claim that the
+> response arbiter — not the channel count — is the throttle is now **measured, not argued**: with
+> every channel kept supplied, `N_CH=8` sustains **exactly 1.000 beats/cycle** at the committed
+> single-grant drain. `RESP_LANES=4` sustains **4.000 beats/cycle** on the same rig — a clean 4×.
+> Per-channel order is preserved, no beat is lost or duplicated, and the specific hazard multi-drain
+> introduces (two lanes popping the *same* channel in one cycle) is checked explicitly.
+> `RESP_LANES=1` is **netlist-identical** to the pre-change fabric (197 cells, `make synth-equiv
+> MOD=ddr5_xbar`) — the 1-lane path is the committed code verbatim, selected by generate.
+> **Still to do for this rank:** the same treatment for `flash_xbar`, the N_REQ request-side
+> crossbar, and wiring the wide response bus into the die (which is where the Vivado congestion
+> risk actually lands, and rank 12's sizing rule applies at the CDC).
 - **Modules:** `src/ddr5_xbar.v (req banking :154-166, single-grant RR drain :212-238), src/flash_xbar.v (:151-167, :274-276)`
 - **Change:** Widen both fabrics from a single requester port + one-grant-per-cycle drain to: (a) an N_REQ front-end crossbar accepting up to one request per distinct target channel each cycle, and (b) a multi-drain arbiter that pops up to N_CH FIFO heads/cycle onto an N_CH*DATA_W (or N_LANE-wide) response bus, plus a small completion/reorder buffer (tags already return out-of-order). The fabric stays data-agnostic (opaque beats).
 - **Why (perf model):** Roofline: to consume the ~100 GB/s the die needs, delivered beats/cycle must rise. Today N_CH raises only outstanding depth (a channel can be busy) but the single-grant drain still delivers 1 beat/cycle = 1x a single channel (~32 GB/s @1GHz); the other N_CH-1 completed reads just back up in per-channel FIFOs. This is the literal single-lane ceiling the ULTRA_PERF banner and P1.1 flag but leave at 'stripe across N channels'; the module-level refinement is that the RESPONSE ARBITER, not just the channel count, is the throttle.

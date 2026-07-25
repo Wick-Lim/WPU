@@ -93,6 +93,19 @@
 //============================================================================
 module ddr5_xbar #(
     parameter integer N_CH    = 8,      // number of DDR5 channels (power of two)
+    // ---- RESP_LANES: how many completed reads may drain PER CYCLE ------------
+    //   1 (DEFAULT) : one grant per cycle -- byte-for-byte the committed fabric.
+    //       N_CH then buys only OUTSTANDING DEPTH (a channel can be busy); the
+    //       sustained delivery stays 1 beat/cycle == a single channel's worth,
+    //       and the other N_CH-1 completed reads just back up in their FIFOs.
+    //       That response arbiter -- not the channel count -- is the throttle
+    //       (docs/ULTRA_PERF_MODULES.md rank 2).
+    //   >1 : up to RESP_LANES DISTINCT channels are drained each cycle onto a
+    //       lane-packed response bus, so N_CH finally converts into sustained
+    //       beats/cycle.  Lane 0 always carries the SAME winner the 1-lane
+    //       arbiter would have picked, so raising RESP_LANES only ADDS lanes;
+    //       it never reorders what lane 0 delivers.
+    parameter integer RESP_LANES = 1,
     parameter integer ADDR_W  = 32,     // block-address width
     parameter integer DATA_W  = 256,    // read-data width (one burst beat)
     parameter integer TAG_W   = 8,      // requester tag width (in-flight id)
@@ -124,10 +137,10 @@ module ddr5_xbar #(
     input  wire [N_CH*TAG_W-1:0]    mem_resp_tag,
 
     // ---- requester response (single port) ----
-    output reg                      resp_valid,
-    input  wire                     resp_ready,
-    output reg  [DATA_W-1:0]        resp_data,
-    output reg  [TAG_W-1:0]         resp_tag
+    output reg  [RESP_LANES-1:0]        resp_valid,
+    input  wire                         resp_ready,
+    output reg  [RESP_LANES*DATA_W-1:0] resp_data,
+    output reg  [RESP_LANES*TAG_W-1:0]  resp_tag
 );
     // ---------------- helpers ----------------
     function integer clog2;
@@ -186,13 +199,15 @@ module ddr5_xbar #(
 
     wire [N_CH-1:0] fifo_ne;     // FIFO non-empty
     wire [N_CH-1:0] deq_fire;    // arbiter drains this channel this cycle
+    reg  [N_CH-1:0] lane_hit;    // some response lane granted this channel
     generate
         for (c = 0; c < N_CH; c = c + 1) begin : g_occ
             // back-pressure the channel when its FIFO is full
             assign mem_resp_ready[c] = (cnt[c] != RESP_QD[CNT_W-1:0]);
             assign fifo_ne[c]        = (cnt[c] != {CNT_W{1'b0}});
-            assign deq_fire[c]       =
-                gnt_valid && (gnt == c[CH_IDX_W-1:0]) && resp_ready;
+            assign deq_fire[c]       = (RESP_LANES == 1)
+                ? (gnt_valid && (gnt == c[CH_IDX_W-1:0]) && resp_ready)  // committed
+                : (lane_hit[c] && resp_ready);
         end
     endgenerate
 
@@ -209,6 +224,9 @@ module ddr5_xbar #(
     //       gnt = (sel + rr) mod N  (a single add + conditional subtract).
     // The lowest-j winner equals the lowest-ai winner of the old scan (ai=0 maps
     // to channel rr), so gnt_valid / gnt / resp_* are bit-identical every cycle.
+    reg                 resp_valid0;   // the committed single-lane response
+    reg [DATA_W-1:0]    resp_data0;
+    reg [TAG_W-1:0]     resp_tag0;
     always @* begin
         // (1) parallel barrel-rotate fifo_ne by rr (one mux layer, not a chain)
         rot = {N_CH{1'b0}};
@@ -231,11 +249,65 @@ module ddr5_xbar #(
         if (gnt_idx >= N_CH[CH_IDX_W:0]) gnt_idx = gnt_idx - N_CH[CH_IDX_W:0];
         gnt_valid = found;
         gnt       = gnt_idx[CH_IDX_W-1:0];
-        // drive requester response port from the granted FIFO head
-        resp_valid = gnt_valid;
-        resp_data  = fifo[gnt][head[gnt]][DATA_W-1:0];
-        resp_tag   = fifo[gnt][head[gnt]][DATA_W +: TAG_W];
+
+        // lane-0 response: EXACTLY the committed expressions (see the generate
+        // below -- at RESP_LANES=1 these ARE the module's outputs).
+        resp_valid0 = gnt_valid;
+        resp_data0  = fifo[gnt][head[gnt]][DATA_W-1:0];
+        resp_tag0   = fifo[gnt][head[gnt]][DATA_W +: TAG_W];
     end
+
+    // ========================================================================
+    // RESPONSE DRAIN.  Two implementations, chosen at elaboration:
+    //   RESP_LANES == 1 : the committed single-grant drain, verbatim -- the
+    //       outputs are the lane-0 expressions above and nothing else exists.
+    //       Proven netlist-identical to the pre-change fabric.
+    //   RESP_LANES  > 1 : up to RESP_LANES DISTINCT channels drain per cycle.
+    //       Lane 0 still carries the single-lane winner, so the extra lanes are
+    //       purely additive -- they never reorder what lane 0 delivers.
+    // ========================================================================
+    generate
+    if (RESP_LANES == 1) begin : g_drain_1
+        always @* begin
+            resp_valid = resp_valid0;
+            resp_data  = resp_data0;
+            resp_tag   = resp_tag0;
+            lane_hit   = {N_CH{1'b0}};   // unused at RESP_LANES=1 (see deq_fire)
+        end
+    end else begin : g_drain_n
+        integer li, ai2;
+        reg [N_CH-1:0]     taken;
+        reg                found2;
+        reg [CH_IDX_W-1:0] sel2;
+        integer            idx2;
+        always @* begin
+            resp_valid = {RESP_LANES{1'b0}};
+            resp_data  = {(RESP_LANES*DATA_W){1'b0}};
+            resp_tag   = {(RESP_LANES*TAG_W){1'b0}};
+            lane_hit   = {N_CH{1'b0}};
+            taken      = {N_CH{1'b0}};
+            for (li = 0; li < RESP_LANES; li = li + 1) begin
+                found2 = 1'b0;
+                sel2   = {CH_IDX_W{1'b0}};
+                for (ai2 = N_CH-1; ai2 >= 0; ai2 = ai2 - 1) begin
+                    idx2 = ai2 + {{(32-CH_IDX_W){1'b0}}, rr};
+                    if (idx2 >= N_CH) idx2 = idx2 - N_CH;
+                    if (fifo_ne[idx2[CH_IDX_W-1:0]] && !taken[idx2[CH_IDX_W-1:0]]) begin
+                        found2 = 1'b1;
+                        sel2   = idx2[CH_IDX_W-1:0];
+                    end
+                end
+                if (found2) begin
+                    resp_valid[li]                 = 1'b1;
+                    resp_data[li*DATA_W +: DATA_W] = fifo[sel2][head[sel2]][DATA_W-1:0];
+                    resp_tag [li*TAG_W  +: TAG_W ] = fifo[sel2][head[sel2]][DATA_W +: TAG_W];
+                    lane_hit[sel2]                 = 1'b1;
+                    taken[sel2]                    = 1'b1;
+                end
+            end
+        end
+    end
+    endgenerate
 
     // ---- sequential FIFO update + rr advance ----
     wire [N_CH-1:0] enq_fire;     // channel pushes a completed read this cycle
@@ -271,7 +343,10 @@ module ddr5_xbar #(
                           - {{(CNT_W-1){1'b0}}, deq_fire[k]};
             end
             // advance round-robin past the channel we just drained
-            if (gnt_valid && resp_ready)
+            //   advance past the channel lane 0 drained (RESP_LANES=1: identical
+            //   to the committed behaviour; >1: the extra lanes are additive and
+            //   the pointer still walks so no channel starves).
+            if (resp_valid[0] && resp_ready)
                 rr <= (gnt == CH_LAST)
                           ? {CH_IDX_W{1'b0}} : gnt + 1'b1;
         end
