@@ -120,6 +120,17 @@ The bottom-up module review confirms the roofline: on the single-user product to
 - **Contract:** preserving · **Effort:** medium · **vs ULTRA_PERF:** new
 
 ### 12. CDC crossing at the wide beat (don't re-serialize the widened fabric)
+
+> **STATUS: VERIFIED + MEASURED (`make rank12`).** `cdc_async_fifo` is already
+> `DATA_W`-parameterized, so the wide crossing needed confirming, not building — and the
+> confirmation found the part that is *not* automatic. **Width:** a 256-bit (8×32b) lane-tagged
+> beat crosses **atomically and in order**, checked per lane. **Depth:** the crossing sustains
+> **1.003 beats/cycle at depth 16** — but the same test at **depth 4 falls to 0.617 beats/cycle
+> with zero data loss**, which is exactly the silent re-serialization this rank warns about: four
+> entries cannot cover the two 2-FF synchronizer hops, so `full` throttles the writer while every
+> functional check still passes. So the actionable output for ranks 2–3 is a **sizing rule, not a
+> code change**: depth must cover the cross-domain round trip. (Also found: `ADDR_W ≥ 2` is a
+> structural floor — `ADDR_W=1` does not elaborate.)
 - **Modules:** `src/cdc_async_fifo.v (1 word/rclk edge :72-88,:190-198)`
 - **Change:** Instantiate the core<->die clock crossing at the WIDE beat (N_LANE*DATA_W) or as N_LANE parallel FIFOs, and size ADDR_W for the cross-domain round-trip so it never back-pressures.
 - **Why (perf model):** A single narrow CDC FIFO between the widened fabric (ranks 2-3) and the die would re-choke the crossing to 1 word/cycle, undoing the N_CH win. Pure enabler for the fabric-width levers.

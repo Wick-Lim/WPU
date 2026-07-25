@@ -1130,6 +1130,51 @@ clean:
 	rm -f *.vcd
 
 # ============================================================================
+# rank12 : WIDE-BEAT clock-domain crossing (docs/ULTRA_PERF_MODULES.md rank 12)
+#   Ranks 2-3 widen the read fabric to N lanes.  If the core<->die CDC stays
+#   narrow/shallow it re-chokes the stream and the widening is wasted -- silently,
+#   because nothing is dropped and no functional test fails.  This gate proves
+#   the crossing carries a fabric-shaped beat and MEASURES that it sustains it:
+#     * 256b (8 lanes x 32b), lane-tagged, checked per lane -> atomic, in order;
+#     * sustained beats/cycle reported, asserted > 0.95 at depth 16.
+#   Injection: the SAME test at depth 4 must FAIL -- four entries cannot cover the
+#   two 2-FF synchronizer hops, so `full` throttles the writer (measured 0.617
+#   beats/cycle) even though no data is lost.  That is the "silent re-serialization"
+#   this rank exists to prevent, and it is what makes the throughput assert
+#   load-bearing rather than decorative.
+# ============================================================================
+.PHONY: rank12
+rank12:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/cdc_wide_beat test/cdc_wide_beat_tb.v src/cdc_async_fifo.v
+	@printf '[%s] ' "cdc_wide_beat"; $(VVP) $(BUILD_DIR)/cdc_wide_beat | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: rank12 (wide beat did not cross atomically or did not sustain 1 beat/cycle)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJECT_SHALLOW -o $(BUILD_DIR)/cdc_wide_beat_shallow test/cdc_wide_beat_tb.v src/cdc_async_fifo.v
+	@printf '[%s] ' "cdc_wide_beat_INJECT_shallow"; \
+	    if $(VVP) $(BUILD_DIR)/cdc_wide_beat_shallow 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: SHALLOW injection NOT caught (a too-shallow CDC throttled the stream and the throughput assert did not notice)"; exit 1; \
+	    else echo "injection correctly FAILED (depth must cover the synchronizer round trip; the throughput measurement is load-bearing)"; fi
+
+# ============================================================================
+# synth-equiv : per-module "did this edit change the default netlist?" check.
+#   The perf series edits leaves one at a time and every one of them promises the
+#   DEFAULT build is untouched.  Checking that on the whole top costs minutes per
+#   edit (it timed out at 5 min during rank 7), so it gets skipped -- and that is
+#   how a byte-identical claim quietly stops being true.  This does it per module
+#   in seconds: synthesize the module from a git revision and from the working
+#   tree with the SAME parameter overrides, diff the cell histograms.
+#     make synth-equiv MOD=glm_matmul_q4k REV=HEAD~1 PARAMS='"PE_M 2" "PE_N 2"'
+#   Self-tested both ways: a no-op edit reports IDENTICAL, adding one register
+#   bank reports DIFFERS (24 -> 26 cells).  It compares HARDWARE, not function --
+#   the functional goldens remain the proof that behaviour is unchanged.
+# ============================================================================
+.PHONY: synth-equiv
+synth-equiv:
+	@bash -c 'MOD="$(MOD)"; REV="$${REV:-HEAD}"; \
+	  [ -n "$$MOD" ] || { echo "usage: make synth-equiv MOD=<module> [REV=<rev>] [PARAMS='"'"'\"P V\" ...'"'"']"; exit 2; }; \
+	  eval tools/synth_equiv.sh "$$MOD" "$$REV" $(PARAMS)'
+
+# ============================================================================
 # rank7 : REGISTERED C-tile output bus in glm_matmul_q4k
 #   (docs/ULTRA_PERF_MODULES.md rank 7 -- the Fmax cluster).
 #
