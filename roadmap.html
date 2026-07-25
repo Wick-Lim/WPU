@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AIPU — hardware roadmap</title>
+<title>WPU — hardware roadmap</title>
 <style>
   :root {
     --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
@@ -196,18 +196,18 @@
 <header class="mast">
   <div class="wrap">
     <div class="mast-row">
-      <span class="brand"><b>AI</b>PU</span>
-      <span class="brand-def">GLM-5.2 · Q4_K · Verilog</span>
+      <span class="brand"><b>W</b>PU</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
       <nav class="nav">
         <a href="index.html">Overview</a>
         <a href="board.html">Board</a>
         <a href="roadmap.html" class="active">Roadmap</a>
       </nav>
-      <a class="repo" href="https://github.com/Wick-Lim/AIPU">GitHub ↗</a>
+      <a class="repo" href="https://github.com/Wick-Lim/WPU">GitHub ↗</a>
     </div>
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">Hardware ladder · tok/s <span class="tag">[EST]</span></div>
-      <h1>AIPU hardware roadmap</h1>
+      <h1>WPU hardware roadmap</h1>
       <p class="lede">Performance is set by memory bandwidth, which is set by the silicon's IO/PHY budget, which is set by the rung and its funding. Only rung ① is near-term buildable; <b>rungs ② and ③ are funding-gated projections, and rung ④ is a further, memory-tech-gated step.</b> Every tok/s figure is an estimate <span class="k">[EST]</span>.</p>
       <div class="proof">The RTL is the <b>same across the ladder</b> — only the memory bandwidth changes (rung ④ re-parameterizes the storage tier, not the compute graph). The FPGA fit and routed Fmax are measured (see <a href="board.html">Board</a>); there is no running board yet, so every tok/s is modeled until bring-up.</div>
     </div>
@@ -324,7 +324,7 @@
 
   <section>
     <div class="sec-head"><h2>Beyond rung ③ — HBF + HBM (future)</h2></div>
-    <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). Source: <a href="https://github.com/Wick-Lim/AIPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
+    <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). Source: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
     <div class="flow">
       today &nbsp; <span class="arrow">NVMe (persist)</span> + <span class="arrow">DDR/LPDDR (stream BW)</span> → die &nbsp;·&nbsp; KV in DRAM<br>
       rung ④ &nbsp; <b>512GB HBF</b> <span class="arrow">(weights already resident · non-volatile)</span> <b>&nbsp;—1.6 TB/s→&nbsp;</b> die &nbsp;·&nbsp; die <span class="arrow">&#8644;</span> <b>KV in 96GB HBM</b> &nbsp; <span class="arrow">(no load / no HBF→HBM path)</span>
@@ -372,7 +372,7 @@
 <footer>
   <div class="wrap">
     <p class="disc">The RTL is the same across the ladder; only the memory bandwidth changes. The FPGA fit and routed Fmax are measured; there is <b>no running board yet</b>, so every tok/s figure is a modeled estimate <span class="k">[EST]</span> or <span class="k">[measured-inputs EST]</span> until bring-up measures a real Fmax ÷ cyc_per_tok on hardware.</p>
-    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/AIPU">github.com/Wick-Lim/AIPU</a> &nbsp;·&nbsp; source: docs/HARDWARE_LADDER.md</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; source: docs/HARDWARE_LADDER.md</p>
   </div>
 </footer>
 
