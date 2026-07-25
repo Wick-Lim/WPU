@@ -50,7 +50,21 @@
 module glm_matmul_q4k #(
     parameter integer PE_M = 4,       // array rows (== tile M)
     parameter integer PE_N = 4,       // array cols (== tile N)
-    parameter integer KMAX = 256      // max K per tile (one Q4_K super-block)
+    parameter integer KMAX = 256,     // max K per tile (one Q4_K super-block)
+    // ---- REG_COUT: register the C-tile output bus (docs/ULTRA_PERF_MODULES.md rank 7)
+    //   0 (DEFAULT) : c_out is driven COMBINATIONALLY from acc[] through PE_M*PE_N
+    //       fp32_to_bf16 rounders -- byte-for-byte the committed module.
+    //   1 : those rounders are registered into a flop bank and out_valid is delayed
+    //       by one cycle with them, so the wide inter-module C bus leaves the
+    //       combinational cone and becomes a reg->reg segment P&R can place.  The
+    //       committed VALUES are identical (same rounding of the same accumulators);
+    //       only the tile result's arrival moves one cycle later, and out_valid moves
+    //       with it, so a consumer that waits on out_valid sees no protocol change.
+    //   WHY: the repo's ONE measured routed-Fmax limiter is a wide combinational
+    //       bus of exactly this shape (u_moe/y_out -> hbuf, 21.2 ns, 59% wire,
+    //       pinning routed Fmax at 46.5 MHz).  This is that shape one module deeper.
+    //       The Fmax gain itself is [EST] until a Vivado re-fit measures it.
+    parameter integer REG_COUT = 0
 ) (
     input  wire                       clk,
     input  wire                       rst,        // sync, active-high
@@ -70,8 +84,8 @@ module glm_matmul_q4k #(
     input  wire [ 4*PE_N-1:0]         w_q,        // 4-bit Q4_K codes W[k][*], PE_N packed
 
     output reg                        busy,
-    output reg                        out_valid,  // C tile valid (1 cycle)
-    output reg  [16*PE_M*PE_N-1:0]    c_out,      // bf16 C[pi][pj] packed
+    output wire                       out_valid,  // C tile valid (1 cycle)
+    output wire [16*PE_M*PE_N-1:0]    c_out,      // bf16 C[pi][pj] packed
 
     // ---- ADDED: mixed-type (Q6_K/Q8_0/F16) selector + high-precision buses ----
     //   All four are OPTIONAL: a Q4_K-only caller may leave them unconnected.  The
@@ -130,6 +144,7 @@ module glm_matmul_q4k #(
     //========================================================================
     localparam integer PLAT = 4;
     reg [PLAT-1:0]        vp;
+    reg                   out_valid_i;   // pre-output-stage valid (see REG_COUT)
     reg                   draining;
 
     // P1 registers (per column): selected/multiplied header values
@@ -157,7 +172,7 @@ module glm_matmul_q4k #(
 
     always @(posedge clk) begin
         if (rst) begin
-            busy <= 1'b0; out_valid <= 1'b0; k_cnt <= 0; k_len_r <= 0;
+            busy <= 1'b0; out_valid_i <= 1'b0; k_cnt <= 0; k_len_r <= 0;
             vp <= {PLAT{1'b0}}; draining <= 1'b0;
             a_d1 <= 0; a_d2 <= 0; a_d3 <= 0;
             for (idx = 0; idx < PE_M*PE_N; idx = idx + 1) begin
@@ -169,7 +184,7 @@ module glm_matmul_q4k #(
                 p2_t[pj] <= 32'd0;  p2_m1[pj] <= 32'd0; p3_w[pj] <= 32'd0;
             end
         end else begin
-            out_valid <= 1'b0;
+            out_valid_i <= 1'b0;
             vp <= {vp[PLAT-2:0], accept};
 
             if (start) begin
@@ -272,18 +287,45 @@ module glm_matmul_q4k #(
                 if (draining && vp == {PLAT{1'b0}}) begin
                     busy      <= 1'b0;
                     draining  <= 1'b0;
-                    out_valid <= 1'b1;
+                    out_valid_i <= 1'b1;
                 end
             end
         end
     end
 
     // ---- output: round each fp32 accumulator to bf16 ----
-    // out_valid is asserted the cycle the last beat's accumulate is registered; the
-    // combinational read of acc[] below reflects the final sums on that same edge.
+    // out_valid_i is asserted the cycle the last beat's accumulate is registered, so
+    // acc[] holds the final sums on that same edge.
+    reg [16*PE_M*PE_N-1:0] c_comb;
     always @(*) begin
         for (idx = 0; idx < PE_M*PE_N; idx = idx + 1)
-            c_out[16*idx +: 16] = fp32_to_bf16(acc[idx]);
+            c_comb[16*idx +: 16] = fp32_to_bf16(acc[idx]);
     end
+
+    generate
+    if (REG_COUT == 0) begin : g_cout_comb
+        // DEFAULT -- byte-for-byte the committed behaviour: the rounders drive the
+        // output bus combinationally and out_valid passes straight through.
+        assign c_out     = c_comb;
+        assign out_valid = out_valid_i;
+    end else begin : g_cout_reg
+        // rank 7 -- take the rounders + the wide bus OFF the inter-module route.
+        // Same values, one cycle later; out_valid travels with the data so the
+        // wait-on-out_valid protocol every consumer uses is unchanged.
+        reg [16*PE_M*PE_N-1:0] c_reg;
+        reg                    ov_reg;
+        always @(posedge clk) begin
+            if (rst) begin
+                c_reg  <= {16*PE_M*PE_N{1'b0}};
+                ov_reg <= 1'b0;
+            end else begin
+                ov_reg <= out_valid_i;
+                if (out_valid_i) c_reg <= c_comb;
+            end
+        end
+        assign c_out     = c_reg;
+        assign out_valid = ov_reg;
+    end
+    endgenerate
 endmodule
 /* verilator lint_on DECLFILENAME */

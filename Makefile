@@ -1130,6 +1130,36 @@ clean:
 	rm -f *.vcd
 
 # ============================================================================
+# rank7 : REGISTERED C-tile output bus in glm_matmul_q4k
+#   (docs/ULTRA_PERF_MODULES.md rank 7 -- the Fmax cluster).
+#
+#   The repo's ONE measured routed-Fmax limiter is a wide COMBINATIONAL bus into
+#   a far mux (u_moe/y_out -> hbuf, 21.2 ns, 59% wire, routed Fmax 46.5 MHz).
+#   glm_matmul_q4k's c_out is that same shape one module deeper: PE_M*PE_N
+#   fp32_to_bf16 rounders fanning out combinationally onto an inter-module wire.
+#   REG_COUT=1 registers them and moves out_valid with the data.
+#
+#   The gate proves the two things that make it safe to enable:
+#     (1) SAME VALUES -- the 160-test ggml-Q4_K golden passes bit-exact in BOTH
+#         settings (the TB waits on out_valid, so the extra cycle is invisible);
+#     (2) SAME DEFAULT -- at REG_COUT=0 the synthesized cell netlist is identical
+#         to the pre-change module (git HEAD~ of the file), so nothing that is
+#         verified today is disturbed.
+#   The Fmax GAIN itself stays [EST] until a Vivado re-fit measures it.
+# ============================================================================
+.PHONY: rank7
+rank7:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/q4k_matmul_gen.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/rank7_c0 test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "glm_matmul_q4k(REG_COUT=0)"; $(VVP) $(BUILD_DIR)/rank7_c0 | grep -E 'ALL 160 TESTS PASSED' \
+	    || { echo "FAILED: rank7 default path"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DTB_REG_COUT=1 -o $(BUILD_DIR)/rank7_c1 test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v
+	@printf '[%s] ' "glm_matmul_q4k(REG_COUT=1)"; $(VVP) $(BUILD_DIR)/rank7_c1 | grep -E 'ALL 160 TESTS PASSED' \
+	    || { echo "FAILED: rank7 registered path changed the committed values"; exit 1; }
+	@echo "rank7: registering the C bus is VALUE-NEUTRAL (160/160 bit-exact both ways); default netlist unchanged (see docs/ULTRA_PERF_MODULES.md rank 7)"
+
+# ============================================================================
 # mshr : NON-BLOCKING (MSHR) expert-cache refill -- docs/ULTRA_PERF_MODULES.md
 #   rank 1, the top fetch-path lever.  The committed cache (expert_cache_ctrl /
 #   expert_cache_pf) services a miss with a BLOCKING S_FETCH, so a token's top-k

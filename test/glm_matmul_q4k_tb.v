@@ -35,7 +35,13 @@ module glm_matmul_q4k_tb;
     wire                  busy, out_valid;
     wire [16*PE_M*PE_N-1:0] c_out;
 
-    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(PE_N), .KMAX(KMAX)) dut (
+`ifndef TB_REG_COUT
+    `define TB_REG_COUT 0
+`endif
+    // REG_COUT=1 registers the C bus + delays out_valid with it (rank 7).  The TB
+    // waits on out_valid, so the SAME golden must pass in BOTH settings -- that is
+    // exactly the property that makes the pipeline stage safe to enable.
+    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(PE_N), .KMAX(KMAX), .REG_COUT(`TB_REG_COUT)) dut (
         .clk(clk), .rst(rst), .start(start), .k_len(k_len),
         .w_d(w_d), .w_dmin(w_dmin), .w_scales(w_scales),
         .in_valid(in_valid), .a_col(a_col), .w_q(w_q),

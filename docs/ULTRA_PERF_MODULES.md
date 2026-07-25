@@ -76,6 +76,15 @@ The bottom-up module review confirms the roofline: on the single-user product to
 - **Contract:** preserving · **Effort:** medium · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 7. Register the leaf-level shapes of the same worst path (matmul c_out + silu*up merge)
+
+> **STATUS: (a) BUILT — `glm_matmul_q4k` gained `REG_COUT` (`make rank7`).** Default `REG_COUT=0`
+> is the committed behaviour and its synthesized netlist is proven **identical to the pre-change
+> module** (2,555 cells, cell-for-cell). At `REG_COUT=1` the `PE_M*PE_N` rounders and the wide C bus
+> are registered and `out_valid` moves with the data, so the 160-test ggml-Q4_K golden passes
+> **bit-exact in BOTH settings** — the extra cycle is invisible to any consumer that waits on
+> `out_valid`, which is all of them. **The Fmax gain remains `[EST]` until a Vivado re-fit measures
+> it**, and enabling it in the product is gated on that measurement. (b) the SwiGLU `silu*up` merge
+> register is not done.
 - **Modules:** `src/glm_matmul_q4k.v (combinational c_out fp32_to_bf16 fanout :284-287), src/swiglu_expert_q4k.v (combinational bf16_mul silu*up feeding hbuf :205-216)`
 - **Change:** (a) Register c_out at the glm_matmul_q4k leaf boundary (one flop bank of PE_M*PE_N fp32_to_bf16 results) and delay out_valid by 1 cycle so consumers capture on the same edge; the wide bus becomes a reg->reg segment P&R can place. (b) Register the bf16_mul(act_y, up_hold) result one beat before the hbuf write (the FSM already idles in the merge cycle, so +1 latency is free).
 - **Why (perf model):** Both are the same combinational-wide-fanout-into-hbuf shape as rank 6, one module deeper: the matmul c_out rounders and the SwiGLU merge multiply both fan out combinationally onto the inter-module wire that becomes the 46.5 MHz path. Registering them moves the arithmetic off the route and lets the repipeline campaign (already 4.6x) continue. Small effort, bit-exact, composes with rank 6.
