@@ -1,13 +1,13 @@
 # arXiv 제출 킷 — 네 기기 브라우저에서 ~5분
 
-파일: 이 리포의 `paper/aipu.tex` 하나만 업로드하면 됨 (단일 파일 제출, 그림 없음).
+파일: 이 리포의 `paper/wpu.tex` 하나만 업로드하면 됨 (단일 파일 제출, 그림 없음).
 로컬에 리포가 있으면 `git pull` 후 그 파일 사용; 없으면 GitHub 웹에서 raw 다운로드.
 
 ---
 
 ## 0. 제출 전 필수 결정 — 리포 공개
 
-**논문이 "reproducible from the public repository at github.com/Wick-Lim/AIPU"라고
+**논문이 "reproducible from the public repository at github.com/Wick-Lim/WPU"라고
 주장하는데 리포는 현재 PRIVATE.** 제출 전에 둘 중 하나:
 - (권장) GitHub → Settings → General → Danger Zone → **Change visibility → Public**
 - 또는 논문에서 public/reproducible 문구를 수정 (비권장 — 재현성이 핵심 강점)
@@ -31,8 +31,8 @@
 
 ## 4. 파일 업로드
 
-- `aipu.tex` 단일 파일 업로드 → arXiv가 자동 컴파일 (tectonic으로 에러 0 확인됨)
-- 컴파일 프리뷰에서 PDF 확인 (참고본: `paper/aipu.pdf`)
+- `wpu.tex` 단일 파일 업로드 → arXiv가 자동 컴파일 (tectonic으로 에러 0 확인됨)
+- 컴파일 프리뷰에서 PDF 확인 (참고본: `paper/wpu.pdf`)
 
 ## 5. 메타데이터 — 아래 그대로 복붙
 
@@ -77,7 +77,7 @@ named, not hidden.
 **Comments (선택):**
 ```
 Pre-silicon; every proven/measured claim is reproducible from the repository at
-https://github.com/Wick-Lim/AIPU
+https://github.com/Wick-Lim/WPU
 ```
 
 ## 6. 프리뷰 & 확정

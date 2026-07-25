@@ -1,4 +1,4 @@
-# AIPU — full operational flow (end-to-end)
+# WPU — full operational flow (end-to-end)
 
 > **Track.** This is the **Q4_K** operational flow — the current / `main` product track (GGML
 > Q4_K, targeting [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF),
@@ -44,7 +44,7 @@ LPDDR5X (~1.1 TB/s), h=1 by construction, no per-token NVMe streaming, design po
 ## 0. Physical / logical stack
 
 ```
-  ┌───────────────────────────── AIPU module (one board / one die) ─────────────────────────────┐
+  ┌───────────────────────────── WPU module (one board / one die) ─────────────────────────────┐
   │                                                                                              │
   │   HOST (USB-C)  ──req──►┌─CDC─┐──►┌──────────────── glm_q4k_system (compute clock) ─────────┐ │
   │                 ◄─tok───┤fifo │   │                                                         │ │

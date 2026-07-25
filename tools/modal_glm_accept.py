@@ -14,7 +14,7 @@ read vLLM's spec-decode counters (num_drafts / num_draft_tokens /
 num_accepted_tokens / per-position acceptance) and derive:
   - alpha_pos[i] : per-position acceptance (r estimate per draft position)
   - A_eff(k)     : mean accepted+1 tokens per engine step (the roofline A)
-Results -> /out/GLM-4.5-Air/accept_sweep.json in the aipu-traces volume.
+Results -> /out/GLM-4.5-Air/accept_sweep.json in the wpu-traces volume.
 
 Run:  modal run tools/modal_glm_accept.py::accept_sweep
 Cost: 2x H100 x ~45-70 min [~$8-12]; FP8 weights (~110GB) cached in the volume.
@@ -26,9 +26,9 @@ MODEL = "zai-org/GLM-4.5-Air-FP8"
 KS = [1, 2, 3, 4, 5]
 MAX_NEW = 256
 
-app = modal.App("aipu-glm-accept")
-vol = modal.Volume.from_name("aipu-traces", create_if_missing=True)
-hf_cache = modal.Volume.from_name("aipu-hf-cache", create_if_missing=True)
+app = modal.App("wpu-glm-accept")
+vol = modal.Volume.from_name("wpu-traces", create_if_missing=True)
+hf_cache = modal.Volume.from_name("wpu-hf-cache", create_if_missing=True)
 
 image = (
     modal.Image.from_registry(          # vLLM JIT-compiles kernels -> needs nvcc

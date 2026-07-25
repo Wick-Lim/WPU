@@ -15,7 +15,7 @@
 #                      -Wall clean -- informational, NOT part of `all`)
 #   make coverage   -> verilator --coverage-line/-toggle structural coverage of
 #                      the clean-verilating TB subset (per-module + merged report)
-#   make host-test  -> host-side runtime scaffold self-test (host/test_aipu.py)
+#   make host-test  -> host-side runtime scaffold self-test (host/test_wpu.py)
 #   make clean      -> remove build artifacts and the generated VCDs
 
 IVERILOG  ?= iverilog
@@ -43,7 +43,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # it guards is covered by dsa-sparse-correct, which runs =0 AND =1 end-to-end against the
 # reference.  Every prerequisite below must be a gate that can actually finish.
 #
-# host-test is here because the RTL gates cannot see host/aipu_device.py at all, and 14
+# host-test is here because the RTL gates cannot see host/wpu_device.py at all, and 14
 # of its 32 tests are the prefix-cache / KV-reuse / context-capacity logic -- including
 # test_context_overflow_refuses_instead_of_aliasing, where the failure mode is a ring
 # that silently aliases rather than refuses.  2 s.  It was written, it passes, and until
@@ -65,6 +65,13 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - provision-selftest : needs two EXTERNAL inputs (a real .gguf file and a
 #     llama.cpp gguf-py checkout) that a clean clone does not have -- see the
 #     fail-fast check in its recipe for how to point PROVISION_GGUF/PROVISION_GGUF_PY.
+#   - mshr : src/expert_cache_mshr.v (the non-blocking MSHR refill,
+#     docs/ULTRA_PERF_MODULES.md rank 1) is a STANDALONE module -- it is not
+#     instantiated anywhere in the product hierarchy, so no edit to the shipped
+#     datapath can break it, and it cannot break the shipped datapath.  Run
+#     `make mshr` when touching that file.  It joins release-gate on the day it
+#     is wired into glm_q4k_system (which also needs the `awaiting` issuer and
+#     the single flash arbiter widened -- see the module header).
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
@@ -581,7 +588,7 @@ lint:
 
 # Host software scaffold (D2): OpenAI-compatible server + device protocol (stdlib).
 host-test:
-	@printf '[host-test] '; python3 host/test_aipu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	@printf '[host-test] '; python3 host/test_wpu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: host-test (a self-test raised; banner absent)"; exit 1; }
 
 GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_fifo.v \
@@ -1216,7 +1223,46 @@ laguna-datapath-elab:
 #   references, and the datapath elaboration.  This is the branch's release gate.
 laguna: laguna-config-check laguna-attn laguna-model laguna-datapath-elab laguna-moe
 	@echo "laguna: ALL Laguna-port gates passed (config + attn/model refs + datapath elab + MoE). See docs/LAGUNA_S21.md SS6 for the verification-level ledger."
-
+# mshr : NON-BLOCKING (MSHR) expert-cache refill -- docs/ULTRA_PERF_MODULES.md
+#   rank 1, the top fetch-path lever.  The committed cache (expert_cache_ctrl /
+#   expert_cache_pf) services a miss with a BLOCKING S_FETCH, so a token's top-k
+#   misses cost ~k*FLASH_LAT and demand bandwidth is capped at 1/FLASH_LAT.
+#   src/expert_cache_mshr.v overlaps them with an M-entry MSHR file.
+#
+#   The gate MEASURES the lever (it does not assert it): K cold misses issued
+#   back-to-back are timed in cycles and compared against the blocking baseline
+#   K*FLASH_LAT.  It also proves the three hazards MSHR introduces -- victim
+#   collision, duplicate fetch, in-flight-is-not-a-hit -- with a must-FAIL
+#   injection for each of the first two, and exercises OUT-OF-ORDER completion.
+#
+#   SCOPE: this module is NOT wired into the product top (the verified datapath
+#   is untouched).  Integration additionally needs the two other single-
+#   outstanding seams widened -- the `awaiting` request issuer and the single
+#   untagged flash arbiter in glm_q4k_system.v -- see the module header.
+# ============================================================================
+.PHONY: mshr
+mshr:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_mshr_sim \
+	    test/expert_cache_mshr_tb.v src/expert_cache_mshr.v
+	@printf '[%s] ' "expert_cache_mshr"; $(VVP) $(BUILD_DIR)/expert_cache_mshr_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mshr"; exit 1; }
+	@# INJECTION 1 -- drop the victim-exclusion so two concurrent misses may pick
+	@#   the SAME slot: the directory/response checks MUST catch it.
+	@$(IVERILOG) $(IFLAGS) -DINJECT_NORESV -o $(BUILD_DIR)/expert_cache_mshr_noresv \
+	    test/expert_cache_mshr_tb.v src/expert_cache_mshr.v
+	@printf '[%s] ' "expert_cache_mshr_INJECT_noresv"; \
+	    if $(VVP) $(BUILD_DIR)/expert_cache_mshr_noresv 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: NORESV injection NOT caught (concurrent misses may share a victim slot and nothing noticed)"; exit 1; \
+	    else echo "injection correctly FAILED (victim reservation across in-flight misses is load-bearing)"; fi
+	@# INJECTION 2 -- refetch an id that is already in flight instead of merging:
+	@#   the fetch-count check MUST catch the duplicate Flash traffic.
+	@$(IVERILOG) $(IFLAGS) -DINJECT_NOMERGE -o $(BUILD_DIR)/expert_cache_mshr_nomerge \
+	    test/expert_cache_mshr_tb.v src/expert_cache_mshr.v
+	@printf '[%s] ' "expert_cache_mshr_INJECT_nomerge"; \
+	    if $(VVP) $(BUILD_DIR)/expert_cache_mshr_nomerge 2>/dev/null | grep -qE 'ALL [0-9]+ TESTS PASSED'; then \
+	        echo "FAILED: NOMERGE injection NOT caught (a duplicate fetch for an in-flight id went unnoticed)"; exit 1; \
+	    else echo "injection correctly FAILED (MSHR merging of an in-flight id is load-bearing)"; fi
 # ============================================================================
 # mla-sparse : mla_attn_q4k SPARSE / PER-ROW batching oracle (standalone gate)
 # ----------------------------------------------------------------------------
@@ -1624,8 +1670,8 @@ batched-q4k:
 #   make provision-selftest PROVISION_GGUF=/path/to.gguf PROVISION_GGUF_PY=/path/to/gguf-py
 # ============================================================================
 .PHONY: provision-selftest
-PROVISION_GGUF    ?= $(HOME)/.cache/aipu/smollm2-135m-q8_0.gguf
-PROVISION_GGUF_PY ?= $(HOME)/.cache/aipu/gguf-py
+PROVISION_GGUF    ?= $(HOME)/.cache/wpu/smollm2-135m-q8_0.gguf
+PROVISION_GGUF_PY ?= $(HOME)/.cache/wpu/gguf-py
 
 provision-selftest:
 	@mkdir -p $(BUILD_DIR)

@@ -1,5 +1,5 @@
 """
-aipu_device.py -- host-side driver abstraction for the AIPU USB-C device.
+wpu_device.py -- host-side driver abstraction for the WPU USB-C device.
 
 This mirrors the RTL host interface of `glm_q4k_system_cdc` (the production 2-clock
 top) EXACTLY, so the same driver code that talks to a MockDevice today talks to the
@@ -34,7 +34,7 @@ class SamplingParams:
     HONEST host-vs-device split (see host/README.md):
       * HOST-SIDE (this scaffold enforces): `max_tokens` (decode cap) and `stop`
         (truncate when a stop string appears in the decoded text) -- both real and
-        applied in aipu_server.py. `seed` is threaded through to the device.
+        applied in wpu_server.py. `seed` is threaded through to the device.
       * DEVICE-SIDE (`sampler.v` samples ON-DEVICE from logits): `temperature`,
         `top_p`, `top_k`, `seed`. The MockDevice returns the ARGMAX token (greedy) and
         IGNORES temperature/top_p/top_k -- true sampling needs a logits-capable
@@ -99,15 +99,15 @@ class DeviceState:
     BUSY = "busy"                # a decode step in flight
 
 
-class AIPUDevice(abc.ABC):
-    """Abstract AIPU device. Concrete backends: MockDevice (here), a simulator-backed
-       driver, or the real USB-C driver. The generation loop in aipu_server.py uses
+class WPUDevice(abc.ABC):
+    """Abstract WPU device. Concrete backends: MockDevice (here), a simulator-backed
+       driver, or the real USB-C driver. The generation loop in wpu_server.py uses
        ONLY this interface."""
 
     #: vocabulary size the device decodes over (real GLM-5.2: 154880; scaffold: 256).
     vocab_size: int = 256
     #: model identifier surfaced to OpenAI clients.
-    model_id: str = "aipu-glm-5.2-q4k"
+    model_id: str = "wpu-glm-5.2-q4k"
 
     #: False on backends that cannot resume a session mid-sequence (replay stubs that
     #: ignore prompt_ids, or any device whose KV is not position-addressed). Setting
@@ -150,7 +150,7 @@ class AIPUDevice(abc.ABC):
         t0 = time.monotonic()
         while not self.poll_ready():
             if time.monotonic() - t0 > timeout:
-                raise TimeoutError("AIPU device did not reach READY (boot_loader.done)")
+                raise TimeoutError("WPU device did not reach READY (boot_loader.done)")
             time.sleep(0.02)
 
     # ---- session (KV lives in the device's DDR5, per session) --------------------
@@ -193,7 +193,7 @@ class AIPUDevice(abc.ABC):
     def _prefix_reuse(self, prompt_ids: list[int]) -> int:
         """How many leading prompt tokens are ALREADY resident (so must not be re-fed).
 
-        Chat re-sends the whole conversation every turn (aipu_server.py formats all
+        Chat re-sends the whole conversation every turn (wpu_server.py formats all
         messages), so turn N's prompt is turn N-1's prompt + reply + the new user
         message -- a long shared prefix. Reusing it is the single biggest lever on the
         box: prefill is ~25.3 GB of weight traffic PER TOKEN with no speculation to
@@ -315,7 +315,7 @@ class AIPUDevice(abc.ABC):
             pos += 1
 
 
-class MockDevice(AIPUDevice):
+class MockDevice(WPUDevice):
     """A backend that implements the full protocol but REPLAYS a fixed list of token
        ids (set by the server for this turn). Tokenizer-agnostic -- the server encodes
        a clearly-labelled canned reply with whatever tokenizer is active (byte OR the

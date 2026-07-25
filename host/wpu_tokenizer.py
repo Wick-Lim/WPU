@@ -1,5 +1,5 @@
 """
-aipu_tokenizer.py -- tokenizers for the AIPU host server.
+wpu_tokenizer.py -- tokenizers for the WPU host server.
 
 Two implementations behind one interface (encode / stream-decode / eos_id):
   * ByteTokenizer -- stdlib-only, byte-level, exact round-trip. Pairs with the byte
@@ -103,7 +103,7 @@ class GLMTokenizer:
 
 def _default_tokenizer_path() -> str | None:
     here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.environ.get("AIPU_TOKENIZER_JSON"),
+    for cand in (os.environ.get("WPU_TOKENIZER_JSON"),
                  os.path.join(here, "tokenizer.json"),
                  os.path.join(here, "..", "tokenizer.json")):
         if cand and os.path.exists(cand):

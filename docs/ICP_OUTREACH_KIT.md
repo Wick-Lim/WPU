@@ -115,7 +115,7 @@ when the approver asks "how do I trust it."
 >
 > Hi [Name],
 >
-> I'm building AIPU — an appliance that runs a full **frontier-scale** AI model **completely offline**:
+> I'm building WPU — an appliance that runs a full **frontier-scale** AI model **completely offline**:
 > it works with the ethernet cable unplugged, so no data can leave the building — no cloud API, no
 > per-use fees. It's aimed squarely at the work your attorneys *can't* put into ChatGPT or Copilot
 > today — privileged and client-confidential matters.
@@ -218,9 +218,9 @@ stage. **Timeline:** LOI now → design sessions over the next weeks → pilot w
 
 ## 6. LOI template (non-binding — keep it one page)
 
-> **Letter of Intent — AIPU legal design partnership**
+> **Letter of Intent — WPU legal design partnership**
 >
-> This non-binding letter records the mutual intent of **[Firm]** and **AIPU** to collaborate on an
+> This non-binding letter records the mutual intent of **[Firm]** and **WPU** to collaborate on an
 > on-premise, **offline / air-gapped**, single-user frontier-AI appliance for confidential legal work.
 >
 > **[Firm] intends to:** (1) participate as a design partner through a small number of working sessions;
@@ -228,13 +228,13 @@ stage. **Timeline:** LOI now → design sessions over the next weeks → pilot w
 > (3) **evaluate a pilot** of the appliance on [Firm]'s premises once a working demonstration is
 > available, subject to a separate pilot agreement and [Firm]'s security review.
 >
-> **AIPU intends to:** (1) give [Firm] early/priority access and design-partner terms; (2) build toward
+> **WPU intends to:** (1) give [Firm] early/priority access and design-partner terms; (2) build toward
 > the on-prem, provably-local guarantees discussed; (3) keep [Firm]'s shared information confidential.
 >
 > This letter is **non-binding**, creates no purchase obligation or exclusivity, and either party may
 > end the collaboration at any time. It signals genuine intent to work together toward a pilot.
 >
-> [Firm] ______________________  ·  AIPU ______________________  ·  Date __________
+> [Firm] ______________________  ·  WPU ______________________  ·  Date __________
 
 *(Have a lawyer review before sending — you're pitching lawyers; a clean, correct LOI is itself a
 credibility signal. Keep it non-binding to lower the bar to signature.)*

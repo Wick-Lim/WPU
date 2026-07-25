@@ -14,7 +14,7 @@ h/U 측정(OLMoE 프록시 + GLM-4.5-Air 실측, [`H_MEASUREMENT.md`](H_MEASUREM
 ## 1. 시스템 구성 (FIXED)
 
 ```
-[AIPU SoC (우리 RTL)] ←1024-bit · ~1.1TB/s→ [LPDDR5X 512GB: 체크포인트 전체 상주]
+[WPU SoC (우리 RTL)] ←1024-bit · ~1.1TB/s→ [LPDDR5X 512GB: 체크포인트 전체 상주]
         ↑ PCIe x4 — 부팅 시에만
 [M.2 2230 NVMe 1TB: 콜드 보관] — 전원 인가 후 467GB 로드 ~70초, 이후 관여 없음
         ↑ USB4 (USB-C) — 토큰/프롬프트만. 전력은 별도(아래 §4)
@@ -748,7 +748,7 @@ flash 경로는 시뮬 불변식 `$fatal`로 발화 불가 증명; RESIDENT=0은
 |---|---|
 | LPDDR5X 32GB ×16 | ~$1,500–1,900 (지배 항목) |
 | M.2 NVMe 1TB | ~$60 |
-| AIPU SoC (양산단가; NRE 별도) | ~$50–150 |
+| WPU SoC (양산단가; NRE 별도) | ~$50–150 |
 | 패키지(서브스트레이트+조립) | ~$120–220 |
 | PCB 8층 + VRM | ~$50–90 |
 | 방열/케이스/전원 | ~$60–120 |
@@ -764,7 +764,7 @@ flash 경로는 시뮬 불변식 `$fatal`로 발화 불가 증명; RESIDENT=0은
 | Claude Opus급 API | ~25–60 | 네트워크+큐 지연 별도 |
 | Gemini Pro급 API | ~40–90 | 〃 |
 | Mac Studio M3 Ultra 512GB ($10k+) | ~15–25 (이 급 모델, llama.cpp) | 현존 동브래킷 최강 |
-| **AIPU v3 [실측-입력 EST]** | **≈80 — 결정론** (GLM-5.2 MTP 공표 수준이면 ~95) | 첫 토큰 지연 無, 피크타임 저하 無 |
+| **WPU v3 [실측-입력 EST]** | **≈80 — 결정론** (GLM-5.2 MTP 공표 수준이면 ~95) | 첫 토큰 지연 無, 피크타임 저하 無 |
 
 - **Groq/Cerebras(500+ tok/s)는 다른 종목**: 가중치를 SRAM에 상주(칩당 ~230MB)
   → 70B급에 칩 수백 개, 랙당 $수백만, 수천 사용자 분할상환. 467GB 모델은

@@ -1,5 +1,11 @@
 # ULTRA_PERF — Ranked Ultra-High-Performance Opportunity Report
 
+> **Companion:** [`ULTRA_PERF_MODULES.md`](ULTRA_PERF_MODULES.md) is the **bottom-up module-level**
+> microarchitecture pass (critical-path/Fmax limiters, per-cycle throughput, internal serialization,
+> fabric-width ceilings — every item cited to the RTL). This document is the **top-down system-lever**
+> view. Read them together: the module pass makes several one-line levers here (stripe-across-N, exact
+> prefetch, higher-K) concrete in the RTL, and surfaces the fetch-path depth + Fmax seams that gate them.
+
 > **Current track: Q4_K local-inference.** This is a **perf-optimization study** for the current
 > product — the **Q4_K** GLM-5.2 datapath on `main` (target weight store: the published
 > `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`, **467 GB**). See [`Q4K_RETARGET.md`](Q4K_RETARGET.md) /

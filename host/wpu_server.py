@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-aipu_server.py -- a local OpenAI-compatible HTTP server backed by an AIPU device.
+wpu_server.py -- a local OpenAI-compatible HTTP server backed by an WPU device.
 
 Point any OpenAI-compatible client (chat UIs, VS Code extensions, `openai` SDK with
-base_url=http://localhost:8000/v1) at this server and it drives the AIPU device
-through the exact RTL host protocol (aipu_device.py). This is the D2 software
+base_url=http://localhost:8000/v1) at this server and it drives the WPU device
+through the exact RTL host protocol (wpu_device.py). This is the D2 software
 scaffold from docs/USBC_PRODUCT_PLAN.md: the API surface, the device-protocol
 plumbing, and token streaming are REAL and swappable to the hardware backend; the
 default MockDevice returns a clearly-labelled canned response (proving the loop, not
 the model). A byte-level tokenizer makes text round-trip exactly through token ids.
 
-Run:   python3 host/aipu_server.py            # 0 external deps (stdlib only)
+Run:   python3 host/wpu_server.py            # 0 external deps (stdlib only)
 Test:  curl -s localhost:8000/v1/models
        curl -s localhost:8000/v1/chat/completions -H 'content-type: application/json' \
-            -d '{"model":"aipu-glm-5.2-q4k","messages":[{"role":"user","content":"hi"}]}'
+            -d '{"model":"wpu-glm-5.2-q4k","messages":[{"role":"user","content":"hi"}]}'
        # streaming:
        curl -sN localhost:8000/v1/chat/completions -H 'content-type: application/json' \
-            -d '{"model":"aipu-glm-5.2-q4k","messages":[{"role":"user","content":"hi"}],"stream":true}'
+            -d '{"model":"wpu-glm-5.2-q4k","messages":[{"role":"user","content":"hi"}],"stream":true}'
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from aipu_device import AIPUDevice, MockDevice, SamplingParams   # noqa: E402
-from aipu_chat_template import apply_chat_template      # noqa: E402
-from aipu_tokenizer import make_tokenizer               # noqa: E402
+from wpu_device import WPUDevice, MockDevice, SamplingParams   # noqa: E402
+from wpu_chat_template import apply_chat_template      # noqa: E402
+from wpu_tokenizer import make_tokenizer               # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ def _stop_scan(text: str, stops: list) -> "tuple[int | None, int]":
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
-class AIPUServer:
+class WPUServer:
     def __init__(self, device, tokenizer, raw: bool = False,
                  backend_name: str = "", manifest_path: str | None = None):
         self.device = device
@@ -124,7 +124,7 @@ class AIPUServer:
            tokenizer (byte or real GLM BPE) and hand the ids to the device to replay.
            A real backend produces its own ids -> this is a no-op."""
         if isinstance(self.device, MockDevice):
-            reply = (f"[AIPU mock device / {self.tok.name} tokenizer] protocol "
+            reply = (f"[WPU mock device / {self.tok.name} tokenizer] protocol "
                      f"round-trip OK -- received {len(prompt)} chars over the host "
                      f"interface. Real tokens need the hardware / full-model backend "
                      f"(docs/USBC_PRODUCT_PLAN.md D1).")
@@ -241,7 +241,7 @@ def _now() -> int:
     return int(time.time())
 
 
-def make_handler(server: AIPUServer):
+def make_handler(server: WPUServer):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -261,7 +261,7 @@ def make_handler(server: AIPUServer):
             if path == "/v1/models":
                 self._json(200, {"object": "list", "data": [
                     {"id": server.device.model_id, "object": "model",
-                     "created": _now(), "owned_by": "aipu"}]})
+                     "created": _now(), "owned_by": "wpu"}]})
             elif path in ("/health", "/v1/health"):
                 server.device.poll_ready()
                 self._json(200, {"state": server.device.state,
@@ -318,9 +318,9 @@ def make_handler(server: AIPUServer):
             messages = req.get("messages", [])
             sampling = SamplingParams.from_request(req)   # temperature/top_p/top_k/
             stream = bool(req.get("stream", False))       # max_tokens/stop/seed/...
-            cid = f"chatcmpl-aipu-{_now()}"
+            cid = f"chatcmpl-wpu-{_now()}"
             model = server.device.model_id
-            fp = f"aipu-seed-{sampling.seed}" if sampling.seed is not None else "aipu"
+            fp = f"wpu-seed-{sampling.seed}" if sampling.seed is not None else "wpu"
 
             if stream:
                 self.send_response(200)
@@ -372,7 +372,7 @@ def make_handler(server: AIPUServer):
 
 def main(argv=None):
     import argparse
-    p = argparse.ArgumentParser(description="AIPU local OpenAI-compatible server")
+    p = argparse.ArgumentParser(description="WPU local OpenAI-compatible server")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--boot-seconds", type=float, default=0.4,
@@ -388,7 +388,7 @@ def main(argv=None):
     p.add_argument("--modal-url", default=None,
                    help="OpenAI /v1 base URL of the Modal vLLM server "
                         "(deploy tools/modal_glm_server.py) for --backend modal")
-    p.add_argument("--modal-key", default="aipu-local", help="bearer key for --backend modal")
+    p.add_argument("--modal-key", default="wpu-local", help="bearer key for --backend modal")
     p.add_argument("--model", default=None, help="GGUF path for --backend llama")
     p.add_argument("--llama-cli", default=None, help="path to a llama.cpp llama-cli binary")
     p.add_argument("--manifest", default=None,
@@ -400,7 +400,7 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     if args.backend == "modal":
-        from aipu_modal_backend import ModalBackend
+        from wpu_modal_backend import ModalBackend
         if not args.modal_url:
             p.error("--backend modal requires --modal-url (deploy tools/modal_glm_server.py)")
         device = ModalBackend(args.modal_url, api_key=args.modal_key,
@@ -409,10 +409,10 @@ def main(argv=None):
         backend_name = f"ModalBackend(software cloud, {device.model_id})"
         print("NOTE: --backend modal is the v0.1 SOFTWARE full-model demo -- REAL GLM "
               "family text from vLLM on Modal GPU cloud. It is software on cloud GPUs, "
-              "NOT the AIPU accelerator; the accelerator replaces it behind this same "
+              "NOT the WPU accelerator; the accelerator replaces it behind this same "
               "API once silicon exists (docs/PRODUCT_SPEC.md).")
     elif args.backend == "llama":
-        from aipu_llama_backend import LlamaCppBackend
+        from wpu_llama_backend import LlamaCppBackend
         if not args.model:
             p.error("--backend llama requires --model <gguf>")
         device = LlamaCppBackend(args.model, llama_cli=args.llama_cli,
@@ -420,10 +420,10 @@ def main(argv=None):
         tok = make_tokenizer(args.tokenizer)          # used only for prompt fmt + usage counts
         backend_name = f"LlamaCppBackend(software, {device.model_id})"
         print("NOTE: --backend llama is the v0.1 SOFTWARE full-model backend -- REAL tokens "
-              "from your GGUF via llama.cpp. It is software (CPU/GPU), NOT the AIPU "
+              "from your GGUF via llama.cpp. It is software (CPU/GPU), NOT the WPU "
               "accelerator; swap the GGUF for GLM-5.2 on the box for the product experience.")
     elif args.backend == "sim":
-        from aipu_sim_backend import SimulatorBackend
+        from wpu_sim_backend import SimulatorBackend
         device = SimulatorBackend()                  # slice VOCAB=256 glm_model_q4k
         tok = make_tokenizer(args.tokenizer)          # decode is best-effort (slice tokens)
         backend_name = "SimulatorBackend(glm_model_q4k/vvp)"
@@ -439,12 +439,12 @@ def main(argv=None):
         backend_name = "MockDevice"
     if hasattr(device, "power_on"):
         device.power_on()
-    server = AIPUServer(device, tok, raw=args.raw, backend_name=backend_name,
+    server = WPUServer(device, tok, raw=args.raw, backend_name=backend_name,
                         manifest_path=args.manifest)
     template = "raw-flatten" if server.raw else ("glm" if tok.name == "glm" else "flatten")
     httpd = ThreadingHTTPServer((args.host, args.port), make_handler(server))
     base = f"http://{args.host}:{args.port}"
-    print(f"AIPU server on {base}/v1  "
+    print(f"WPU server on {base}/v1  "
           f"(model={device.model_id}, backend={backend_name}, tokenizer={tok.name}, "
           f"template={template})")
     print(f"  chat:    POST {base}/v1/chat/completions [stream]   GET {base}/v1/models")

@@ -83,7 +83,7 @@ fails price/form-factor, and secured cloud fails the unplugged test.
 *필수*인 구매자). 핵심 설계 원칙: **호스트에 아무것도 설치하지 않는다.**
 
 1. **USB-C = 네트워크 장치(CDC-NCM/RNDIS)** — 드라이버/설치 없이 잡히고, 박스가
-   자체 웹서버로 `http://aipu.local`에 **에이전트 UI를 서빙**. 윈도우/맥/리눅스
+   자체 웹서버로 `http://wpu.local`에 **에이전트 UI를 서빙**. 윈도우/맥/리눅스
    공통, 잠긴 환경의 소프트웨어 설치 승인 문제가 원천 소멸(보안 검토 대상이
    "USB 장치 1개"). 같은 링크로 OpenAI-호환 API 병행 노출(IDE/도구 연동,
    `host/` 스캐폴드가 씨앗).
@@ -185,7 +185,7 @@ so this is real warming-up UX, not a spinner flash. (Phase D2.)
   numbers, not Q4_K claims (on an NVMe-bound die they cut area/power/timing but do not move tok/s).
 - Energy + BOM **models** ([`LOW_POWER.md`](LOW_POWER.md), [`SYSTEM_SINGLE_PACKAGE.md`](SYSTEM_SINGLE_PACKAGE.md)).
 - **Host software scaffold** ([`host/`](../host/README.md)) — a local **OpenAI-compatible server**
-  (`/v1/chat/completions`, streaming SSE), the exact RTL host protocol (`aipu_device.py`, mirrors
+  (`/v1/chat/completions`, streaming SSE), the exact RTL host protocol (`wpu_device.py`, mirrors
   `glm_q4k_system_cdc` + the boot-loader-done readiness gate), the **real GLM-5.2 BPE tokenizer** +
   a port of GLM's chat template, and host-side sampling — buildable/testable with **zero hardware**
   against a mock backend (the Phase D2 first deliverable). *(The simulator backend targets the

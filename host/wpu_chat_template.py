@@ -1,4 +1,4 @@
-"""aipu_chat_template.py -- the GLM-5.2 chat template for the AIPU host server.
+"""wpu_chat_template.py -- the GLM-5.2 chat template for the WPU host server.
 
 Formats OpenAI-style chat `messages` into the single prompt string the GLM-5.2
 tokenizer expects, using GLM's special tokens: [gMASK], <sop>, <|system|>, <|user|>,
