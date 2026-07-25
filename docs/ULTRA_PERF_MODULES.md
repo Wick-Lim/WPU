@@ -87,7 +87,10 @@ The bottom-up module review confirms the roofline: on the single-user product to
 > `FLASH_LAT=256`): exposed stall 2,590 → 2,070 cycles (−20%)**, with token 1 going 259 → **0**
 > (48/0 hits vs 47/1) and cyc/token 10,665 → 10,406. **Every committed token still matches the
 > standalone reference** — this changes *when* bytes are fetched, never which bytes or their order.
-> `PF_EXACT=0` (default) keeps the demand-only behaviour. Composes multiplicatively with rank 1:
+> `PF_EXACT=0` (default) keeps the demand-only behaviour **and is netlist-identical to the committed
+> system** — the first attempt was not: the decoder registered `route_set` unconditionally and the
+> prefetch mux did not fold, which `make resident-equiv` caught. The exposure is now gated by
+> `ROUTE_EXPOSE` (threaded from `PF_EXACT`), so at the default no registers and no mux are inferred. Composes multiplicatively with rank 1:
 > the MSHR supplies the outstanding slots this prefetch would fill.
 - **Modules:** `src/glm_decoder_block_q4k.v (sel_e captured whole at T_ROUTE :807-811; experts fetched serially T_ESCAN/T_EXPW/T_ACC :837-912), src/glm_q4k_system.v (episode detector on DEMAND cur_routed :826; expert_cache_pf.pf_valid/pf_expert_id are external inputs only :522-523)`
 - **Change:** Drive expert_cache_pf.pf_valid/pf_expert_id INTERNALLY from the captured sel_e union the moment routing completes, so experts 1..NEVAL-1 stream from NVMe under expert-0's T_ACC; and issue the layer's aw_*/rw_* reads during the preceding ~5*MODEL_DIM cycles of pre-attn/pre-FFN RMSNorm + residual-add. Reorders fetch timing only; the die consumes the same bytes in the same order.

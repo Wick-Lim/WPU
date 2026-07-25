@@ -707,6 +707,7 @@ module glm_q4k_system #(
     wire [PE_M*TOPK*EIDXW-1:0] mdl_route_set;
 
     glm_model_q4k #(
+        .ROUTE_EXPOSE(PF_EXACT),
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
@@ -884,9 +885,21 @@ module glm_q4k_system #(
     end
     endgenerate
 
-    // the cache sees either the external hint (as before) or the internal one
-    wire             pf_valid_eff = pf_valid | pf_int_valid;
-    wire [EIDXW-1:0] pf_id_eff    = pf_valid ? pf_expert_id : pf_int_id;
+    // the cache sees either the external hint (as before) or the internal one.
+    //   At PF_EXACT=0 both expressions must fold to the committed wiring exactly
+    //   (pf_valid / pf_expert_id straight through) -- a ternary on pf_valid would
+    //   NOT fold, it would insert a mux that zeroes the id when pf_valid is low.
+    wire             pf_valid_eff;
+    wire [EIDXW-1:0] pf_id_eff;
+    generate
+    if (PF_EXACT == 0) begin : g_pf_wire
+        assign pf_valid_eff = pf_valid;
+        assign pf_id_eff    = pf_expert_id;
+    end else begin : g_pf_mux
+        assign pf_valid_eff = pf_valid | pf_int_valid;
+        assign pf_id_eff    = pf_valid ? pf_expert_id : pf_int_id;
+    end
+    endgenerate
 
     //========================================================================
     // 3) ROUTED-EXPERT EPISODE DETECT -> FIFO -> expert_cache_pf.

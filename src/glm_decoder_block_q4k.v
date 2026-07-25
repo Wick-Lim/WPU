@@ -96,6 +96,11 @@
 // STYLE: sync active-high reset; no latch; no comb loop; deterministic latency.
 //============================================================================
 module glm_decoder_block_q4k #(
+    // ROUTE_EXPOSE (docs/ULTRA_PERF_MODULES.md rank 4): publish the captured
+    //   top-k union at T_ROUTE so the system can prefetch it.  0 (DEFAULT) ties
+    //   the ports to constants so NO registers are inferred and the netlist is
+    //   byte-for-byte the committed block; 1 registers and drives them.
+    parameter integer ROUTE_EXPOSE = 0,
     // ---- model / slice config (small-but-faithful) ----
     parameter integer MODEL_DIM  = 128,
     // ---- mla_attn_q4k slice params (passed straight through) ----
@@ -280,8 +285,8 @@ module glm_decoder_block_q4k #(
     //   REST of the union while expert 0 is still being computed.  They are pure
     //   OBSERVATION -- nothing inside this block reads them, and the datapath,
     //   its ordering and its outputs are untouched whether or not anyone listens.
-    output reg                          route_valid, // 1-cycle pulse at T_ROUTE done
-    output reg  [PE_M*TOPK*EIDXW-1:0]   route_set,   // the captured top-k union
+    output wire                         route_valid, // 1-cycle pulse at T_ROUTE done
+    output wire [PE_M*TOPK*EIDXW-1:0]   route_set,   // the captured top-k union
     input  wire [4*TN-1:0]              fw_q,       // GATE/DOWN Q4_K 4-bit lanes
     input  wire [4*TN-1:0]              fw_q_up,    // UP companion Q4_K 4-bit lanes
     input  wire [16*TN*FF_NSB_D-1:0]    fw_d_g,     // GATE/DOWN fp16 d
@@ -685,8 +690,6 @@ module glm_decoder_block_q4k #(
             rt_start   <= 1'b0;
             ed_start   <= 1'b0; em_start <= 1'b0;
             fw_shared  <= 1'b0; fw_eidx <= {EIDXW{1'b0}};
-            route_valid <= 1'b0;
-            route_set   <= {(PE_M*TOPK*EIDXW){1'b0}};
             radd_i     <= {$clog2(MODEL_DIM+1){1'b0}};
             comb_i     <= {$clog2(MODEL_DIM+1){1'b0}};
             exp_i      <= {EVW{1'b0}};
@@ -709,7 +712,6 @@ module glm_decoder_block_q4k #(
             rt_start <= 1'b0;
             ed_start <= 1'b0;
             em_start <= 1'b0;
-            route_valid <= 1'b0;      // rank 4: 1-cycle observation pulse
 
             case (state)
             //----------------------------------------------------------------
@@ -823,9 +825,6 @@ module glm_decoder_block_q4k #(
                             sel_e[rr][ii] <= rt_sel_idx[EIDXW*(TOPK*rr + ii) +: EIDXW];
                             sel_w[rr][ii] <= rt_sel_weight[16*(TOPK*rr + ii) +: 16];
                         end
-                    // rank 4: publish the union the instant it is known (observation only)
-                    route_set   <= rt_sel_idx[PE_M*TOPK*EIDXW-1:0];
-                    route_valid <= 1'b1;
                     // clear combine accumulator
                     for (rr=0; rr<PE_M; rr=rr+1)
                         for (ii=0; ii<MODEL_DIM; ii=ii+1) facc[rr][ii] <= 32'h0;
@@ -990,5 +989,28 @@ module glm_decoder_block_q4k #(
     wire _rn_src_unused = &{1'b0, rn_src};
     /* verilator lint_on UNUSEDSIGNAL */
 
+
+    // ---- rank 4 routing exposure (parameter-gated; default = no hardware) ----
+    generate
+    if (ROUTE_EXPOSE == 0) begin : g_route_off
+        assign route_valid = 1'b0;
+        assign route_set   = {(PE_M*TOPK*EIDXW){1'b0}};
+    end else begin : g_route_on
+        reg                        rv_r;
+        reg [PE_M*TOPK*EIDXW-1:0]  rs_r;
+        always @(posedge clk) begin
+            if (rst) begin
+                rv_r <= 1'b0;
+                rs_r <= {(PE_M*TOPK*EIDXW){1'b0}};
+            end else begin
+                rv_r <= (state == T_ROUTE) && rt_done;
+                if ((state == T_ROUTE) && rt_done)
+                    rs_r <= rt_sel_idx[PE_M*TOPK*EIDXW-1:0];
+            end
+        end
+        assign route_valid = rv_r;
+        assign route_set   = rs_r;
+    end
+    endgenerate
 endmodule
 /* verilator lint_on DECLFILENAME */

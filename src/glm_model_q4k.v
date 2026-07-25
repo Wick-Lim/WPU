@@ -56,6 +56,7 @@
 //   combinational PULL interfaces answered the SAME cycle by the system/TB.
 //============================================================================
 module glm_model_q4k #(
+    parameter integer ROUTE_EXPOSE = 0,   // rank 4: pass-through to the decoder
     // ---- model / slice config (small-but-faithful, ACCEL_GLM52 §8.1) ----
     parameter integer MODEL_DIM  = 128,
     parameter integer L          = 6,           // total layers (3 dense + 3 MoE)
@@ -300,6 +301,7 @@ module glm_model_q4k #(
     wire                      db_busy, db_done;
     wire [PE_M*MODEL_DIM*16-1:0] db_y;
     glm_decoder_block_q4k #(
+        .ROUTE_EXPOSE(ROUTE_EXPOSE),
         .MODEL_DIM(MODEL_DIM), .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE),
         .V_DIM(V_DIM), .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX),
         .TOPK_ATTN(TOPK_ATTN), .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW),
