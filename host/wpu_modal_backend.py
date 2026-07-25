@@ -1,11 +1,11 @@
-"""aipu_modal_backend.py -- the v0.1 SOFTWARE full-model backend, via Modal GPU cloud.
+"""wpu_modal_backend.py -- the v0.1 SOFTWARE full-model backend, via Modal GPU cloud.
 
 Instead of a small local model (llama.cpp), this backend proxies chat completions
 to the REAL GLM family served by vLLM on Modal (tools/modal_glm_server.py, 2x H100).
-So a standard OpenAI client -> AIPU host server -> this proxy -> Modal vLLM -> REAL
+So a standard OpenAI client -> WPU host server -> this proxy -> Modal vLLM -> REAL
 GLM-4.5-Air text, fully OpenAI-compatible and streaming.
 
-Honest scope: this is SOFTWARE on cloud GPUs, NOT the AIPU accelerator; it proves
+Honest scope: this is SOFTWARE on cloud GPUs, NOT the WPU accelerator; it proves
 the product EXPERIENCE with the real model family now. The accelerator replaces
 this backend behind the same host API once silicon exists (docs/PRODUCT_SPEC.md).
 
@@ -20,7 +20,7 @@ import time
 import urllib.request
 import urllib.error
 
-from aipu_device import DeviceState
+from wpu_device import DeviceState
 
 
 class ModalBackend:
@@ -28,8 +28,8 @@ class ModalBackend:
        default). Mirrors the device surface the server needs (`state`, `model_id`,
        `poll_ready`) and provides `stream_text` used by the server's text path."""
 
-    def __init__(self, base_url: str, api_key: str = "aipu-local",
-                 model: str = "aipu-glm", boot_seconds: float = 0.0,
+    def __init__(self, base_url: str, api_key: str = "wpu-local",
+                 model: str = "wpu-glm", boot_seconds: float = 0.0,
                  timeout: float = 300.0):
         if not base_url:
             raise ValueError("--modal-url is required (the Modal vLLM /v1 base URL). "

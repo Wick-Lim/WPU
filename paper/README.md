@@ -1,6 +1,6 @@
 # Paper — arXiv preprint (draft)
 
-`aipu.tex` is a self-contained, dependency-light LaTeX preprint:
+`wpu.tex` is a self-contained, dependency-light LaTeX preprint:
 
 > **Bit-Exact by Construction: A Verification-First RTL Accelerator that
 > Inherits the GGUF k-Quant Checkpoint Ecosystem**
@@ -36,12 +36,12 @@ No exotic packages (only `geometry`, `amsmath`, `booktabs`, `graphicx`,
 `xcolor`, `enumitem`, `url`, `hyperref`). Any of:
 
 ```sh
-pdflatex aipu.tex && pdflatex aipu.tex     # twice, for refs + hyperlinks
+pdflatex wpu.tex && pdflatex wpu.tex     # twice, for refs + hyperlinks
 # or
-latexmk -pdf aipu.tex
+latexmk -pdf wpu.tex
 ```
 
-Or upload `aipu.tex` directly to Overleaf or arXiv (single-file submission,
+Or upload `wpu.tex` directly to Overleaf or arXiv (single-file submission,
 `cs.AR` primary).
 
 ## Before posting to arXiv — checklist

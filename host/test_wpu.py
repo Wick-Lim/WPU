@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Self-tests for the AIPU host scaffold (no HTTP, no network): device protocol,
+"""Self-tests for the WPU host scaffold (no HTTP, no network): device protocol,
    tokenizers (byte + real GLM BPE if available), boot gate, and the server
-   generation loop. Run:  python3 host/test_aipu.py   ->  exit 0 on PASS."""
+   generation loop. Run:  python3 host/test_wpu.py   ->  exit 0 on PASS."""
 import sys
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from aipu_device import (MockDevice, AIPUDevice, DeviceState,   # noqa: E402
+from wpu_device import (MockDevice, WPUDevice, DeviceState,   # noqa: E402
                          SamplingParams)
-from aipu_tokenizer import ByteTokenizer, make_tokenizer, GLMTokenizer  # noqa: E402
-from aipu_server import AIPUServer                           # noqa: E402
-from aipu_chat_template import apply_chat_template            # noqa: E402
+from wpu_tokenizer import ByteTokenizer, make_tokenizer, GLMTokenizer  # noqa: E402
+from wpu_server import WPUServer                           # noqa: E402
+from wpu_chat_template import apply_chat_template            # noqa: E402
 
 
 def _byte_dev(**kw):
     return MockDevice(eos_token=ByteTokenizer.eos_id, vocab_size=256, **kw)
 
 
-class _FixedDevice(AIPUDevice):
+class _FixedDevice(WPUDevice):
     """Test device that yields a FIXED list of token ids -- bypasses MockDevice's
        canned-reply priming so tests can drive arbitrary decoded output (stop
        sequences, finish_reason). Records the SamplingParams it was configured with."""
@@ -55,7 +55,7 @@ class _FixedDevice(AIPUDevice):
 
 def test_byte_tokenizer_roundtrip():
     tok = ByteTokenizer()
-    for s in ["hello", "AIPU 디바이스", "emoji 🚀 test", ""]:
+    for s in ["hello", "WPU 디바이스", "emoji 🚀 test", ""]:
         ids = tok.encode(s)
         st = tok.stream()
         out = "".join(st.push(i) for i in ids) + st.flush()
@@ -96,8 +96,8 @@ def test_prefill_does_not_truncate():
 
 def test_server_end_to_end_byte():
     d = _byte_dev(boot_seconds=0.0)
-    srv = AIPUServer(d, ByteTokenizer())
-    msgs = [{"role": "user", "content": "hello aipu"}]
+    srv = WPUServer(d, ByteTokenizer())
+    msgs = [{"role": "user", "content": "hello wpu"}]
     text, n_prompt = srv.generate_text(msgs, max_tokens=500)
     assert "protocol round-trip OK" in text, text
     assert "byte tokenizer" in text, text
@@ -114,14 +114,14 @@ def test_glm_tokenizer_if_available():
     if not isinstance(tok, GLMTokenizer):
         print("  SKIP test_glm_tokenizer_if_available (no tokenizers/tokenizer.json)")
         return
-    for s in ["hello world", "AIPU 디바이스 test", "def f(x):\n    return x+1"]:
+    for s in ["hello world", "WPU 디바이스 test", "def f(x):\n    return x+1"]:
         ids = tok.encode(s)
         st = tok.stream()
         out = "".join(st.push(i) for i in ids) + st.flush()
         assert out == s, (s, out)
     # server end-to-end through the REAL GLM vocab
     d = MockDevice(boot_seconds=0.0, eos_token=tok.eos_id, vocab_size=tok.vocab_size)
-    srv = AIPUServer(d, tok)
+    srv = WPUServer(d, tok)
     msgs = [{"role": "user", "content": "hi"}]
     text, _ = srv.generate_text(msgs, max_tokens=500)
     assert "protocol round-trip OK" in text and "glm tokenizer" in text, text
@@ -136,7 +136,7 @@ def test_simulator_backend_parse():
        tokens {13,3,13} are the real SPEC_SLICE argmax vectors (build/mq4k_s)."""
     import os
     import tempfile
-    from aipu_sim_backend import SimulatorBackend
+    from wpu_sim_backend import SimulatorBackend
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("case 0: token=3 pos=1 s_len=2 -> argmax=13 (golden 13)    MATCH\n"
                 "case 1: token=7 pos=3 s_len=2 -> argmax=3 (golden 3)    MATCH\n"
@@ -203,13 +203,13 @@ def test_server_prompt_dispatch():
        flatten; --raw forces the flatten even for GLM."""
     d = _byte_dev(boot_seconds=0.0)
     msgs = [{"role": "user", "content": "hi"}]
-    assert AIPUServer(d, ByteTokenizer()).prompt_text(msgs) == "user: hi"   # byte->flatten
+    assert WPUServer(d, ByteTokenizer()).prompt_text(msgs) == "user: hi"   # byte->flatten
 
     class _FakeGLM(ByteTokenizer):
         name = "glm"
-    glm_prompt = AIPUServer(d, _FakeGLM()).prompt_text(msgs)
+    glm_prompt = WPUServer(d, _FakeGLM()).prompt_text(msgs)
     assert glm_prompt.startswith("[gMASK]<sop>") and "<|user|>hi" in glm_prompt
-    assert AIPUServer(d, _FakeGLM(), raw=True).prompt_text(msgs) == "user: hi"  # --raw
+    assert WPUServer(d, _FakeGLM(), raw=True).prompt_text(msgs) == "user: hi"  # --raw
 
 
 def test_chat_template_encodes_special_tokens_if_glm():
@@ -246,7 +246,7 @@ def test_stop_sequence_truncates():
     """A stop string in the decoded output truncates it (exclusive) and yields
        finish_reason 'stop' -- streaming-safe across a multi-token stop."""
     d = _FixedDevice(list(b"hello STOP world"))
-    srv = AIPUServer(d, ByteTokenizer())
+    srv = WPUServer(d, ByteTokenizer())
     sp = SamplingParams(max_tokens=100, stop=["STOP"])
     text, _, finish = srv.complete([{"role": "user", "content": "x"}], sp)
     assert text == "hello ", repr(text)
@@ -260,12 +260,12 @@ def test_stop_sequence_truncates():
 def test_finish_reason_length_vs_stop():
     """finish_reason: 'length' when max_tokens caps generation, 'stop' at natural eos."""
     d = _FixedDevice(list(b"ABCDEFGHIJ"))
-    srv = AIPUServer(d, ByteTokenizer())
+    srv = WPUServer(d, ByteTokenizer())
     text, _, finish = srv.complete([{"role": "user", "content": "x"}],
                                    SamplingParams(max_tokens=4))
     assert text == "ABCD" and finish == "length", (text, finish)
     d2 = _FixedDevice(list(b"AB"))
-    text2, _, finish2 = AIPUServer(d2, ByteTokenizer()).complete(
+    text2, _, finish2 = WPUServer(d2, ByteTokenizer()).complete(
         [{"role": "user", "content": "x"}], SamplingParams(max_tokens=100))
     assert text2 == "AB" and finish2 == "stop", (text2, finish2)
 
@@ -274,7 +274,7 @@ def test_sampling_params_reach_device():
     """temperature/top_p/top_k/seed are plumbed to the device (configure_sampling)."""
     d = _FixedDevice(list(b"hi"))
     sp = SamplingParams(max_tokens=8, temperature=0.3, top_k=5, seed=7)
-    AIPUServer(d, ByteTokenizer()).complete([{"role": "user", "content": "x"}], sp)
+    WPUServer(d, ByteTokenizer()).complete([{"role": "user", "content": "x"}], sp)
     assert d.seen_sampling is sp, "sampling not plumbed to device"
     assert d.seen_sampling.temperature == 0.3 and d.seen_sampling.seed == 7
 
@@ -293,7 +293,7 @@ def test_mockdevice_accepts_and_ignores_sampling():
 # ---------------------------------------------------------------------------
 # PREFIX / KV CACHE  (D5 "캐싱 = 무조건", docs/PRODUCT_SPEC.md)
 # ---------------------------------------------------------------------------
-class _KVDevice(AIPUDevice):
+class _KVDevice(WPUDevice):
     """Device that models POSITION-ADDRESSED KV honestly, so these tests have real
        power to catch a cache bug.
 
@@ -375,7 +375,7 @@ def test_context_overflow_refuses_instead_of_aliasing():
     list(d.generate([1, 2, 3], max_new_tokens=4))                 # 7 <= 64: fine
     try:
         list(d.generate(list(range(1, 60)), max_new_tokens=10))   # 69 > 64
-    except AIPUDevice.ContextOverflow as e:
+    except WPUDevice.ContextOverflow as e:
         assert "64" in str(e), e
     else:
         raise AssertionError("ran past the ring instead of refusing")
@@ -389,7 +389,7 @@ def test_context_overflow_counts_generated_tokens_too():
     d.context_capacity = 20
     try:
         list(d.generate([1, 2, 3], max_new_tokens=100))           # prompt fits, reply doesn't
-    except AIPUDevice.ContextOverflow:
+    except WPUDevice.ContextOverflow:
         pass
     else:
         raise AssertionError("only bounded the prompt; generation can still alias")
@@ -532,7 +532,7 @@ def main():
     for t in tests:
         t()
         print(f"  PASS {t.__name__}")
-    print(f"ALL {len(tests)} TESTS PASSED  (AIPU host scaffold)")
+    print(f"ALL {len(tests)} TESTS PASSED  (WPU host scaffold)")
     return 0
 
 

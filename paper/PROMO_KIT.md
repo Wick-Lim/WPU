@@ -43,9 +43,9 @@ The README's verification ledger tags every claim as proven / measured /
 elaborated / estimated.
 
 Repo (Apache-2.0, every claim reproducible via make gates):
-https://github.com/Wick-Lim/AIPU
-Landing: https://wick-lim.github.io/AIPU/
-Preprint draft: paper/aipu.pdf in the repo.
+https://github.com/Wick-Lim/WPU
+Landing: https://wick-lim.github.io/WPU/
+Preprint draft: paper/wpu.pdf in the repo.
 
 Also: I'm looking for an arXiv cs.AR endorsement (first-time author) — link in
 the README if you're qualified and find the work credible.
@@ -63,7 +63,7 @@ built around being checkable.
 Show HN: A Verilog LLM accelerator bit-exact to llama.cpp's GGUF dequant
 ```
 
-**URL:** `https://github.com/Wick-Lim/AIPU`
+**URL:** `https://github.com/Wick-Lim/WPU`
 
 **First comment (본인이 바로 다는 설명 코멘트):**
 ```
@@ -123,7 +123,7 @@ met); tok/s is a roofline ESTIMATE (≈80 [EST] on a 512GB LPDDR5X residency
 box). The README ledger tags every claim proven/measured/elaborated/estimated.
 
 6/ Apache-2.0, every claim reproducible via make gates:
-https://github.com/Wick-Lim/AIPU
+https://github.com/Wick-Lim/WPU
 Preprint draft in paper/. Also seeking an arXiv cs.AR endorsement (first-time
 author) — link in the README. 🙏
 ```

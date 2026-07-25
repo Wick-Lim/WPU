@@ -169,7 +169,7 @@ def svg_preview(drams, problems):
     el.append(f'<rect x="{(cx-11)*S}" y="{Y(cy+11)}" width="{22*S}" height="{22*S}" '
               f'rx="3" fill="#131a21" stroke="#5fd38a" stroke-width="1.5"/>')
     el.append(f'<text x="{cx*S}" y="{Y(cy)+4}" fill="#5fd38a" font-size="11" '
-              f'text-anchor="middle" font-weight="bold">AIPU die</text>')
+              f'text-anchor="middle" font-weight="bold">WPU die</text>')
     el.append(f'<text x="{cx*S}" y="{Y(cy)-8}" fill="#9aa8b5" font-size="8" '
               f'text-anchor="middle">SoC ~50x50mm</text>')
     # DRAMs

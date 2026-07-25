@@ -1,19 +1,27 @@
-# AIPU — a GLM-5.2 Q4_K local-inference accelerator in Verilog
+# WPU — **W**eight **P**rocessing **U**nit
+
+> A GLM-5.2 Q4_K local-inference accelerator in Verilog.
+>
+> **Everyone else named their chip after the math** — Tensor, Neural, Language *Processing Unit*.
+> **This one is named after the bottleneck: the weights.** Frontier LLM inference is not
+> compute-bound, it is *weight-bandwidth*-bound — `tok/s ≈ memory bandwidth ÷ 13.87 GB of weights
+> per token` — so the die here is sized to *consume a weight stream*, not to maximize FLOPS, and it
+> reads the published weight files (GGUF k-quants) **bit-exactly, with no conversion**.
 
 > **🙏 Looking for an arXiv endorsement (cs.AR).** The preprint of this work —
 > *Bit-Exact by Construction: A Verification-First RTL Accelerator that Inherits the
-> GGUF k-Quant Checkpoint Ecosystem* ([`paper/aipu.tex`](paper/aipu.tex),
-> [compiled PDF](paper/aipu.pdf)) — needs a first-time-author endorsement for arXiv
+> GGUF k-Quant Checkpoint Ecosystem* ([`paper/wpu.tex`](paper/wpu.tex),
+> [compiled PDF](paper/wpu.pdf)) — needs a first-time-author endorsement for arXiv
 > **cs.AR**. If you are qualified to endorse in cs.AR and, after looking at the paper
 > and this repository's verification ledger, consider the work credible, you can
 > endorse here: **<https://arxiv.org/auth/endorse?x=7L4XXQ>**
 > (contact: <wicklim90@gmail.com>). Every proven/measured claim in the paper is
 > reproducible from this repository's `make` gates.
 
-**🌐 Project site:** [**Overview**](https://wick-lim.github.io/AIPU/) (status ledger + product
-concept) · [**Board**](https://wick-lim.github.io/AIPU/board.html) (measured FPGA fit + the
+**🌐 Project site:** [**Overview**](https://wick-lim.github.io/WPU/) (status ledger + product
+concept) · [**Board**](https://wick-lim.github.io/WPU/board.html) (measured FPGA fit + the
 rung-③ 512 GB LPDDR5X design point, with the concept floorplan) ·
-[**Roadmap**](https://wick-lim.github.io/AIPU/roadmap.html) (the 3-rung hardware ladder + the
+[**Roadmap**](https://wick-lim.github.io/WPU/roadmap.html) (the 3-rung hardware ladder + the
 future HBF/HBM tier) — all figures info-only, every projection tagged `[EST]`.
 
 A synthesizable Verilog accelerator that runs one real model on a local, offline box: the
@@ -44,7 +52,7 @@ throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon).
 > (118B MoE, `LagunaForCausalLM`): the Q4_K dequant contract is inherited unchanged, the MoE path is
 > bit-exact in RTL at Laguna's config, and the (different) GQA attention machine is specified +
 > reference-verified end to end (`make laguna`) — the bit-exact orchestrator RTL is scoped, not yet
-> written. See that branch's [`docs/LAGUNA_S21.md`](https://github.com/Wick-Lim/AIPU/blob/laguna-s-2.1/docs/LAGUNA_S21.md).
+> written. See that branch's [`docs/LAGUNA_S21.md`](https://github.com/Wick-Lim/WPU/blob/laguna-s-2.1/docs/LAGUNA_S21.md).
 > The prior **FP8 datacenter track** is preserved on branch **`fp8`** + tag `fp8-verified-baseline`; a
 > compression-research study on `research/compression-study`. All referenced as prior/preserved, never
 > current. The full product (rungs ②③) is the roadmap, not main's current code
@@ -222,10 +230,10 @@ model adds the memory/streaming system + array scaling.
 
 ## Documents
 
-- **[Project site](https://wick-lim.github.io/AIPU/)** — the one-page status
-  [Overview](https://wick-lim.github.io/AIPU/), the
-  [Board](https://wick-lim.github.io/AIPU/board.html) design point, and the
-  [Roadmap](https://wick-lim.github.io/AIPU/roadmap.html) ladder.
+- **[Project site](https://wick-lim.github.io/WPU/)** — the one-page status
+  [Overview](https://wick-lim.github.io/WPU/), the
+  [Board](https://wick-lim.github.io/WPU/board.html) design point, and the
+  [Roadmap](https://wick-lim.github.io/WPU/roadmap.html) ladder.
 - **[`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md)** — the Q4_K dequant math, GEMM contract, per-type status.
   Start here for "what is Q4_K-exact and what isn't."
 - **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — the hardware plan: rungs ①–③ (prove-it FPGA →

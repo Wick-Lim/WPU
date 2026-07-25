@@ -1,6 +1,6 @@
-"""aipu_llama_backend.py -- the v0.1 SOFTWARE full-model backend.
+"""wpu_llama_backend.py -- the v0.1 SOFTWARE full-model backend.
 
-Honest scope (docs/PRODUCT_SPEC.md, Stage 1 / v0.1): the AIPU silicon does not
+Honest scope (docs/PRODUCT_SPEC.md, Stage 1 / v0.1): the WPU silicon does not
 exist yet and the FPGA is a VOCAB=256 slice, so it cannot emit real GLM-5.2 text.
 To prove the END-TO-END PRODUCT PATH now -- a standard client -> our
 OpenAI-compatible server -> a backend that emits REAL tokens -> back to the
@@ -9,7 +9,7 @@ running a real GGUF. It is clearly a SOFTWARE backend, not the accelerator: the
 same path, with the GGUF swapped for GLM-5.2 on the box, is the product.
 
 This is a TEXT backend: llama.cpp owns its own tokenizer, so it produces text
-directly (the server uses `stream_text`, bypassing the id-level AIPU tokenizer).
+directly (the server uses `stream_text`, bypassing the id-level WPU tokenizer).
 
 It never fabricates tokens: if the llama.cpp binary or the model is missing it
 raises at construction, so nobody mistakes a canned string for real inference.
@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import time
 
-from aipu_device import DeviceState
+from wpu_device import DeviceState
 
 
 def _find_llama_cli(explicit: str | None) -> str:
@@ -51,7 +51,7 @@ def _find_llama_cli(explicit: str | None) -> str:
 class LlamaCppBackend:
     """Text backend: streams real completion text from llama.cpp over a subprocess.
 
-    Interface mirrors AIPUDevice where the server needs it (`state`, `model_id`,
+    Interface mirrors WPUDevice where the server needs it (`state`, `model_id`,
     `poll_ready`) and adds `stream_text` / `complete_text` used by the server's
     text path.
     """

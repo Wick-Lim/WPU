@@ -1,5 +1,5 @@
 """
-aipu_sim_backend.py -- an AIPUDevice backed by the RTL SIMULATOR (iverilog/vvp).
+wpu_sim_backend.py -- an WPUDevice backed by the RTL SIMULATOR (iverilog/vvp).
 
 Drives the on-main product top `glm_model_q4k` (the committed VOCAB=256 slice, via its
 `make model-q4k` iverilog/`vvp` build) and returns the REAL argmax next-token ids the
@@ -36,7 +36,7 @@ import os
 import re
 import subprocess
 
-from aipu_device import AIPUDevice, DeviceState
+from wpu_device import WPUDevice, DeviceState
 
 # glm_model_q4k_full_tb prints one line per golden case:
 #   "case 0: token=3 pos=1 s_len=2 -> argmax=13 (golden 13)    MATCH"
@@ -45,7 +45,7 @@ _ARGMAX_RE = re.compile(r"->\s*argmax=(\d+)")
 _REPO = os.path.dirname(os.path.abspath(os.path.join(__file__, "..")))
 
 
-class SimulatorBackend(AIPUDevice):
+class SimulatorBackend(WPUDevice):
     vocab_size = 256
     eos_token = 256                                  # out-of-band sentinel
 
@@ -116,7 +116,7 @@ class SimulatorBackend(AIPUDevice):
 
 if __name__ == "__main__":
     # Manual smoke (SLOW, minutes): needs `make model-q4k` first.
-    #   python3 host/aipu_sim_backend.py
+    #   python3 host/wpu_sim_backend.py
     dev = SimulatorBackend()
     dev.power_on()
     print("running the RTL glm_model_q4k slice sim (minutes; fixed TB vectors)...")

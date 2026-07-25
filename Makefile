@@ -15,7 +15,7 @@
 #                      -Wall clean -- informational, NOT part of `all`)
 #   make coverage   -> verilator --coverage-line/-toggle structural coverage of
 #                      the clean-verilating TB subset (per-module + merged report)
-#   make host-test  -> host-side runtime scaffold self-test (host/test_aipu.py)
+#   make host-test  -> host-side runtime scaffold self-test (host/test_wpu.py)
 #   make clean      -> remove build artifacts and the generated VCDs
 
 IVERILOG  ?= iverilog
@@ -43,7 +43,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 # it guards is covered by dsa-sparse-correct, which runs =0 AND =1 end-to-end against the
 # reference.  Every prerequisite below must be a gate that can actually finish.
 #
-# host-test is here because the RTL gates cannot see host/aipu_device.py at all, and 14
+# host-test is here because the RTL gates cannot see host/wpu_device.py at all, and 14
 # of its 32 tests are the prefix-cache / KV-reuse / context-capacity logic -- including
 # test_context_overflow_refuses_instead_of_aliasing, where the failure mode is a ring
 # that silently aliases rather than refuses.  2 s.  It was written, it passes, and until
@@ -588,7 +588,7 @@ lint:
 
 # Host software scaffold (D2): OpenAI-compatible server + device protocol (stdlib).
 host-test:
-	@printf '[host-test] '; python3 host/test_aipu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	@printf '[host-test] '; python3 host/test_wpu.py | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: host-test (a self-test raised; banner absent)"; exit 1; }
 
 GLM_Q4K_CDC_SRCS := src/glm_q4k_system_cdc.v src/glm_q4k_system.v src/cdc_async_fifo.v \
@@ -1578,8 +1578,8 @@ batched-q4k:
 #   make provision-selftest PROVISION_GGUF=/path/to.gguf PROVISION_GGUF_PY=/path/to/gguf-py
 # ============================================================================
 .PHONY: provision-selftest
-PROVISION_GGUF    ?= $(HOME)/.cache/aipu/smollm2-135m-q8_0.gguf
-PROVISION_GGUF_PY ?= $(HOME)/.cache/aipu/gguf-py
+PROVISION_GGUF    ?= $(HOME)/.cache/wpu/smollm2-135m-q8_0.gguf
+PROVISION_GGUF_PY ?= $(HOME)/.cache/wpu/gguf-py
 
 provision-selftest:
 	@mkdir -p $(BUILD_DIR)

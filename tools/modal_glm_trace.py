@@ -8,7 +8,7 @@ zai-org/GLM-4.5-Air (106B-A12B, same fine-grained-MoE + sigmoid-gating family
 as GLM-5.2) in 4-bit (bnb NF4) on one H100-80GB, hooks the MoE gates to record
 the EXACT selected expert ids per (token, layer), decodes the same 3 workloads
 x 4 prompts x 192 tokens as tools/moe_trace_hf.py, and writes trace_*.npz to a
-Modal Volume (download with `modal volume get aipu-traces ...`).
+Modal Volume (download with `modal volume get wpu-traces ...`).
 
 Capture strategy (robust across transformers versions):
   1. try output_router_logits=True (if the Glm4Moe impl supports it);
@@ -25,9 +25,9 @@ import modal
 MODEL = "zai-org/GLM-4.5-Air"
 MAX_NEW = 192
 
-app = modal.App("aipu-glm-trace")
-vol = modal.Volume.from_name("aipu-traces", create_if_missing=True)
-hf_cache = modal.Volume.from_name("aipu-hf-cache", create_if_missing=True)
+app = modal.App("wpu-glm-trace")
+vol = modal.Volume.from_name("wpu-traces", create_if_missing=True)
+hf_cache = modal.Volume.from_name("wpu-hf-cache", create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
