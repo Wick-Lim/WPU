@@ -40,7 +40,13 @@
 //============================================================================
 module glm_softmax #(
     parameter integer LEN   = 8,
-    parameter integer LANES = 2
+    parameter integer LANES = 2,
+    // rank 14 (docs/ULTRA_PERF_MODULES.md): 0 = committed serial interlock (one op in
+    //   flight per pass), 1 = one issue per cycle through the same flat fp pipes.
+    //   Default 0 is netlist-identical to the committed module -- `make rank14` proves it.
+    //   NOTE: LEN here is SWIN = min(S_MAX,TOPK_ATTN), the DSA top-K window -- NOT the
+    //   sequence length.  This is a top-K-window lever, not a long-context one.
+    parameter integer SM_PIPE = 0
 )(
     input                       clk,
     input                       rst,
@@ -188,276 +194,578 @@ module glm_softmax #(
         end
     endfunction
 
-    always @(posedge clk) begin
-        if (rst) begin
-            state       <= S_IDLE;
-            busy        <= 1'b0;
-            out_valid   <= 1'b0;
-            done        <= 1'b0;
-            p_out       <= {LANES*16{1'b0}};
-            idx         <= {IW{1'b0}};
-            beat        <= {BW{1'b0}};
-            exp_out_cnt <= {IW{1'b0}};
-            maxv        <= 32'b0;
-            sumv        <= 32'b0;
-            recip       <= 32'b0;
-            exp_vin     <= 1'b0;
-            add_vin     <= 1'b0;
-            mul_vin     <= 1'b0;
-            rsq_vin     <= 1'b0;
-            sum_busy    <= 1'b0;
-            sum_idx     <= {IW{1'b0}};
-            sum_done_cnt<= {IW{1'b0}};
-            sh_busy     <= 1'b0;
-            sh_in_cnt   <= {IW{1'b0}};
-            sh_out_cnt  <= {IW{1'b0}};
-            nm_busy     <= 1'b0;
-            nm_in_cnt   <= {IW{1'b0}};
-            nm_out_cnt  <= {IW{1'b0}};
-            rsq_issued  <= 1'b0;
-            rcp_issued  <= 1'b0;
-        end else begin
-            // default deasserts (single-cycle strobes)
-            exp_vin   <= 1'b0;
-            add_vin   <= 1'b0;
-            mul_vin   <= 1'b0;
-            rsq_vin   <= 1'b0;
-            out_valid <= 1'b0;
-            done      <= 1'b0;
+    generate
+    if (SM_PIPE == 0) begin : g_soft_serial
+        // DEFAULT: the committed serial interlock, VERBATIM.  Kept byte-for-byte
+        // inside a generate branch rather than folding a `SM_PIPE ?` term into the
+        // two conditions -- the fold is the exact shape that has broken default
+        // netlist identity three times in this repo.
+        always @(posedge clk) begin
+            if (rst) begin
+                state       <= S_IDLE;
+                busy        <= 1'b0;
+                out_valid   <= 1'b0;
+                done        <= 1'b0;
+                p_out       <= {LANES*16{1'b0}};
+                idx         <= {IW{1'b0}};
+                beat        <= {BW{1'b0}};
+                exp_out_cnt <= {IW{1'b0}};
+                maxv        <= 32'b0;
+                sumv        <= 32'b0;
+                recip       <= 32'b0;
+                exp_vin     <= 1'b0;
+                add_vin     <= 1'b0;
+                mul_vin     <= 1'b0;
+                rsq_vin     <= 1'b0;
+                sum_busy    <= 1'b0;
+                sum_idx     <= {IW{1'b0}};
+                sum_done_cnt<= {IW{1'b0}};
+                sh_busy     <= 1'b0;
+                sh_in_cnt   <= {IW{1'b0}};
+                sh_out_cnt  <= {IW{1'b0}};
+                nm_busy     <= 1'b0;
+                nm_in_cnt   <= {IW{1'b0}};
+                nm_out_cnt  <= {IW{1'b0}};
+                rsq_issued  <= 1'b0;
+                rcp_issued  <= 1'b0;
+            end else begin
+                // default deasserts (single-cycle strobes)
+                exp_vin   <= 1'b0;
+                add_vin   <= 1'b0;
+                mul_vin   <= 1'b0;
+                rsq_vin   <= 1'b0;
+                out_valid <= 1'b0;
+                done      <= 1'b0;
 
-            case (state)
-            // -----------------------------------------------------------
-            S_IDLE: begin
-                busy <= 1'b0;
-                if (start) begin
-                    busy        <= 1'b1;
-                    beat        <= {BW{1'b0}};
-                    idx         <= {IW{1'b0}};
-                    state       <= S_LOAD;
+                case (state)
+                // -----------------------------------------------------------
+                S_IDLE: begin
+                    busy <= 1'b0;
+                    if (start) begin
+                        busy        <= 1'b1;
+                        beat        <= {BW{1'b0}};
+                        idx         <= {IW{1'b0}};
+                        state       <= S_LOAD;
+                    end
                 end
-            end
 
-            // -----------------------------------------------------------
-            // Consume NBEATS input beats; widen each lane bf16 -> fp32 -> xbuf.
-            S_LOAD: begin
-                busy <= 1'b1;
-                if (in_valid) begin
+                // -----------------------------------------------------------
+                // Consume NBEATS input beats; widen each lane bf16 -> fp32 -> xbuf.
+                S_LOAD: begin
+                    busy <= 1'b1;
+                    if (in_valid) begin
+                        for (li = 0; li < LANES; li = li + 1)
+                            xbuf[beat*LANES + li] <=
+                                bf16_to_fp32(x_in[16*li +: 16]);
+                        if (beat == NBM1_BW) begin
+                            beat  <= {BW{1'b0}};
+                            idx   <= {IW{1'b0}};
+                            state <= S_MAX;
+                        end else begin
+                            beat <= beat + 1'b1;
+                        end
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // Sequential fp32 max over xbuf[0..LEN-1] (combinational compare).
+                S_MAX: begin
+                    busy <= 1'b1;
+                    if (idx == {IW{1'b0}}) begin
+                        maxv <= xbuf[{AW{1'b0}}];
+                        idx  <= {{(IW-1){1'b0}}, 1'b1};
+                        if (LEN == 1) begin
+                            idx        <= {IW{1'b0}};
+                            sh_busy    <= 1'b0;
+                            sh_in_cnt  <= {IW{1'b0}};
+                            sh_out_cnt <= {IW{1'b0}};
+                            state      <= S_SHIFT;
+                        end
+                    end else begin
+                        if (fp32_gt(xbuf[idx[AW-1:0]], maxv))
+                            maxv <= xbuf[idx[AW-1:0]];
+                        if (idx == LENM1_IW) begin
+                            idx        <= {IW{1'b0}};
+                            sh_busy    <= 1'b0;
+                            sh_in_cnt  <= {IW{1'b0}};
+                            sh_out_cnt <= {IW{1'b0}};
+                            state      <= S_SHIFT;
+                        end else begin
+                            idx <= idx + 1'b1;
+                        end
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // Serial subtraction x_i - m through the add pipe.  We issue one
+                // subtraction at a time and wait for its result, writing it back
+                // into xbuf[] in index order.  sh_out_cnt advances once per result.
+                S_SHIFT: begin
+                    busy <= 1'b1;
+                    // issue next subtraction when pipe is free of our single op
+                    if (!sh_busy && sh_in_cnt < LEN_IW) begin
+                        add_vin   <= 1'b1;
+                        add_a     <= xbuf[sh_in_cnt[AW-1:0]];
+                        // m negated:  x - m = x + (-m)
+                        add_b     <= {~maxv[31], maxv[30:0]};
+                        sh_busy   <= 1'b1;
+                        sh_in_cnt <= sh_in_cnt + 1'b1;
+                    end
+                    // capture result
+                    if (add_vout) begin
+                        xbuf[sh_out_cnt[AW-1:0]] <= add_res;
+                        sh_out_cnt <= sh_out_cnt + 1'b1;
+                        sh_busy    <= 1'b0;
+                        if (sh_out_cnt == LENM1_IW) begin
+                            // all shifted; set up the exp/sum pass
+                            idx          <= {IW{1'b0}};
+                            exp_out_cnt  <= {IW{1'b0}};
+                            sumv         <= 32'b0;
+                            sum_busy     <= 1'b0;
+                            sum_idx      <= {IW{1'b0}};
+                            sum_done_cnt <= {IW{1'b0}};
+                            state        <= S_EXP;
+                        end
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // EXP + SERIAL SUM.
+                //  * Drive the exp pipe one shifted logit per cycle (idx order).
+                //  * Capture each exp output into ebuf[exp_out_cnt]; exp_out_cnt
+                //    counts the LEN exp terms EXACTLY (one increment per valid_out).
+                //  * A single serial fp32 accumulator folds every captured ebuf
+                //    term into sumv exactly once (sum_done_cnt counts folds).
+                S_EXP: begin
+                    busy <= 1'b1;
+                    // ---- feed exp pipe ----
+                    if (idx < LEN_IW) begin
+                        exp_vin <= 1'b1;
+                        exp_x   <= xbuf[idx[AW-1:0]];
+                        idx     <= idx + 1'b1;
+                    end
+                    // ---- capture exp outputs (in order) ----
+                    if (exp_vout) begin
+                        ebuf[exp_out_cnt[AW-1:0]] <= exp_res;
+                        exp_out_cnt <= exp_out_cnt + 1'b1;
+                    end
+                    // ---- serial accumulate: fold ebuf terms into sumv one at a ----
+                    // time.  We may add a term as soon as it is captured.  Use the
+                    // exp result directly on the cycle it appears OR the buffered
+                    // value for already-captured terms.
+                    if (!sum_busy && sum_idx < exp_out_cnt) begin
+                        // there is at least one captured-but-unfolded term
+                        if (sum_done_cnt == {IW{1'b0}}) begin
+                            // first term: sumv starts at 0, just register the term
+                            // by adding to +0 (keeps a uniform serial-add path).
+                            add_vin <= 1'b1;
+                            add_a   <= 32'h00000000;
+                            add_b   <= ebuf[sum_idx[AW-1:0]];
+                        end else begin
+                            add_vin <= 1'b1;
+                            add_a   <= sumv;
+                            add_b   <= ebuf[sum_idx[AW-1:0]];
+                        end
+                        sum_busy <= 1'b1;
+                        sum_idx  <= sum_idx + 1'b1;
+                    end
+                    if (add_vout) begin
+                        sumv         <= add_res;
+                        sum_done_cnt <= sum_done_cnt + 1'b1;
+                        sum_busy     <= 1'b0;
+                    end
+                    // ---- all LEN terms captured AND folded? ----
+                    if (exp_out_cnt == LEN_IW &&
+                        sum_done_cnt == LEN_IW) begin
+                        rsq_issued <= 1'b0;
+                        state      <= S_RSQ;
+                    end
+                end
+
+                // (S_SUMW removed: dead state -- S_EXP transitions directly to S_RSQ
+                //  and nothing assigns S_SUMW; the S_EXP completion gate covers it.)
+
+                // -----------------------------------------------------------
+                // 1/sqrt(S)  -- issue EXACTLY once (rsq_issued one-shot guard).
+                S_RSQ: begin
+                    busy <= 1'b1;
+                    if (!rsq_issued) begin
+                        rsq_vin    <= 1'b1;
+                        rsq_x      <= sumv;
+                        rsq_issued <= 1'b1;
+                    end
+                    if (rsq_vout) begin
+                        recip      <= rsq_res;   // temporarily holds 1/sqrt(S)
+                        rcp_issued <= 1'b0;
+                        state      <= S_RECIP;
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // (1/sqrt(S))^2 = 1/S  -- issue the square EXACTLY once.  We capture
+                // its result and ARM the NORM pass; the NORM pass only begins issuing
+                // on the NEXT cycle, so this square's valid_out cannot be mistaken for
+                // a NORM multiply result.
+                S_RECIP: begin
+                    busy <= 1'b1;
+                    if (!rcp_issued) begin
+                        mul_vin    <= 1'b1;
+                        mul_a      <= recip;
+                        mul_b      <= recip;
+                        rcp_issued <= 1'b1;
+                    end
+                    if (rcp_issued && mul_vout) begin
+                        recip      <= mul_res;     // now 1/S
+                        nm_busy    <= 1'b0;
+                        nm_in_cnt  <= {IW{1'b0}};
+                        nm_out_cnt <= {IW{1'b0}};
+                        state      <= S_NORM;
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // Serial normalize: p_i = e_i * (1/S), round to bf16 -> pbuf[].
+                S_NORM: begin
+                    busy <= 1'b1;
+                    if (!nm_busy && nm_in_cnt < LEN_IW) begin
+                        mul_vin   <= 1'b1;
+                        mul_a     <= ebuf[nm_in_cnt[AW-1:0]];
+                        mul_b     <= recip;
+                        nm_busy   <= 1'b1;
+                        nm_in_cnt <= nm_in_cnt + 1'b1;
+                    end
+                    if (mul_vout) begin
+                        pbuf[nm_out_cnt[AW-1:0]] <= fp32_to_bf16(mul_res);
+                        nm_out_cnt <= nm_out_cnt + 1'b1;
+                        nm_busy    <= 1'b0;
+                        if (nm_out_cnt == LENM1_IW) begin
+                            beat  <= {BW{1'b0}};
+                            state <= S_OUT;
+                        end
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // Emit NBEATS output beats (LANES lanes each), row order.
+                S_OUT: begin
+                    busy      <= 1'b1;
+                    out_valid <= 1'b1;
                     for (li = 0; li < LANES; li = li + 1)
-                        xbuf[beat*LANES + li] <=
-                            bf16_to_fp32(x_in[16*li +: 16]);
+                        p_out[16*li +: 16] <= pbuf[beat*LANES + li];
                     if (beat == NBM1_BW) begin
                         beat  <= {BW{1'b0}};
-                        idx   <= {IW{1'b0}};
-                        state <= S_MAX;
+                        state <= S_DONE;
                     end else begin
                         beat <= beat + 1'b1;
                     end
                 end
-            end
 
-            // -----------------------------------------------------------
-            // Sequential fp32 max over xbuf[0..LEN-1] (combinational compare).
-            S_MAX: begin
-                busy <= 1'b1;
-                if (idx == {IW{1'b0}}) begin
-                    maxv <= xbuf[{AW{1'b0}}];
-                    idx  <= {{(IW-1){1'b0}}, 1'b1};
-                    if (LEN == 1) begin
-                        idx        <= {IW{1'b0}};
-                        sh_busy    <= 1'b0;
-                        sh_in_cnt  <= {IW{1'b0}};
-                        sh_out_cnt <= {IW{1'b0}};
-                        state      <= S_SHIFT;
+                // -----------------------------------------------------------
+                S_DONE: begin
+                    busy <= 1'b0;
+                    done <= 1'b1;
+                    state <= S_IDLE;
+                end
+
+                default: state <= S_IDLE;
+                endcase
+            end
+        end
+    end else begin : g_soft_pipe
+        // SM_PIPE=1: the SAME block with exactly two tokens deleted -- `!sh_busy && `
+        // at S_SHIFT and `!nm_busy && ` at S_NORM -- so one op is issued per cycle.
+        //
+        // WHY THIS IS BIT-EXACT, structurally:
+        //   fp32_add_pipe / fp32_mul_pipe (glm_fp_pipe.v:516-563, :192-207) are FLAT
+        //   feed-forward register chains with the valid bit shifted alongside the data:
+        //   no enable, no busy, no per-op shared state.  Back-to-back ops therefore
+        //   produce per-op results identical to isolated ops, and emerge strictly in
+        //   issue order.  The capture already indexes by the IN-ORDER counters
+        //   (sh_out_cnt / nm_out_cnt), not the issue counters, so nothing else moves.
+        //   No RAW hazard on the in-place xbuf reuse: index i is read at P0+i and
+        //   written back at P0+FP_ADD_LAT+1+i = P0+6+i, so the read leads the write by
+        //   6 for every i and every LEN.  S_NORM reads ebuf and writes pbuf -- disjoint.
+        //   The same 1-issue/cycle idiom is ALREADY committed and bit-exact in this
+        //   module: S_EXP (:330-339) drives the exp pipe with a free-running idx and an
+        //   in-order capture counter exp_out_cnt.
+        //   sh_busy / nm_busy keep being written here; they simply become unread status
+        //   flops that synthesis drops, which keeps this branch a two-token diff.
+        always @(posedge clk) begin
+            if (rst) begin
+                state       <= S_IDLE;
+                busy        <= 1'b0;
+                out_valid   <= 1'b0;
+                done        <= 1'b0;
+                p_out       <= {LANES*16{1'b0}};
+                idx         <= {IW{1'b0}};
+                beat        <= {BW{1'b0}};
+                exp_out_cnt <= {IW{1'b0}};
+                maxv        <= 32'b0;
+                sumv        <= 32'b0;
+                recip       <= 32'b0;
+                exp_vin     <= 1'b0;
+                add_vin     <= 1'b0;
+                mul_vin     <= 1'b0;
+                rsq_vin     <= 1'b0;
+                sum_busy    <= 1'b0;
+                sum_idx     <= {IW{1'b0}};
+                sum_done_cnt<= {IW{1'b0}};
+                sh_busy     <= 1'b0;
+                sh_in_cnt   <= {IW{1'b0}};
+                sh_out_cnt  <= {IW{1'b0}};
+                nm_busy     <= 1'b0;
+                nm_in_cnt   <= {IW{1'b0}};
+                nm_out_cnt  <= {IW{1'b0}};
+                rsq_issued  <= 1'b0;
+                rcp_issued  <= 1'b0;
+            end else begin
+                // default deasserts (single-cycle strobes)
+                exp_vin   <= 1'b0;
+                add_vin   <= 1'b0;
+                mul_vin   <= 1'b0;
+                rsq_vin   <= 1'b0;
+                out_valid <= 1'b0;
+                done      <= 1'b0;
+
+                case (state)
+                // -----------------------------------------------------------
+                S_IDLE: begin
+                    busy <= 1'b0;
+                    if (start) begin
+                        busy        <= 1'b1;
+                        beat        <= {BW{1'b0}};
+                        idx         <= {IW{1'b0}};
+                        state       <= S_LOAD;
                     end
-                end else begin
-                    if (fp32_gt(xbuf[idx[AW-1:0]], maxv))
-                        maxv <= xbuf[idx[AW-1:0]];
-                    if (idx == LENM1_IW) begin
-                        idx        <= {IW{1'b0}};
-                        sh_busy    <= 1'b0;
-                        sh_in_cnt  <= {IW{1'b0}};
-                        sh_out_cnt <= {IW{1'b0}};
-                        state      <= S_SHIFT;
+                end
+
+                // -----------------------------------------------------------
+                // Consume NBEATS input beats; widen each lane bf16 -> fp32 -> xbuf.
+                S_LOAD: begin
+                    busy <= 1'b1;
+                    if (in_valid) begin
+                        for (li = 0; li < LANES; li = li + 1)
+                            xbuf[beat*LANES + li] <=
+                                bf16_to_fp32(x_in[16*li +: 16]);
+                        if (beat == NBM1_BW) begin
+                            beat  <= {BW{1'b0}};
+                            idx   <= {IW{1'b0}};
+                            state <= S_MAX;
+                        end else begin
+                            beat <= beat + 1'b1;
+                        end
+                    end
+                end
+
+                // -----------------------------------------------------------
+                // Sequential fp32 max over xbuf[0..LEN-1] (combinational compare).
+                S_MAX: begin
+                    busy <= 1'b1;
+                    if (idx == {IW{1'b0}}) begin
+                        maxv <= xbuf[{AW{1'b0}}];
+                        idx  <= {{(IW-1){1'b0}}, 1'b1};
+                        if (LEN == 1) begin
+                            idx        <= {IW{1'b0}};
+                            sh_busy    <= 1'b0;
+                            sh_in_cnt  <= {IW{1'b0}};
+                            sh_out_cnt <= {IW{1'b0}};
+                            state      <= S_SHIFT;
+                        end
                     end else begin
-                        idx <= idx + 1'b1;
+                        if (fp32_gt(xbuf[idx[AW-1:0]], maxv))
+                            maxv <= xbuf[idx[AW-1:0]];
+                        if (idx == LENM1_IW) begin
+                            idx        <= {IW{1'b0}};
+                            sh_busy    <= 1'b0;
+                            sh_in_cnt  <= {IW{1'b0}};
+                            sh_out_cnt <= {IW{1'b0}};
+                            state      <= S_SHIFT;
+                        end else begin
+                            idx <= idx + 1'b1;
+                        end
                     end
                 end
-            end
 
-            // -----------------------------------------------------------
-            // Serial subtraction x_i - m through the add pipe.  We issue one
-            // subtraction at a time and wait for its result, writing it back
-            // into xbuf[] in index order.  sh_out_cnt advances once per result.
-            S_SHIFT: begin
-                busy <= 1'b1;
-                // issue next subtraction when pipe is free of our single op
-                if (!sh_busy && sh_in_cnt < LEN_IW) begin
-                    add_vin   <= 1'b1;
-                    add_a     <= xbuf[sh_in_cnt[AW-1:0]];
-                    // m negated:  x - m = x + (-m)
-                    add_b     <= {~maxv[31], maxv[30:0]};
-                    sh_busy   <= 1'b1;
-                    sh_in_cnt <= sh_in_cnt + 1'b1;
+                // -----------------------------------------------------------
+                // Serial subtraction x_i - m through the add pipe.  We issue one
+                // subtraction at a time and wait for its result, writing it back
+                // into xbuf[] in index order.  sh_out_cnt advances once per result.
+                S_SHIFT: begin
+                    busy <= 1'b1;
+                    // issue next subtraction when pipe is free of our single op
+                    if (sh_in_cnt < LEN_IW) begin
+                        add_vin   <= 1'b1;
+                        add_a     <= xbuf[sh_in_cnt[AW-1:0]];
+                        // m negated:  x - m = x + (-m)
+                        add_b     <= {~maxv[31], maxv[30:0]};
+                        sh_busy   <= 1'b1;
+                        sh_in_cnt <= sh_in_cnt + 1'b1;
+                    end
+                    // capture result
+                    if (add_vout) begin
+    `ifdef INJ_SM_PIPE_OOO
+                        xbuf[sh_in_cnt[AW-1:0]]  <= add_res;   // INJECTION: issue index
+    `else
+                        xbuf[sh_out_cnt[AW-1:0]] <= add_res;
+    `endif
+                        sh_out_cnt <= sh_out_cnt + 1'b1;
+                        sh_busy    <= 1'b0;
+                        if (sh_out_cnt == LENM1_IW) begin
+                            // all shifted; set up the exp/sum pass
+                            idx          <= {IW{1'b0}};
+                            exp_out_cnt  <= {IW{1'b0}};
+                            sumv         <= 32'b0;
+                            sum_busy     <= 1'b0;
+                            sum_idx      <= {IW{1'b0}};
+                            sum_done_cnt <= {IW{1'b0}};
+                            state        <= S_EXP;
+                        end
+                    end
                 end
-                // capture result
-                if (add_vout) begin
-                    xbuf[sh_out_cnt[AW-1:0]] <= add_res;
-                    sh_out_cnt <= sh_out_cnt + 1'b1;
-                    sh_busy    <= 1'b0;
-                    if (sh_out_cnt == LENM1_IW) begin
-                        // all shifted; set up the exp/sum pass
-                        idx          <= {IW{1'b0}};
-                        exp_out_cnt  <= {IW{1'b0}};
-                        sumv         <= 32'b0;
+
+                // -----------------------------------------------------------
+                // EXP + SERIAL SUM.
+                //  * Drive the exp pipe one shifted logit per cycle (idx order).
+                //  * Capture each exp output into ebuf[exp_out_cnt]; exp_out_cnt
+                //    counts the LEN exp terms EXACTLY (one increment per valid_out).
+                //  * A single serial fp32 accumulator folds every captured ebuf
+                //    term into sumv exactly once (sum_done_cnt counts folds).
+                S_EXP: begin
+                    busy <= 1'b1;
+                    // ---- feed exp pipe ----
+                    if (idx < LEN_IW) begin
+                        exp_vin <= 1'b1;
+                        exp_x   <= xbuf[idx[AW-1:0]];
+                        idx     <= idx + 1'b1;
+                    end
+                    // ---- capture exp outputs (in order) ----
+                    if (exp_vout) begin
+                        ebuf[exp_out_cnt[AW-1:0]] <= exp_res;
+                        exp_out_cnt <= exp_out_cnt + 1'b1;
+                    end
+                    // ---- serial accumulate: fold ebuf terms into sumv one at a ----
+                    // time.  We may add a term as soon as it is captured.  Use the
+                    // exp result directly on the cycle it appears OR the buffered
+                    // value for already-captured terms.
+                    if (!sum_busy && sum_idx < exp_out_cnt) begin
+                        // there is at least one captured-but-unfolded term
+                        if (sum_done_cnt == {IW{1'b0}}) begin
+                            // first term: sumv starts at 0, just register the term
+                            // by adding to +0 (keeps a uniform serial-add path).
+                            add_vin <= 1'b1;
+                            add_a   <= 32'h00000000;
+                            add_b   <= ebuf[sum_idx[AW-1:0]];
+                        end else begin
+                            add_vin <= 1'b1;
+                            add_a   <= sumv;
+                            add_b   <= ebuf[sum_idx[AW-1:0]];
+                        end
+                        sum_busy <= 1'b1;
+                        sum_idx  <= sum_idx + 1'b1;
+                    end
+                    if (add_vout) begin
+                        sumv         <= add_res;
+                        sum_done_cnt <= sum_done_cnt + 1'b1;
                         sum_busy     <= 1'b0;
-                        sum_idx      <= {IW{1'b0}};
-                        sum_done_cnt <= {IW{1'b0}};
-                        state        <= S_EXP;
+                    end
+                    // ---- all LEN terms captured AND folded? ----
+                    if (exp_out_cnt == LEN_IW &&
+                        sum_done_cnt == LEN_IW) begin
+                        rsq_issued <= 1'b0;
+                        state      <= S_RSQ;
                     end
                 end
-            end
 
-            // -----------------------------------------------------------
-            // EXP + SERIAL SUM.
-            //  * Drive the exp pipe one shifted logit per cycle (idx order).
-            //  * Capture each exp output into ebuf[exp_out_cnt]; exp_out_cnt
-            //    counts the LEN exp terms EXACTLY (one increment per valid_out).
-            //  * A single serial fp32 accumulator folds every captured ebuf
-            //    term into sumv exactly once (sum_done_cnt counts folds).
-            S_EXP: begin
-                busy <= 1'b1;
-                // ---- feed exp pipe ----
-                if (idx < LEN_IW) begin
-                    exp_vin <= 1'b1;
-                    exp_x   <= xbuf[idx[AW-1:0]];
-                    idx     <= idx + 1'b1;
-                end
-                // ---- capture exp outputs (in order) ----
-                if (exp_vout) begin
-                    ebuf[exp_out_cnt[AW-1:0]] <= exp_res;
-                    exp_out_cnt <= exp_out_cnt + 1'b1;
-                end
-                // ---- serial accumulate: fold ebuf terms into sumv one at a ----
-                // time.  We may add a term as soon as it is captured.  Use the
-                // exp result directly on the cycle it appears OR the buffered
-                // value for already-captured terms.
-                if (!sum_busy && sum_idx < exp_out_cnt) begin
-                    // there is at least one captured-but-unfolded term
-                    if (sum_done_cnt == {IW{1'b0}}) begin
-                        // first term: sumv starts at 0, just register the term
-                        // by adding to +0 (keeps a uniform serial-add path).
-                        add_vin <= 1'b1;
-                        add_a   <= 32'h00000000;
-                        add_b   <= ebuf[sum_idx[AW-1:0]];
-                    end else begin
-                        add_vin <= 1'b1;
-                        add_a   <= sumv;
-                        add_b   <= ebuf[sum_idx[AW-1:0]];
+                // (S_SUMW removed: dead state -- S_EXP transitions directly to S_RSQ
+                //  and nothing assigns S_SUMW; the S_EXP completion gate covers it.)
+
+                // -----------------------------------------------------------
+                // 1/sqrt(S)  -- issue EXACTLY once (rsq_issued one-shot guard).
+                S_RSQ: begin
+                    busy <= 1'b1;
+                    if (!rsq_issued) begin
+                        rsq_vin    <= 1'b1;
+                        rsq_x      <= sumv;
+                        rsq_issued <= 1'b1;
                     end
-                    sum_busy <= 1'b1;
-                    sum_idx  <= sum_idx + 1'b1;
+                    if (rsq_vout) begin
+                        recip      <= rsq_res;   // temporarily holds 1/sqrt(S)
+                        rcp_issued <= 1'b0;
+                        state      <= S_RECIP;
+                    end
                 end
-                if (add_vout) begin
-                    sumv         <= add_res;
-                    sum_done_cnt <= sum_done_cnt + 1'b1;
-                    sum_busy     <= 1'b0;
-                end
-                // ---- all LEN terms captured AND folded? ----
-                if (exp_out_cnt == LEN_IW &&
-                    sum_done_cnt == LEN_IW) begin
-                    rsq_issued <= 1'b0;
-                    state      <= S_RSQ;
-                end
-            end
 
-            // (S_SUMW removed: dead state -- S_EXP transitions directly to S_RSQ
-            //  and nothing assigns S_SUMW; the S_EXP completion gate covers it.)
+                // -----------------------------------------------------------
+                // (1/sqrt(S))^2 = 1/S  -- issue the square EXACTLY once.  We capture
+                // its result and ARM the NORM pass; the NORM pass only begins issuing
+                // on the NEXT cycle, so this square's valid_out cannot be mistaken for
+                // a NORM multiply result.
+                S_RECIP: begin
+                    busy <= 1'b1;
+                    if (!rcp_issued) begin
+                        mul_vin    <= 1'b1;
+                        mul_a      <= recip;
+                        mul_b      <= recip;
+                        rcp_issued <= 1'b1;
+                    end
+                    if (rcp_issued && mul_vout) begin
+                        recip      <= mul_res;     // now 1/S
+                        nm_busy    <= 1'b0;
+                        nm_in_cnt  <= {IW{1'b0}};
+                        nm_out_cnt <= {IW{1'b0}};
+                        state      <= S_NORM;
+                    end
+                end
 
-            // -----------------------------------------------------------
-            // 1/sqrt(S)  -- issue EXACTLY once (rsq_issued one-shot guard).
-            S_RSQ: begin
-                busy <= 1'b1;
-                if (!rsq_issued) begin
-                    rsq_vin    <= 1'b1;
-                    rsq_x      <= sumv;
-                    rsq_issued <= 1'b1;
+                // -----------------------------------------------------------
+                // Serial normalize: p_i = e_i * (1/S), round to bf16 -> pbuf[].
+                S_NORM: begin
+                    busy <= 1'b1;
+                    if (nm_in_cnt < LEN_IW) begin
+                        mul_vin   <= 1'b1;
+                        mul_a     <= ebuf[nm_in_cnt[AW-1:0]];
+                        mul_b     <= recip;
+                        nm_busy   <= 1'b1;
+                        nm_in_cnt <= nm_in_cnt + 1'b1;
+                    end
+                    if (mul_vout) begin
+                        pbuf[nm_out_cnt[AW-1:0]] <= fp32_to_bf16(mul_res);
+                        nm_out_cnt <= nm_out_cnt + 1'b1;
+                        nm_busy    <= 1'b0;
+                        if (nm_out_cnt == LENM1_IW) begin
+                            beat  <= {BW{1'b0}};
+                            state <= S_OUT;
+                        end
+                    end
                 end
-                if (rsq_vout) begin
-                    recip      <= rsq_res;   // temporarily holds 1/sqrt(S)
-                    rcp_issued <= 1'b0;
-                    state      <= S_RECIP;
-                end
-            end
 
-            // -----------------------------------------------------------
-            // (1/sqrt(S))^2 = 1/S  -- issue the square EXACTLY once.  We capture
-            // its result and ARM the NORM pass; the NORM pass only begins issuing
-            // on the NEXT cycle, so this square's valid_out cannot be mistaken for
-            // a NORM multiply result.
-            S_RECIP: begin
-                busy <= 1'b1;
-                if (!rcp_issued) begin
-                    mul_vin    <= 1'b1;
-                    mul_a      <= recip;
-                    mul_b      <= recip;
-                    rcp_issued <= 1'b1;
-                end
-                if (rcp_issued && mul_vout) begin
-                    recip      <= mul_res;     // now 1/S
-                    nm_busy    <= 1'b0;
-                    nm_in_cnt  <= {IW{1'b0}};
-                    nm_out_cnt <= {IW{1'b0}};
-                    state      <= S_NORM;
-                end
-            end
-
-            // -----------------------------------------------------------
-            // Serial normalize: p_i = e_i * (1/S), round to bf16 -> pbuf[].
-            S_NORM: begin
-                busy <= 1'b1;
-                if (!nm_busy && nm_in_cnt < LEN_IW) begin
-                    mul_vin   <= 1'b1;
-                    mul_a     <= ebuf[nm_in_cnt[AW-1:0]];
-                    mul_b     <= recip;
-                    nm_busy   <= 1'b1;
-                    nm_in_cnt <= nm_in_cnt + 1'b1;
-                end
-                if (mul_vout) begin
-                    pbuf[nm_out_cnt[AW-1:0]] <= fp32_to_bf16(mul_res);
-                    nm_out_cnt <= nm_out_cnt + 1'b1;
-                    nm_busy    <= 1'b0;
-                    if (nm_out_cnt == LENM1_IW) begin
+                // -----------------------------------------------------------
+                // Emit NBEATS output beats (LANES lanes each), row order.
+                S_OUT: begin
+                    busy      <= 1'b1;
+                    out_valid <= 1'b1;
+                    for (li = 0; li < LANES; li = li + 1)
+                        p_out[16*li +: 16] <= pbuf[beat*LANES + li];
+                    if (beat == NBM1_BW) begin
                         beat  <= {BW{1'b0}};
-                        state <= S_OUT;
+                        state <= S_DONE;
+                    end else begin
+                        beat <= beat + 1'b1;
                     end
                 end
-            end
 
-            // -----------------------------------------------------------
-            // Emit NBEATS output beats (LANES lanes each), row order.
-            S_OUT: begin
-                busy      <= 1'b1;
-                out_valid <= 1'b1;
-                for (li = 0; li < LANES; li = li + 1)
-                    p_out[16*li +: 16] <= pbuf[beat*LANES + li];
-                if (beat == NBM1_BW) begin
-                    beat  <= {BW{1'b0}};
-                    state <= S_DONE;
-                end else begin
-                    beat <= beat + 1'b1;
+                // -----------------------------------------------------------
+                S_DONE: begin
+                    busy <= 1'b0;
+                    done <= 1'b1;
+                    state <= S_IDLE;
                 end
-            end
 
-            // -----------------------------------------------------------
-            S_DONE: begin
-                busy <= 1'b0;
-                done <= 1'b1;
-                state <= S_IDLE;
+                default: state <= S_IDLE;
+                endcase
             end
-
-            default: state <= S_IDLE;
-            endcase
         end
     end
+    endgenerate
 
 endmodule

@@ -666,6 +666,19 @@ resident:
 #   differs by 20 histogram lines).  Both must hold: RESIDENT=0==base AND
 #   RESIDENT=1!=base.  A pass therefore means the netlist is unchanged AND the check
 #   that established it is live.
+#
+#   SCOPE -- READ THIS BEFORE CITING A PASS.  RESIDENT_LIBS (which includes
+#   src/glm_model_q4k.v) is read with `read_verilog -lib`, i.e. as BLACKBOXES, and the
+#   only real source read is src/glm_q4k_system.v.  So this gate proves exactly one
+#   thing: that glm_q4k_system.v ITSELF is netlist-unchanged.  It is structurally BLIND
+#   to every leaf -- glm_model_q4k, glm_decoder_block_q4k, mla_attn_q4k,
+#   swiglu_expert_q4k, glm_softmax, glm_matmul_q4k.  It would pass unchanged if the
+#   whole FFN were deleted.
+#   This was over-read once already: the rank-4 default-netlist regression was caught
+#   here, but only because that change ALSO touched glm_q4k_system.v (a non-folding
+#   ternary on pf_id_eff).  The decoder-side half of the same change (ROUTE_EXPOSE
+#   gating) was never covered by this gate and had to be proven separately with
+#   tools/synth_equiv.sh.  For leaf changes use synth_equiv.sh, not this.
 RESIDENT_BASE ?= 05639bf
 RESIDENT_LIBS := src/glm_model_q4k.v src/ddr5_xbar.v src/weight_loader_q4k.v \
 	src/expert_cache_pf.v src/expert_cache_ctrl.v src/kv_cache_pager.v
@@ -688,7 +701,7 @@ resident-equiv:
 	         diff $(BUILD_DIR)/res_base_cells.txt $(BUILD_DIR)/res_r0_cells.txt; exit 1; }
 	@if diff $(BUILD_DIR)/res_base_cells.txt $(BUILD_DIR)/res_r1_cells.txt >/dev/null; then \
 	    echo "FAILED: resident-equiv self-test (RESIDENT=1 == base: the check is blind)"; exit 1; fi
-	@echo "[resident-equiv] PROVEN: glm_q4k_system(RESIDENT=0) coarse netlist == $(RESIDENT_BASE); RESIDENT=1 differs (check is live)"
+	@echo "[resident-equiv] PROVEN: glm_q4k_system.v(RESIDENT=0) coarse netlist == $(RESIDENT_BASE); RESIDENT=1 differs (check is live). SCOPE: glm_q4k_system.v ONLY -- all leaves are blackboxed; use tools/synth_equiv.sh for those."
 
 # ---------------------------------------------------------------------------
 # self-kv-roundtrip : KV latent WRITE-BACK round-trip (KV_WRITEBACK_DESIGN step 2).
@@ -1160,7 +1173,7 @@ clean:
 #   is a gate that does not exist, so: one command, run it after any src/*.v change
 #   alongside `make release-gate-strict`.
 # ============================================================================
-perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys
+perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys rank14
 	@echo "perf-gates: all measurement gates ran (read the [MEASURED] lines above -- they are numbers, not verdicts)"
 
 rank3: rank2
@@ -1262,6 +1275,44 @@ rank3sys:
 	    echo "[rank3sys_die_issue] cycles CHANGED ($$c1 -> $$c4) -- re-read the claim in docs/ULTRA_PERF_MODULES.md"; \
 	  fi'
 	@echo "rank3sys: the multi-port die issuer is FAITHFUL (token stream identical); its EFFECT is measured above, not asserted"
+
+# ============================================================================
+# rank14 : 1-issue/cycle softmax shift+normalize (docs/ULTRA_PERF_MODULES.md)
+#   glm_softmax held ONE op in flight per pass, so each pass paid the full fp-pipe
+#   latency PER ELEMENT.  SM_PIPE=1 deletes exactly two `!*_busy && ` tokens.
+#   The committed serial block stays VERBATIM in the SM_PIPE=0 generate branch, so
+#   the default netlist is untouched -- proven here, not asserted.
+#   Note the scope honestly: glm_softmax's LEN is SWIN = min(S_MAX,TOPK_ATTN), the
+#   DSA top-K window, NOT the sequence length.  This is a top-K-window lever.
+# ============================================================================
+# PINNED base revision -- the last commit BEFORE SM_PIPE existed.  Comparing against
+#   HEAD would be vacuous the moment this lands: synth_equiv would diff the committed
+#   file against itself and report IDENTICAL forever, proving nothing.  Same reason
+#   resident-equiv pins RESIDENT_BASE.
+SM_PIPE_BASE ?= 3b6b34c
+rank14:
+	@mkdir -p $(BUILD_DIR)
+	@tools/synth_equiv.sh glm_softmax $(SM_PIPE_BASE) "LEN 8" "LANES 1" \
+	  || { echo "FAILED: rank14 -- SM_PIPE=0 changed the glm_softmax netlist vs $(SM_PIPE_BASE)"; exit 1; }
+	@if SE_NEW_PARAMS="SM_PIPE 1" tools/synth_equiv.sh glm_softmax $(SM_PIPE_BASE) "LEN 8" "LANES 1" >/dev/null 2>&1; then \
+	    echo "FAILED: rank14 self-test -- SM_PIPE=1 netlist == SM_PIPE=0: the identity check above is BLIND"; exit 1; \
+	  else \
+	    echo "[rank14_netlist] PROVEN: glm_softmax(SM_PIPE=0) == $(SM_PIPE_BASE); SM_PIPE=1 differs (check is live)"; \
+	  fi
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/rank14 test/glm_softmax_pipe_tb.v \
+	    src/glm_softmax.v src/glm_fp_pipe.v 2>/dev/null \
+	  || { echo "FAILED: rank14 compile"; exit 1; }
+	@printf '[glm_softmax_pipe] '; $(VVP) $(BUILD_DIR)/rank14 2>/dev/null | grep -E 'MEASURED|ALL .* TESTS PASSED|FAIL' \
+	  || { echo "FAILED: rank14 run"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_SM_PIPE_OOO -o $(BUILD_DIR)/rank14_inj \
+	    test/glm_softmax_pipe_tb.v src/glm_softmax.v src/glm_fp_pipe.v 2>/dev/null \
+	  || { echo "FAILED: rank14 injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/rank14_inj 2>/dev/null | grep -q 'ALL .* TESTS PASSED'; then \
+	    echo "FAILED: rank14 injection PASSED -- capturing at the issue index instead of the in-order index is supposed to break bit-exactness; the check constrains nothing"; exit 1; \
+	  else \
+	    echo "[glm_softmax_pipe_INJECT_ooo] injection correctly FAILED (in-order capture is load-bearing once the interlock is removed)"; \
+	  fi
+	@echo "rank14: SM_PIPE=1 is BIT-EXACT (DUT-vs-DUT, raw 16-bit ===) and FASTER; SM_PIPE=0 netlist unchanged"
 
 # ============================================================================
 # rank12 : WIDE-BEAT clock-domain crossing (docs/ULTRA_PERF_MODULES.md rank 12)

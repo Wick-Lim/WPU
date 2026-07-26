@@ -228,6 +228,42 @@ drain does.
 - **Contract:** preserving · **Effort:** medium · **vs ULTRA_PERF:** new
 
 ### 9. SwiGLU gate||up concurrency + inter-pass double-buffering
+
+> **STATUS: ANALYSED + PLANNED, NOT BUILT. Biggest remaining lever — measured ceiling 6,368
+> cycles (14.6% of the decode window)** of 9,056 absolute. The cost model was re-derived from the
+> RTL and closes to the exact cycle against the histogram: dense `8 × 695 = 5,560 == ffnd` EXACT;
+> MoE `24 × 363 = 8,712`, `+140` refill stall `= 8,852 == expw` EXACT. `GU_CONC` deletes
+> `S_UPP+S_UP+S_UPW = 23 cyc × 160 groups = 3,680`, and the FSM is strictly serial so the saving is
+> additive — no downstream stage re-serialises it (the rank-3 failure mode was checked for and is
+> absent at `ACT_HW=0`).
+>
+> Bit-exactness is structural, not empirical: during `S_UP` the module today re-issues the
+> **identical** request key — `pass_sel` is not changed at `:166` (only `up_pass` is), `w_grp = grp`
+> is unchanged, `w_k` restarts at 0 — so the up pass is a byte-for-byte replay of the gate pass.
+> Merging them issues a strict **subset** of today's requests (each `(sel,grp,k)` once instead of
+> twice) and never a different one.
+>
+> **THE PROOF TRAP, recorded because it would otherwise be walked into again.** The perf TB's
+> binding check compares `glm_q4k_system` against an independent standalone `glm_model_q4k`
+> (`test/glm_q4k_system_perf_tb.v:26-29`) — and **both sides instantiate `swiglu_expert_q4k`**. A
+> leaf-level parameter changes both identically, so that check goes **blind** for rank 9. It was a
+> valid proof for ranks 3 and 4 only because those changed `glm_q4k_system`, which the reference
+> does not contain. Rank 9's bit-exactness must be proven by `make model-q4k` against the **numpy
+> golden** (`tools/glm_model_q4k_ref.py`), which is independent of the RTL entirely.
+>
+> **Prerequisites — now DONE** (they were the reason this could not start): `tools/synth_equiv.sh`
+> failed on `swiglu_expert_q4k` on the *unmodified* tree (three independent bugs: reading all of
+> `src/*.v` so an unrelated file consumed `glm_fp.vh`'s `ifndef` guard; reading the module under
+> test *before* its own children; collecting only one module name per file). Fixed — it now walks
+> the instantiation closure, and `swiglu_expert_q4k` reports `IDENTICAL (13,688 cells)`. A liveness
+> self-test was also missing entirely (`SE_NEW_PARAMS` applies overrides to the working-tree side
+> only), so a new parameter can now be proven to actually build different hardware — without it a
+> netlist gate can only ever say IDENTICAL, which constrains nothing.
+>
+> **Stage 2 (`GU_PIPE`) is NOT part of this** — it must be dropped or guarded by an elaboration
+> assert, because `glm_act`'s `HW_LANES` wrapper drops `in_valid` while running, so `GU_PIPE`
+> requires `ACT_HW==0` and would be silently wrong in the configuration the FPGA fit was measured in.
+
 - **Modules:** `src/swiglu_expert_q4k.v (serial S_GATE then S_UP on one shared matmul :162-173; drain-stall S_GATEW/S_UPW/S_DNW :164-195)`
 - **Change:** (a) Add a second glm_matmul_q4k (or widen PE_N to consume w_q|w_q_up in one pass) so the gate and up GEMVs — structurally independent over the same activation, with both weight codes already arriving every beat — run concurrently instead of time-multiplexed. (b) Double-buffer the group accumulator/weight-scale latch so the next group's K-stream launches while the current group drains and its silu*up merge completes.
 - **Why (perf model):** Gate+up are 2*HIDDEN cycles/group today where HIDDEN would suffice, and each pass eats a full FP-pipe drain bubble between groups (repeated NG_GU+NG_D times/expert). Halving the dominant FFN compute term raises the compute ceiling so more HBM bandwidth can be consumed at PE_M>1 — a prefill/TTFT and duty-cycle lever. Each GEMV keeps its own fp32 K-order accumulation, so bit-exact.
@@ -274,6 +310,42 @@ drain does.
 - **Contract:** preserving · **Effort:** medium · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 14. Pipeline the softmax shift/normalize passes to 1 issue/cycle
+
+> **STATUS: BUILT + MEASURED (`make rank14`), default-off. The only remaining plan that survived
+> adversarial review.** `glm_softmax` gained `SM_PIPE`; `SM_PIPE=1` deletes exactly two tokens —
+> `!sh_busy && ` at `:294` and `!nm_busy && ` at `:418` — so both passes issue one op per cycle.
+> **Measured: 2,892 → 2,136 cycles over a 12-row campaign (1.354×)**, and every output word is
+> **identical as a raw 16-bit pattern** to the `SM_PIPE=0` DUT. `SM_PIPE=0` is **netlist-identical**
+> to the committed module (2,400 cells, `tools/synth_equiv.sh`) — the committed block is kept
+> byte-for-byte inside the generate branch rather than folding a `SM_PIPE ?` term into the two
+> conditions, because that fold is the shape that has broken default netlist identity three times here.
+>
+> Why it is bit-exact, structurally (not by testing luck): `fp32_add_pipe`/`fp32_mul_pipe`
+> (`glm_fp_pipe.v:516-563`, `:192-207`) are flat feed-forward register chains with the valid bit
+> shifted alongside the data — no enable, no per-op shared state — so back-to-back ops give the same
+> per-op results as isolated ops, in issue order. The capture already indexes by the **in-order**
+> counters (`sh_out_cnt`/`nm_out_cnt`). No RAW hazard on the in-place `xbuf` reuse: index *i* is read
+> at `P0+i` and written back at `P0+FP_ADD_LAT+1+i = P0+6+i`, so the read leads the write by 6 for
+> every *i* and every LEN. The same 1-issue/cycle idiom is already committed and bit-exact in
+> `S_EXP` (`:330-339`).
+>
+> The test is **DUT-vs-DUT with `===`, not the committed golden**: `test/glm_softmax_tb.v` compares
+> against a numeric golden with several bf16 ULP of tolerance and therefore *cannot* prove
+> bit-exactness. Paired injection `-DINJ_SM_PIPE_OOO` captures at the issue index instead of the
+> in-order index (the issue counter runs 6 ahead once the interlock is gone) and **correctly fails
+> with 83 mismatches** — so the identity check is load-bearing.
+>
+> **Two of this section's original claims below are WRONG, and are left visible rather than edited
+> away:** (a) "Matters at long context (softmax per head over sequence length S)" — `glm_softmax`'s
+> `LEN` is `SWIN = min(S_MAX, TOPK_ATTN)` (`mla_attn_q4k.v:123`), the DSA top-K window, **never** the
+> sequence length. This is a top-K-window lever, not a long-context one. (b) the "~1/5 and ~1/2 of
+> peak, net latency ~13·LEN" rates are wrong; the true per-row cost is `21·LEN + 84`.
+>
+> **Scope of the win, stated honestly:** `soft` = 5,376 cycles = 32 rows × 168 cycles exactly at the
+> measured slice, so the ceiling in the decode window is **864 cycles ≈ 1.98%** — real, verified,
+> and small. `SM_PIPE` is not yet threaded to `glm_q4k_system`, so no decode-window number is
+> claimed here; the 1.354× is a module-level measurement.
+
 - **Modules:** `src/glm_softmax.v (S_SHIFT drains 1 op at a time :291-318; S_EXP serial sum :344-364; S_NORM :416-434)`
 - **Change:** Pipeline the shift pass and the normalize pass at 1 issue/cycle with in-order capture counters (elements are independent -> bit-exact). Keep the sum reduction in sequential K-order but let it fold as exp results stream, or accept an output-changing interleaved-partial sum for full 1/cycle.
 - **Why (perf model):** The passes drain the pipelined fp32_add_pipe/fp32_mul_pipe one op at a time, running them at ~1/5 and ~1/2 of peak; net latency ~13*LEN where independent elements could stream. Matters at long context (softmax per head over sequence length S), a long-context latency lever, not B=1 HBM decode.
