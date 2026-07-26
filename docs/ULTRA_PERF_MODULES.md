@@ -13,6 +13,70 @@
 
 The bottom-up module review confirms the roofline: on the single-user product tok/s is delivered-bandwidth-bound, and the delivered bandwidth is throttled not by channel count but by Little's-law depth and single-lane seams that the top-down docs treat as one line ('stripe across N channels'). The highest-tok/s levers are therefore a fetch-path cluster the modules expose concretely -- a non-blocking MSHR expert cache (single outstanding miss caps demand BW at 1/FLASH_LAT and starves every downstream widening), a multi-DRAIN fabric (N_CH today buys only latency-hiding because the response arbiter grants one beat/cycle), a multi-port hot issuer, and in-RTL deterministic prefetch of the already-known top-k union during the norm/accumulate windows. Second is the Fmax cluster: the repo's ONE measured routed-Fmax limiter is a ~98 Kbit combinational expert-output bus into a far mux (u_moe/y_out -> hbuf, 21.2 ns, 59% wire), fixable by a narrow registered read port plus registering the identical leaf shapes in glm_matmul_q4k.c_out and the SwiGLU merge -- ~0 on today's bandwidth-bound B=1 but the precondition for the die to ever consume 100 GB/s (at 46.5 MHz that needs ~4,300 lanes). Third is de-serialization and lane-widening of the compute tail (single-lane bf16 SHN tail, gate||up, router||shared-expert, running argmax) that cut the measured cyc_per_tok~10,896 and raise duty cycle; the two output-changing levers (L-way accumulate, single-Newton reciprocal) are ranked last and gated behind golden rebaseline because they break the bit-exact contract.
 
+## MEASURED cycle attribution — the basis for re-ranking everything below
+
+Everything in this section is **measured** (`make rank3sys`, `RESIDENT=1 N_EXPERT=8 DDR_NCH=4`,
+4-token decode) and every bucket was closed to the exact cycle against the RTL. It supersedes the
+`[EST]` reasoning that produced the original ranking, because that ranking assumed the die was
+fetch-bound. **It is not: the die was measured at 0.37 memory-requests/cycle, and widening the
+request port 1→4 changed decode cycles by ZERO (rank 3).** At this configuration the die is
+compute-bound, so the compute buckets below — not the fetch levers — are where cycles live.
+
+**First, a correction to the instrumentation itself.** `PERF_STATE` counts every post-reset posedge
+of the *TB* clock, not the per-token measurement window. Post-reset posedges are exactly
+`(453325 − 45)/10 + 1 = 45,329`, which is exactly the printed bucket sum; the decode window is
+43,724. The 1,605-cycle excess decomposes with no free parameters: 2 (post-reset lead-in) +
+3 × 401 (inter-token `settle(400)` gaps) + 400 (tail to `$finish`). All of it lands in `idle`,
+because `done=16` equals exactly 16 layer-invocations, so `T_DONE` is a strict 1-cycle state and the
+block can only park in `T_IDLE`. Therefore **in-window `idle` = 2,686 − 1,605 = 1,081**, and the
+remaining budget closes exactly: `1081+816+24824+256+807+5560+744+8852+384+128+256+16+0 = 43,724`.
+
+> Any percentage taken against 45,329 is wrong: non-idle buckets are understated by ×0.9646 and
+> `idle` is overstated 2.5× (6.1% printed vs 2.5% real). The denominator is **43,724**.
+
+| bucket | cycles | % decode | what it actually is |
+|---|---|---|---|
+| `attn` | 24,824 | **56.8%** | `T_ATTN` → `mla_attn_q4k` |
+| `expw` | 8,852 | **20.2%** | **expert FFN compute, not a stall** — 8,712 compute + 140 refill stall (98.4% compute) |
+| `ffnd` | 5,560 | 12.7% | dense SwiGLU, 8 invocations × 695 |
+| `idle` | 1,081 | 2.5% | model-level work this histogram structurally cannot see (embedding, final norm, LM head) |
+| `rn1` | 816 | 1.87% | 16 × (2·LEN+19) at MODEL_DIM=16 |
+| `rn2` | 807 | 1.85% | **not** 816: one invocation took the rsqrt early-exit (`rmsnorm_unit.v:275-285`), 816−9 |
+| `route` | 744 | 1.70% | 8 × 93 |
+| `acc`/`radd1`/`radd2`/`fcomb` | 384/256/256/128 | <1% each | |
+
+Inside `attn` (this sub-histogram is gated on `T_ATTN`, so its sum matching `attn` is tautological,
+not independent evidence):
+
+| | cycles | what it actually is |
+|---|---|---|
+| `key` | **9,560** | **not a fetch bucket.** 40 key-visits × **239 cycles exactly**. It is the MLA *up-projection*: re-deriving K and V from every key's compressed latent, every head-group, every layer, every token, with no caching of the projected K/V. The actual KV read is ~2 of those 239 cycles (`SELF_KV=0` makes `kc_valid` a 1-cycle delay of `kc_req`). |
+| `soft` | 5,376 | 32 rows × **168 cycles exactly**. `LEN = SWIN = min(S_MAX,TOPK_ATTN)`, the DSA top-K window — **not** sequence length. So this is a top-K-window lever, not a long-context lever. |
+| `quq`/`out` | 1,952 ea | |
+| `qdq`/`kvdkv` | 1,504 ea | |
+| `dsa` | **64** | 0.15% of decode — rank 15 is correctly labelled long-context-only and is nothing here |
+
+**The finding that reframes the compute work:** of `key`'s 239 cycles per visit, ~124 are the two
+Q4_K GEMVs (lane count can shrink those) but **~68 are pipeline *drain*, not math** —
+`glm_matmul_pipe.v:128-131` gives drain = `FP_MAC_LAT(7) + TREE_LAT(3×FP_ADD_LAT=15) + 1 = 23`
+cycles to finish an 8-element dot product. That is ≈2,720 cycles, **6.2% of the entire decode, spent
+draining an adder tree**. No amount of lane-widening touches it; only shortening or overlapping the
+drain does.
+
+### Measured ceilings of the remaining ranks (replaces their `[EST]` impact lines)
+
+| rank | measured ceiling | verdict |
+|---|---|---|
+| 9 SwiGLU gate\|\|up | **6,368 cyc (14.6%)** implementable of 9,056 absolute | biggest remaining lever |
+| 16 MLA key path | 1,824 cyc (4.17%) | worth doing, plan needs rework |
+| 14 softmax pipeline | 864 cyc (1.98%) | **only plan that survived adversarial review** |
+| 8 rmsnorm/bf16 tail | ~2,183 cyc gross | plan's safety apparatus was refuted |
+| 13 topk_select pipeline | **ZERO cycles** | `topk_select` is 96 of `route`=744; the `S_EXTR` tournament it pipelines is **16 cycles = 0.037% of decode**, and `topk_select.v:360-378` already retires one pass/cycle with `:372` making passes strictly serial — pipelining can only ADD cycles. **Re-scope to an Fmax lever or drop.** |
+| 10 router \|\| shared expert | ≤744 cyc (1.70%) | NOT_WORTH_IT; the drafted RTL also hangs at some geometries |
+
+**Incidental finding:** `src/sampler.v` is in `GLM_Q4K_SYS_SRCS` but is **instantiated nowhere** in
+`src/` — it is compiled into every system build and used by nothing.
+
 ## Ranked plan (highest tok/s impact first)
 
 ### 1. Non-blocking MSHR expert-cache refill (overlap the 8 top-k miss latencies)
