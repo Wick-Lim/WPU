@@ -1150,6 +1150,19 @@ clean:
 #   fabric (197 cells) via `make synth-equiv MOD=ddr5_xbar`.
 # ============================================================================
 .PHONY: rank2 rank3
+# ============================================================================
+# perf-gates : every MEASUREMENT gate in one command.
+#   These are deliberately NOT part of release-gate: that target pins an exact
+#   79-gate test-count manifest of CORRECTNESS gates, and measurement gates print
+#   [MEASURED] numbers rather than fixed test counts.  The cost of that separation
+#   is that nobody runs them -- they sat unrun across several commits that changed
+#   glm_q4k_system.v, glm_decoder_block_q4k.v and ddr5_xbar.v.  A gate nobody runs
+#   is a gate that does not exist, so: one command, run it after any src/*.v change
+#   alongside `make release-gate-strict`.
+# ============================================================================
+perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys
+	@echo "perf-gates: all measurement gates ran (read the [MEASURED] lines above -- they are numbers, not verdicts)"
+
 rank3: rank2
 rank2:
 	@mkdir -p $(BUILD_DIR)
