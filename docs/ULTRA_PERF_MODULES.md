@@ -67,15 +67,43 @@ The bottom-up module review confirms the roofline: on the single-user product to
 > nothing is dropped or reordered. **Measured: 1.000 → 4.000 requests/cycle** at `REQ_LANES=4`
 > (alongside 4.000 beats/cycle drained). `REQ_LANES=1` is **netlist-identical** to the committed
 > fabric (197 cells) — the 1-lane banking is the committed code verbatim.
-> **Still to do — the system half, which is the bigger piece:** `glm_q4k_system` still ORs every
-> weight family onto one port (`xreq_valid = any_pending`, a priority mux on `xreq_addr`), so the
-> die cannot yet *present* more than one read per cycle even though the fabric would now accept
-> several. Splitting those 5–7 families onto the new lanes is the remaining work, and it is where
-> the Vivado congestion risk lands.
+>
+> **System half: BUILT + MEASURED — and the measurement says it buys NOTHING here (`make rank3sys`).**
+> `glm_q4k_system` gained `SYS_REQ_LANES`: the L highest-priority pending families are handed to L
+> independent fabric ports (lane l banks on `bank_rot+l`, because ef/load/slot/hot all bank on
+> `bank_rot` and same-`bank_rot` lanes would collide on one channel and cancel the whole gain).
+> `SYS_REQ_LANES=1` is **netlist-identical** to the committed system (`make resident-equiv`).
+>
+> | | requests | decode cycles | issue rate |
+> |---|---|---|---|
+> | `SYS_REQ_LANES=1` | 16,068 | 43,724 | **0.367** reqs/cycle |
+> | `SYS_REQ_LANES=4` | 16,322 | **43,724** | **0.373** reqs/cycle |
+>
+> Identical decode cycles — per token too (9473 / 10420 / 11437 / 12394 both ways) — with every
+> committed token still `==` the independent `glm_model_q4k` reference. **Four ports bought zero
+> cycles.** The die only offers ~0.37 requests/cycle at this configuration, so the single-port
+> issuer was never the limit; it is compute-bound, not request-port-bound. The 254 extra requests
+> are parallel `TAG_HOT` traffic (a pure traffic generator — `TAG_HOT` is issued but matched by no
+> response consumer), not work pulled earlier.
+>
+> **What this does NOT establish:** the measurement is one small slice (TN=4/PE_N=2-class,
+> `N_EXPERT=8`, `DDR_NCH=4`, `RESIDENT=1`, 4 tokens). It does not show the lever is useless at the
+> 753B geometry, where the compute/fetch ratio is different. It shows the *premise under which rank 3
+> was written* — "the die can express at most 1 beat/cycle of weight demand, so the fabric's width is
+> unreachable" — is **false at the configuration we can actually measure**. The parameter is kept,
+> default-off and netlist-proven, so the claim can be re-tested rather than re-argued.
+>
+> **Found along the way (a real bug, unrelated to the perf question):** the perf TB's DDR model
+> computed its free in-flight slot ONCE outside the per-channel loop, so two channels accepting in
+> the same cycle both wrote the SAME slot — one read silently lost, never answered, die waits
+> forever. Invisible while the fabric had one request port; an instant 2.5-hour hang the moment it
+> had more. Fixed (distinct slot per accepting channel) and `mem_req_ready` is now capacity-aware, so
+> exhaustion FAILs loudly instead of hanging. Same shape as the Flash backend's
+> one-completion-per-cycle bug fixed earlier.
 - **Modules:** `src/glm_q4k_system.v (priority issuer :1220,:1241-1250,:1289-1344; coalesced p_hot :1322)`
 - **Change:** Replace the OR-reduced single p_hot / one xreq_valid handshake with per-family request queues (or a small outstanding-request table) feeding K parallel xbar requester ports, so multiple simultaneous die pulls (em/gn/aw/rw/fw/fn/lw, plus LOAD/SLOT/HOT/EFILL) map to distinct channel reads in the same cycle instead of one coalesced beat. At minimum issue LOAD+SLOT+HOT to distinct channels each cycle.
-- **Why (perf model):** Even with ranks 1-2 landed, the integrated top presents at most ONE banked read/cycle (mutually-exclusive one-hot selects; distinct hot addresses discarded, xreq_addr for TAG_HOT is just bank_rot placeholder), so the die can express at most 1 beat/cycle of weight demand regardless of DDR_NCH. This is the 'die must be WIDER to consume bandwidth' lever at the fabric seam: without it, the multi-lane fabric is bottlenecked here.
-- **Impact `[EST]`:** [EST] raises expressible weight-fetch bandwidth ~Kx at fixed Fmax; necessary for ranks 1-2 to reach the die. Today observation-only (die pulls combinationally from a TB stub), so the realized number is gated on real-PHY bring-up.
+- **Why (perf model) — MEASURED FALSE at the tested configuration, see STATUS above:** Even with ranks 1-2 landed, the integrated top presents at most ONE banked read/cycle (mutually-exclusive one-hot selects; distinct hot addresses discarded, xreq_addr for TAG_HOT is just bank_rot placeholder), so the die can express at most 1 beat/cycle of weight demand regardless of DDR_NCH. This is the 'die must be WIDER to consume bandwidth' lever at the fabric seam: without it, the multi-lane fabric is bottlenecked here.
+- **Impact — MEASURED 0 at the tested configuration** (was `[EST]` ~Kx expressible weight-fetch bandwidth; that estimate assumed the die was request-port-limited, and it is not here). Today observation-only (die pulls combinationally from a TB stub), so the realized number is gated on real-PHY bring-up.
 - **Contract:** preserving · **Effort:** large · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 4. In-RTL deterministic prefetch during the norm/accumulate compute windows

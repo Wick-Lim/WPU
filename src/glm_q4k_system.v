@@ -317,6 +317,16 @@ module glm_q4k_system #(
     //   what changes is the cache's hit/miss split and the exposed stall.
     //   Unlike the (measured no-op) predictor, the set here is KNOWN, not guessed.
     parameter integer PF_EXACT = 0,
+
+    // ---- rank 3 (system half): how many requests the DIE may PRESENT per cycle
+    //   The fabric already accepts REQ_LANES per cycle (measured 4.000 reqs/cycle,
+    //   test/ddr5_xbar_lanes_tb.v).  The die could still only offer ONE: nine
+    //   request families were OR-ed into a single `any_pending` port.  So the
+    //   fabric's width was unreachable from the system and rank 3 was half done.
+    //   1 (default) keeps the committed single-port issuer VERBATIM -- proven
+    //   netlist-identical by `make resident-equiv`.  L>1 hands the L
+    //   highest-priority pending families to L independent fabric ports.
+    parameter integer SYS_REQ_LANES = 1,
     // ---- RESIDENT weight tier (serve expert refills from the DDR-tier fabric) ----
     //   0 = OFF (DEFAULT): BYTE-IDENTICAL to the pre-RESIDENT module.  An expert
     //       cache refill (demand miss or prefetch) goes to the SINGLE FLASH
@@ -1333,85 +1343,230 @@ module glm_q4k_system #(
     wire _sel_hot_unused = sel_hot;
     /* verilator lint_on UNUSEDSIGNAL */
 
-    // combinational requester address/tag (feed-forward from registered state)
-    reg  [DDR_ADDR_W-1:0] xreq_addr;
-    reg  [DDR_TAG_W-1:0]  xreq_tag;
-    always @* begin
-        if (sel_lb) begin
-            xreq_tag  = TAG_LBAW;
-            xreq_addr = lb_req_addr;
-        end else if (sel_lbfw) begin
-            xreq_tag  = TAG_LBFW;
-            xreq_addr = lbfw_req_addr;
-        end else if (sel_lbrw) begin
-            xreq_tag  = TAG_LBRW;
-            xreq_addr = lbrw_req_addr;
-        end else if (sel_lblw) begin
-            xreq_tag  = TAG_LBLW;
-            xreq_addr = lblw_req_addr;
-        end else if (sel_lbgn) begin
-            xreq_tag  = TAG_LBGN;
-            xreq_addr = lbgn_req_addr;
-        end else if (sel_ef) begin
-            xreq_tag  = TAG_EFILL;
-            xreq_addr = { {(DDR_ADDR_W-EIDXW-CH_IDX_W){1'b0}}, ef_id, bank_rot };
-        end else if (sel_load) begin
-            xreq_tag  = TAG_LOAD;
-            xreq_addr = { {(DDR_ADDR_W-WL_ADDR_W-CH_IDX_W){1'b0}}, load_addr_q, bank_rot };
-        end else if (sel_slot) begin
-            xreq_tag  = TAG_SLOT;
-            xreq_addr = { {(DDR_ADDR_W-CSLOTW-CH_IDX_W){1'b0}}, slot_q, bank_rot };
-        end else begin
-            xreq_tag  = TAG_HOT;
-            xreq_addr = { {(DDR_ADDR_W-CH_IDX_W){1'b0}}, bank_rot };
-        end
-    end
+    // ======================================================================
+    // §8 REQUEST ISSUER -- SYS_REQ_LANES ports into the fabric   [rank 3, system half]
+    //   CHANNEL SPREADING: ef/load/slot/hot all bank on `bank_rot` (BANK_LSB=0),
+    //   so handing them to separate lanes with the SAME bank_rot would aim every
+    //   lane at ONE channel and the fabric's lowest-lane-wins rule would collapse
+    //   the gain to zero.  Lane l therefore banks on bank_rot+l.  That is
+    //   VALUE-safe: for these four families the low CH_IDX_W bits only pick WHICH
+    //   channel serves the read, never what comes back.  (The loopback families,
+    //   whose payload IS address-derived, bank on their own key bits and are left
+    //   exactly as they were.)
+    // ======================================================================
+    wire [SYS_REQ_LANES-1:0]            xreq_valid;
+    wire [SYS_REQ_LANES-1:0]            xreq_ready;
+    wire [SYS_REQ_LANES*DDR_ADDR_W-1:0] xreq_addr;
+    wire [SYS_REQ_LANES*DDR_TAG_W-1:0]  xreq_tag;
 
-    wire xreq_valid = any_pending;
-    wire xreq_ready;
-    wire xreq_fire  = xreq_valid & xreq_ready;
-    assign lb_accept   = xreq_fire & sel_lb;   // §9 loopback read accepted by the xbar
-    assign lbfw_accept = xreq_fire & sel_lbfw; // §9b fw-loopback read accepted by the xbar
-    assign lbrw_accept = xreq_fire & sel_lbrw; // §9c rw-loopback read accepted by the xbar
-    assign lblw_accept = xreq_fire & sel_lblw; // §9c lw-loopback read accepted by the xbar
-    assign lbgn_accept = xreq_fire & sel_lbgn; // §9c gn-loopback read accepted by the xbar
-    assign ef_accept   = xreq_fire & sel_ef;   // §10 refill read accepted by the xbar
-
-    // issuer state: clears come FIRST, sets AFTER -> a same-cycle new event keeps
-    // the source pending (never lost), bank_rot still advances on every accept.
-    always @(posedge clk) begin
-        if (rst) begin
-            p_hot       <= 1'b0;
-            p_slot      <= 1'b0;
-            p_load      <= 1'b0;
-            slot_q      <= {CSLOTW{1'b0}};
-            load_addr_q <= {WL_ADDR_W{1'b0}};
-            bank_rot    <= {CH_IDX_W{1'b0}};
-            xbar_req_count <= 32'd0;
-        end else begin
-            // ---- consume the granted source ----
-            if (xreq_fire) begin
-                bank_rot       <= bank_rot + 1'b1;
-                xbar_req_count <= xbar_req_count + 32'd1;
-                if (sel_lb)        begin /* loopback pending cleared in §9 FSM */ end
-                else if (sel_ef)   begin /* refill pending cleared in §10 FSM */ end
-                else if (sel_load) p_load <= 1'b0;
-                else if (sel_slot) p_slot <= 1'b0;
-                else               p_hot  <= 1'b0;
+    generate
+    if (SYS_REQ_LANES == 1) begin : g_issue1
+        // ---------- DEFAULT: the committed single-port issuer, verbatim ----------
+        reg  [DDR_ADDR_W-1:0] xreq_addr_i;
+        reg  [DDR_TAG_W-1:0]  xreq_tag_i;
+        always @* begin
+            if (sel_lb) begin
+                xreq_tag_i  = TAG_LBAW;
+                xreq_addr_i = lb_req_addr;
+            end else if (sel_lbfw) begin
+                xreq_tag_i  = TAG_LBFW;
+                xreq_addr_i = lbfw_req_addr;
+            end else if (sel_lbrw) begin
+                xreq_tag_i  = TAG_LBRW;
+                xreq_addr_i = lbrw_req_addr;
+            end else if (sel_lblw) begin
+                xreq_tag_i  = TAG_LBLW;
+                xreq_addr_i = lblw_req_addr;
+            end else if (sel_lbgn) begin
+                xreq_tag_i  = TAG_LBGN;
+                xreq_addr_i = lbgn_req_addr;
+            end else if (sel_ef) begin
+                xreq_tag_i  = TAG_EFILL;
+                xreq_addr_i = { {(DDR_ADDR_W-EIDXW-CH_IDX_W){1'b0}}, ef_id, bank_rot };
+            end else if (sel_load) begin
+                xreq_tag_i  = TAG_LOAD;
+                xreq_addr_i = { {(DDR_ADDR_W-WL_ADDR_W-CH_IDX_W){1'b0}}, load_addr_q, bank_rot };
+            end else if (sel_slot) begin
+                xreq_tag_i  = TAG_SLOT;
+                xreq_addr_i = { {(DDR_ADDR_W-CSLOTW-CH_IDX_W){1'b0}}, slot_q, bank_rot };
+            end else begin
+                xreq_tag_i  = TAG_HOT;
+                xreq_addr_i = { {(DDR_ADDR_W-CH_IDX_W){1'b0}}, bank_rot };
             end
-            // ---- register new fast-tier read events (override a same-cycle clear) ----
-            if (hot_pull)       p_hot  <= 1'b1;
-            if (ec_resp_valid) begin p_slot <= 1'b1; slot_q <= ec_resp_slot; end
-            if (wl_mem_en)     begin p_load <= 1'b1; load_addr_q <= wl_mem_addr; end
+        end
+        assign xreq_addr  = xreq_addr_i;
+        assign xreq_tag   = xreq_tag_i;
+        assign xreq_valid = any_pending;
+
+        wire xreq_fire = xreq_valid & xreq_ready;
+        assign lb_accept   = xreq_fire & sel_lb;   // §9 loopback read accepted by the xbar
+        assign lbfw_accept = xreq_fire & sel_lbfw; // §9b fw-loopback read accepted by the xbar
+        assign lbrw_accept = xreq_fire & sel_lbrw; // §9c rw-loopback read accepted by the xbar
+        assign lblw_accept = xreq_fire & sel_lblw; // §9c lw-loopback read accepted by the xbar
+        assign lbgn_accept = xreq_fire & sel_lbgn; // §9c gn-loopback read accepted by the xbar
+        assign ef_accept   = xreq_fire & sel_ef;   // §10 refill read accepted by the xbar
+
+        // issuer state: clears come FIRST, sets AFTER -> a same-cycle new event keeps
+        // the source pending (never lost), bank_rot still advances on every accept.
+        always @(posedge clk) begin
+            if (rst) begin
+                p_hot       <= 1'b0;
+                p_slot      <= 1'b0;
+                p_load      <= 1'b0;
+                slot_q      <= {CSLOTW{1'b0}};
+                load_addr_q <= {WL_ADDR_W{1'b0}};
+                bank_rot    <= {CH_IDX_W{1'b0}};
+                xbar_req_count <= 32'd0;
+            end else begin
+                // ---- consume the granted source ----
+                if (xreq_fire) begin
+                    bank_rot       <= bank_rot + 1'b1;
+                    xbar_req_count <= xbar_req_count + 32'd1;
+                    if (sel_lb)        begin /* loopback pending cleared in §9 FSM */ end
+                    else if (sel_ef)   begin /* refill pending cleared in §10 FSM */ end
+                    else if (sel_load) p_load <= 1'b0;
+                    else if (sel_slot) p_slot <= 1'b0;
+                    else               p_hot  <= 1'b0;
+                end
+                // ---- register new fast-tier read events (override a same-cycle clear) ----
+                if (hot_pull)       p_hot  <= 1'b1;
+                if (ec_resp_valid) begin p_slot <= 1'b1; slot_q <= ec_resp_slot; end
+                if (wl_mem_en)     begin p_load <= 1'b1; load_addr_q <= wl_mem_addr; end
+            end
+        end
+    end else begin : g_issueN
+        // ---------- rank 3: L ports, L highest-priority pending families ----------
+        localparam integer NFAM = 9;   // 0 lb .. 4 lbgn, 5 ef, 6 load, 7 slot, 8 hot
+        //   Priority order is EXACTLY the committed one -- lane 0 always carries the
+        //   family the single-port issuer would have picked, so a 1-lane-wide
+        //   snapshot of this issuer is the old behaviour.
+        wire [NFAM-1:0] fam_pend = { p_hot, p_slot, p_load, ef_pending,
+                                     lbgn_pending, lblw_pending, lbrw_pending,
+                                     lbfw_pending, lb_pending };
+
+        // rnk[f] = how many HIGHER-priority families are pending.  That is f's lane.
+        // The ranks are dense and strictly increasing, so no two families can ever
+        // land on the same lane -- the "two lanes, one resource" hazard is
+        // structurally impossible rather than checked for.
+        //   rnk is PACKED as a PORTABILITY choice, not as a bug fix.  iverilog makes
+        //   `always @*` sensitive to every word of an unpacked array (it prints a
+        //   warning saying so), so the unpacked form behaved correctly here; packed
+        //   keeps that explicit for tools that do not.  Recorded because the first
+        //   commit message for this blamed the unpacked array for a hang -- it was
+        //   wrong: the hang was the TESTBENCH's DDR model dropping same-cycle
+        //   requests (see test/glm_q4k_system_perf_tb.v).
+        integer            fi, li;
+        reg [NFAM*4-1:0]   rnk;
+        reg [3:0]          run;
+        always @* begin
+            run = 4'd0;
+            for (fi = 0; fi < NFAM; fi = fi + 1) begin
+                rnk[fi*4 +: 4] = run;
+                if (fam_pend[fi]) run = run + 4'd1;
+            end
+        end
+
+        reg [SYS_REQ_LANES-1:0]            v_l;
+        reg [SYS_REQ_LANES*DDR_ADDR_W-1:0] a_l;
+        reg [SYS_REQ_LANES*DDR_TAG_W-1:0]  t_l;
+        reg [CH_IDX_W-1:0]                 rot_l;
+        always @* begin
+            v_l = {SYS_REQ_LANES{1'b0}};
+            a_l = {(SYS_REQ_LANES*DDR_ADDR_W){1'b0}};
+            t_l = {(SYS_REQ_LANES*DDR_TAG_W){1'b0}};
+            for (li = 0; li < SYS_REQ_LANES; li = li + 1) begin
+                rot_l = bank_rot + li;          // per-lane channel spread (see header)
+                for (fi = 0; fi < NFAM; fi = fi + 1) begin
+                    if (fam_pend[fi] && (rnk[fi*4 +: 4] == li)) begin
+                        v_l[li] = 1'b1;
+                        case (fi)
+                        0: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_LBAW;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] = lb_req_addr; end
+                        1: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_LBFW;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] = lbfw_req_addr; end
+                        2: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_LBRW;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] = lbrw_req_addr; end
+                        3: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_LBLW;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] = lblw_req_addr; end
+                        4: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_LBGN;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] = lbgn_req_addr; end
+                        5: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_EFILL;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] =
+                                     { {(DDR_ADDR_W-EIDXW-CH_IDX_W){1'b0}}, ef_id, rot_l }; end
+                        6: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_LOAD;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] =
+                                     { {(DDR_ADDR_W-WL_ADDR_W-CH_IDX_W){1'b0}}, load_addr_q, rot_l }; end
+                        7: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_SLOT;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] =
+                                     { {(DDR_ADDR_W-CSLOTW-CH_IDX_W){1'b0}}, slot_q, rot_l }; end
+                        default: begin t_l[li*DDR_TAG_W +: DDR_TAG_W] = TAG_HOT;
+                                 a_l[li*DDR_ADDR_W +: DDR_ADDR_W] =
+                                     { {(DDR_ADDR_W-CH_IDX_W){1'b0}}, rot_l }; end
+                        endcase
+                    end
+                end
+            end
+        end
+        assign xreq_valid = v_l;
+        assign xreq_addr  = a_l;
+        assign xreq_tag   = t_l;
+
+        wire [SYS_REQ_LANES-1:0] fire = xreq_valid & xreq_ready;
+
+        // a family fired iff the lane it was placed on fired.  A lane can lose to a
+        // lower-numbered lane inside the fabric (same channel) -- then its family
+        // simply stays pending and retries, exactly as under the single-port issuer.
+        reg [NFAM-1:0] fam_fire;
+        reg [4:0]      nfire;
+        always @* begin
+            fam_fire = {NFAM{1'b0}};
+            for (fi = 0; fi < NFAM; fi = fi + 1)
+                for (li = 0; li < SYS_REQ_LANES; li = li + 1)
+                    if (fam_pend[fi] && (rnk[fi*4 +: 4] == li) && fire[li]) fam_fire[fi] = 1'b1;
+            nfire = 5'd0;
+            for (li = 0; li < SYS_REQ_LANES; li = li + 1)
+                if (fire[li]) nfire = nfire + 5'd1;
+        end
+
+        assign lb_accept   = fam_fire[0];
+        assign lbfw_accept = fam_fire[1];
+        assign lbrw_accept = fam_fire[2];
+        assign lblw_accept = fam_fire[3];
+        assign lbgn_accept = fam_fire[4];
+        assign ef_accept   = fam_fire[5];
+
+        always @(posedge clk) begin
+            if (rst) begin
+                p_hot       <= 1'b0;
+                p_slot      <= 1'b0;
+                p_load      <= 1'b0;
+                slot_q      <= {CSLOTW{1'b0}};
+                load_addr_q <= {WL_ADDR_W{1'b0}};
+                bank_rot    <= {CH_IDX_W{1'b0}};
+                xbar_req_count <= 32'd0;
+            end else begin
+                if (|fire) begin
+                    bank_rot       <= bank_rot + nfire;
+                    xbar_req_count <= xbar_req_count + {27'd0, nfire};
+                end
+                if (fam_fire[6]) p_load <= 1'b0;
+                if (fam_fire[7]) p_slot <= 1'b0;
+                if (fam_fire[8]) p_hot  <= 1'b0;
+                // sets AFTER clears, exactly as in g_issue1
+                if (hot_pull)       p_hot  <= 1'b1;
+                if (ec_resp_valid) begin p_slot <= 1'b1; slot_q <= ec_resp_slot; end
+                if (wl_mem_en)     begin p_load <= 1'b1; load_addr_q <= wl_mem_addr; end
+            end
         end
     end
+    endgenerate
 
     wire [DDR_TAG_W-1:0] xbar_resp_tag;
 
     ddr5_xbar #(
         .N_CH(DDR_NCH), .ADDR_W(DDR_ADDR_W), .DATA_W(DDR_DATA_W),
         .TAG_W(DDR_TAG_W), .ROW_LAT(DDR_ROW_LAT), .RESP_QD(DDR_RESP_QD),
-        .BANK_LSB(0)
+        .REQ_LANES(SYS_REQ_LANES), .BANK_LSB(0)
     ) u_xbar (
         .clk(clk), .rst(rst),
         .req_valid(xreq_valid), .req_ready(xreq_ready),

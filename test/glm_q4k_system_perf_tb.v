@@ -70,6 +70,7 @@ module glm_q4k_system_perf_tb;
     // rank 4: 1 = issue the known top-k union to the cache's prefetch port the
     // moment routing completes (exact-router prefetch), 0 = demand-only (default)
     parameter integer PF_EXACT_CFG     = 0;
+    parameter integer SYS_REQ_LANES_CFG = 1;   // rank 3 system half: die request ports/cycle
     parameter integer RESIDENT_CFG     = 0;
     // TIMING_ONLY=1: report PERF lines even when the numeric self-check fails.
     //   WHY: this TB doubles as a TIMING harness, and under Verilator the FP
@@ -345,6 +346,7 @@ module glm_q4k_system_perf_tb;
         .CACHE_SLOTS(CACHE_SLOTS), .FLASH_LAT(FLASH_LAT), .KV_CTX(KV_CTX),
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
         .EXPERT_STALL(EXPERT_STALL_CFG), .PF_EXACT(PF_EXACT_CFG), .RESIDENT(RESIDENT_CFG),
+        .SYS_REQ_LANES(SYS_REQ_LANES_CFG),
         .DSA_REAL_IDX(DSA_REAL_IDX_CFG),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),
@@ -639,14 +641,24 @@ module glm_q4k_system_perf_tb;
     //   Single in-flight table; each read completes DDR_ROW_LAT cycles later on
     //   its banked channel, held until mem_resp_ready accepts.  Data is a
     //   deterministic function of {tag,addr} so every returned beat is X-clean.
+    integer xmon_err;   // declared here: the DDR model below reports through it
     localparam integer NINF = 64;
+    reg [NINF-1:0] claimed; integer n_acc, n_ret; integer inf_cnt;
     reg                  infv  [0:NINF-1];
     reg [DDR_TAG_W-1:0]  inftg [0:NINF-1];
     reg [DDR_ADDR_W-1:0] infad [0:NINF-1];
     reg [15:0]           inftm [0:NINF-1];   // remaining latency (0 => ready)
     integer ii, cc;
 
-    assign mem_req_ready = {DDR_NCH{1'b1}};
+    //   The model may accept only while it still has an in-flight slot for EVERY
+    //   channel that could fire this cycle.  It used to be hardwired ready, which
+    //   was safe only because the single-port fabric could present one request per
+    //   cycle; a multi-port issuer (SYS_REQ_LANES>1) overruns the table, and an
+    //   accepted-but-unrecorded read is a read whose response NEVER comes -- the die
+    //   then waits forever.  inf_cnt is registered, so this is conservative by one
+    //   cycle.  At DDR_ROW_LAT=10 / NINF=64 the single-port in-flight depth is ~10,
+    //   far under the NINF-DDR_NCH threshold, so every pre-existing gate is unaffected.
+    assign mem_req_ready = {DDR_NCH{((inf_cnt + DDR_NCH) <= NINF)}};
 
     reg [31:0] presIdx [0:DDR_NCH-1];
     reg        presV   [0:DDR_NCH-1];
@@ -690,27 +702,48 @@ module glm_q4k_system_perf_tb;
                 infv[ii]  <= 1'b0; inftg[ii] <= {DDR_TAG_W{1'b0}};
                 infad[ii] <= {DDR_ADDR_W{1'b0}}; inftm[ii] <= 16'd0;
             end
+            inf_cnt <= 0;
         end else begin
             for (ii=0; ii<NINF; ii=ii+1)
                 if (infv[ii] && (inftm[ii]!=16'd0)) inftm[ii] <= inftm[ii]-16'd1;
+            n_ret = 0;
             for (cc=0; cc<DDR_NCH; cc=cc+1)
-                if (presV[cc] && mem_resp_ready[cc]) infv[presIdx[cc]] <= 1'b0;
-            got_free = 1'b0; freeslot = 0;
-            for (ii=NINF-1; ii>=0; ii=ii-1)
-                if (!infv[ii]) begin got_free = 1'b1; freeslot = ii; end
+                if (presV[cc] && mem_resp_ready[cc]) begin
+                    infv[presIdx[cc]] <= 1'b0; n_ret = n_ret + 1;
+                end
+            // Allocate a DISTINCT slot per accepting channel.  `freeslot` used to be
+            // computed ONCE outside this loop, so two channels accepting in the same
+            // cycle both wrote the SAME slot -- last one wins, the other read is lost
+            // and never answered.  Invisible while the fabric had one request port;
+            // an instant deadlock the moment it had more.  (Same shape as the Flash
+            // backend's one-completion-per-cycle bug fixed earlier.)
+            claimed = {NINF{1'b0}};
+            n_acc   = 0;
             for (cc=0; cc<DDR_NCH; cc=cc+1) begin
-                if (mem_req_valid[cc] && mem_req_ready[cc] && got_free) begin
-                    infv[freeslot]  <= 1'b1;
-                    inftg[freeslot] <= mem_req_tag[cc*DDR_TAG_W +: DDR_TAG_W];
-                    infad[freeslot] <= mem_req_addr[cc*DDR_ADDR_W +: DDR_ADDR_W];
-                    inftm[freeslot] <= DDR_ROW_LAT[15:0];
+                if (mem_req_valid[cc] && mem_req_ready[cc]) begin
+                    got_free = 1'b0; freeslot = 0;
+                    for (ii=NINF-1; ii>=0; ii=ii-1)
+                        if (!infv[ii] && !claimed[ii]) begin got_free = 1'b1; freeslot = ii; end
+                    if (got_free) begin
+                        claimed[freeslot] = 1'b1;
+                        n_acc = n_acc + 1;
+                        infv[freeslot]  <= 1'b1;
+                        inftg[freeslot] <= mem_req_tag[cc*DDR_TAG_W +: DDR_TAG_W];
+                        infad[freeslot] <= mem_req_addr[cc*DDR_ADDR_W +: DDR_ADDR_W];
+                        inftm[freeslot] <= DDR_ROW_LAT[15:0];
+                    end else begin
+                        // must never happen now that mem_req_ready is capacity-aware;
+                        // if it ever does, say so LOUDLY instead of hanging the run.
+                        $display("FAIL: DDR model accepted ch%0d with no free in-flight slot (NINF=%0d exhausted) -- that read is LOST", cc, NINF);
+                        xmon_err = xmon_err + 1;
+                    end
                 end
             end
+            inf_cnt <= inf_cnt - n_ret + n_acc;
         end
     end
 
     // ================= continuous monitors ==========
-    integer xmon_err;
     always @(posedge clk) if (!rst) begin
         if (xbar_resp_valid)
             if (^xbar_resp_data === 1'bx) begin
@@ -884,6 +917,12 @@ module glm_q4k_system_perf_tb;
         //   demand-stall: the die was clock-gated for those cycles.
         //   stall/token is the in-window demand-stall (weight-fetch stall split);
         //   compute/token = cycles/token - stall/token.
+        // ---- rank 3 (system half): how many fabric requests the DIE actually
+        //   PRESENTED per cycle over the whole decode.  This is the quantity the
+        //   single-port issuer pinned at <=1.0 no matter how wide the fabric was.
+        $display("  [MEASURED] SYS_REQ_LANES=%0d: %0d xbar requests issued over %0d cycles -> %.3f reqs/cycle",
+                 SYS_REQ_LANES_CFG, xbar_req_count, cyc_sum,
+                 (cyc_sum > 0) ? (1.0*xbar_req_count)/(1.0*cyc_sum) : 0.0);
         $display("PERF q4k flash_lat=%0d ddr_nch=%0d cache_slots=%0d n_expert=%0d L=%0d resident=%0d expert_stall=%0d tokens=%0d cycles/token=%0d stall/token=%0d compute/token=%0d cyc_sum=%0d stall_sum=%0d hit=%0d miss=%0d dropped=%0d",
                  FLASH_LAT, DDR_NCH, CACHE_SLOTS, N_EXPERT, L,
                  RESIDENT_CFG, EXPERT_STALL_CFG, N_TOK,

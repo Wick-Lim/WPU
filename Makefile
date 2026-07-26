@@ -1205,6 +1205,52 @@ rank4:
 	@echo "rank4: exact-router prefetch is FAITHFUL (tokens unchanged) and EFFECTIVE (exposed stall reduced)"
 
 # ============================================================================
+# rank3sys : the SYSTEM half of rank 3 (docs/ULTRA_PERF_MODULES.md)
+#   `make rank3` measured the FABRIC accepting 4.000 reqs/cycle.  That lever is
+#   worthless while the DIE can only present one request per cycle, which is what
+#   the committed single-port issuer did -- nine request families OR-ed into one
+#   `any_pending` port.  This gate measures the rate the die actually ISSUES at,
+#   end to end, on the real decode: SYS_REQ_LANES=1 (committed) vs 4.
+#   FAITHFUL is not assumed -- the perf TB checks every committed token against an
+#   INDEPENDENT standalone glm_model_q4k reference, so a token drift fails here.
+# ============================================================================
+rank3sys:
+	@mkdir -p $(BUILD_DIR)
+	@for sl in 1 4; do \
+	  $(IVERILOG) $(IFLAGS) -Pglm_q4k_system_perf_tb.SYS_REQ_LANES_CFG=$$sl \
+	    -Pglm_q4k_system_perf_tb.RESIDENT_CFG=1 -Pglm_q4k_system_perf_tb.DDR_NCH_CFG=4 \
+	    -Pglm_q4k_system_perf_tb.N_EXPERT_CFG=8 -Pglm_q4k_system_perf_tb.CACHE_SLOTS_CFG=2 \
+	    -o $(BUILD_DIR)/rank3sys_$$sl test/glm_q4k_system_perf_tb.v $(GLM_Q4K_SYS_SRCS) 2>/dev/null \
+	    || { echo "FAILED: rank3sys compile (SYS_REQ_LANES=$$sl)"; exit 1; }; \
+	  $(VVP) $(BUILD_DIR)/rank3sys_$$sl 2>/dev/null > $(BUILD_DIR)/rank3sys_$$sl.log; \
+	  grep -qE '\(==ref' $(BUILD_DIR)/rank3sys_$$sl.log \
+	    || { echo "FAILED: rank3sys (SYS_REQ_LANES=$$sl) produced no reference-checked token"; exit 1; }; \
+	  if grep -q 'FAIL' $(BUILD_DIR)/rank3sys_$$sl.log; then \
+	    echo "FAILED: rank3sys (SYS_REQ_LANES=$$sl) token mismatch vs the standalone reference"; exit 1; fi; \
+	done
+	@bash -c 'set -e; \
+	  r1=$$(grep -oE "\-> [0-9.]+ reqs/cycle" $(BUILD_DIR)/rank3sys_1.log | grep -oE "[0-9.]+"); \
+	  r4=$$(grep -oE "\-> [0-9.]+ reqs/cycle" $(BUILD_DIR)/rank3sys_4.log | grep -oE "[0-9.]+"); \
+	  c1=$$(grep -oE "over [0-9]+ cycles" $(BUILD_DIR)/rank3sys_1.log | grep -oE "[0-9]+"); \
+	  c4=$$(grep -oE "over [0-9]+ cycles" $(BUILD_DIR)/rank3sys_4.log | grep -oE "[0-9]+"); \
+	  k1=$$(grep -oE "tok=[0-9]+\(==ref [0-9]+\)" $(BUILD_DIR)/rank3sys_1.log | tr "\n" " "); \
+	  k4=$$(grep -oE "tok=[0-9]+\(==ref [0-9]+\)" $(BUILD_DIR)/rank3sys_4.log | tr "\n" " "); \
+	  printf "[%s] " "rank3sys_die_issue"; \
+	  echo "[MEASURED] die issue rate 1 port $$r1 -> 4 ports $$r4 reqs/cycle; decode cycles $$c1 -> $$c4"; \
+	  [ -n "$$k1" ] && [ "$$k1" = "$$k4" ] \
+	    || { echo "FAILED: rank3sys token streams differ between 1 and 4 ports"; exit 1; }; \
+	  awk -v a="$$r1" -v b="$$r4" "BEGIN{exit !(b>=a)}" \
+	    || { echo "FAILED: rank3sys 4 ports issue SLOWER than 1 ($$r1 -> $$r4)"; exit 1; }; \
+	  if [ "$$c1" = "$$c4" ]; then \
+	    echo "[rank3sys_die_issue] MEASURED NO WIN: identical decode cycles. At this configuration the die"; \
+	    echo "    offers ~$$r1 requests/cycle, so ONE request port was never the limit -- widening it to 4"; \
+	    echo "    changes nothing.  The extra requests are parallel TAG_HOT traffic, not earlier work."; \
+	  else \
+	    echo "[rank3sys_die_issue] cycles CHANGED ($$c1 -> $$c4) -- re-read the claim in docs/ULTRA_PERF_MODULES.md"; \
+	  fi'
+	@echo "rank3sys: the multi-port die issuer is FAITHFUL (token stream identical); its EFFECT is measured above, not asserted"
+
+# ============================================================================
 # rank12 : WIDE-BEAT clock-domain crossing (docs/ULTRA_PERF_MODULES.md rank 12)
 #   Ranks 2-3 widen the read fabric to N lanes.  If the core<->die CDC stays
 #   narrow/shallow it re-chokes the stream and the widening is wasted -- silently,
