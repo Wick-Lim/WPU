@@ -904,6 +904,35 @@ module mla_attn_q4k #(
     // destination codes
     localparam [1:0] GVD_QLORA=2'd0, GVD_QFULL=2'd1, GVD_CKV=2'd2, GVD_KR=2'd3;
 
+    // ---- INVARIANT GUARD (simulation only): gv_dst must be GVD_QFULL inside S_KEY --
+    //   gv_dst is a STICKY cross-state signal.  Its last write before S_KEY is
+    //   GVD_KR (:1313, in S_KVDKV) and nothing reassigns it through S_KRROPE /
+    //   S_DSA / S_DSAPF / S_UNION.  S_KEY is therefore ENTERED holding GVD_KR, and
+    //   is only rescued because every visit passes through the K_UK transition,
+    //   which sets GVD_QFULL (:1587/:1608) before any result can land.
+    //
+    //   That safety is ACCIDENTAL, and the consequence of losing it is silent: the
+    //   GVD_KR arm of the GV_WAIT case writes krope_cur (:1159-1160), and krope_cur
+    //   is packed into kv_lat_row -- the KV latent WRITE-BACK (:1973).  A completed
+    //   GEMV in S_KEY with a stale gv_dst therefore overwrites a real KV row with a
+    //   raw bf16 score, which at SELF_KV=1 is appended to the pager and read back by
+    //   every later token.  Wrong forever, and invisible to both the model TB and the
+    //   perf TB: each drives kc_ckv/kc_krope from its own ROM/generator and neither
+    //   consumes the DUT's kv_lat output.
+    //
+    //   Any future S_KEY path that reaches the score pass without going through K_UK
+    //   (a reuse/skip optimisation is the obvious one) reintroduces this.  Guarded
+    //   here so it fails LOUDLY at the first offending cycle instead of corrupting
+    //   the KV cache.  `ifndef YOSYS, not `ifndef SYNTHESIS -- nothing in this repo
+    //   defines SYNTHESIS, so that guard would exclude nothing from synthesis.
+`ifndef YOSYS
+    always @(posedge clk)
+        if (!rst && (state == S_KEY) && (gv_st == GV_WAIT) && (gv_grp == gv_ng - 1'b1)
+                 && (gv_dst !== GVD_QFULL))
+            $fatal(1, "mla_attn_q4k: GEMV completed in S_KEY with gv_dst=%0d (expected GVD_QFULL=%0d) -- this writes krope_cur, which is the KV latent write-back; the KV cache would be silently poisoned",
+                   gv_dst, GVD_QFULL);
+`endif
+
     // A-source selection (which buffer feeds a_col[k]).
     localparam [2:0] AS_X=3'd0, AS_QLN=3'd1, AS_CTX=3'd2, AS_Q=3'd3, AS_CKVN=3'd4;
     reg [2:0]        gv_asrc;
