@@ -153,6 +153,10 @@ module glm_decoder_block_q4k #(
     // ---- ACT_HW : activation HW lanes (0 = full width) -- result-invariant
     //      resource knob threaded to glm_act (router sigmoid + both silus) ----
     parameter integer ACT_HW     = 0,
+    // ---- GU_CONC : rank 9 -- run the SwiGLU gate and up GEMVs concurrently.
+    //   Pure forwarding; default 0 keeps every swiglu_expert_q4k instance on the
+    //   committed serial path, so this module's default netlist is unchanged.
+    parameter integer GU_CONC    = 0,
     // ---- derived (do NOT override) ----
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -437,7 +441,7 @@ module glm_decoder_block_q4k #(
     wire [FF_KWD-1:0]    ed_wk;
     swiglu_expert_q4k #(
         .HIDDEN(MODEL_DIM), .INTER(INTER_DENSE), .TN(TN), .KMAX(FF_KMAX_D),
-        .PE_M(PE_M), .ACT_HW(ACT_HW)
+        .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC)
     ) u_dense (
         .clk(clk), .rst(rst), .start(ed_start), .busy(ed_busy), .done(ed_done),
         .x_vec(nrm_vec),
@@ -461,7 +465,7 @@ module glm_decoder_block_q4k #(
     wire [FF_KWM-1:0]    em_wk;
     swiglu_expert_q4k #(
         .HIDDEN(MODEL_DIM), .INTER(INTER_MOE), .TN(TN), .KMAX(FF_KMAX_M),
-        .PE_M(PE_M), .ACT_HW(ACT_HW)
+        .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC)
     ) u_moe (
         .clk(clk), .rst(rst), .start(em_start), .busy(em_busy), .done(em_done),
         .x_vec(nrm_vec),

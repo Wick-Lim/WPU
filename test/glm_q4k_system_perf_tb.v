@@ -71,6 +71,7 @@ module glm_q4k_system_perf_tb;
     // moment routing completes (exact-router prefetch), 0 = demand-only (default)
     parameter integer PF_EXACT_CFG     = 0;
     parameter integer SYS_REQ_LANES_CFG = 1;   // rank 3 system half: die request ports/cycle
+    parameter integer GU_CONC_CFG      = 0;   // rank 9: concurrent SwiGLU gate||up GEMVs
     parameter integer RESIDENT_CFG     = 0;
     // TIMING_ONLY=1: report PERF lines even when the numeric self-check fails.
     //   WHY: this TB doubles as a TIMING harness, and under Verilator the FP
@@ -347,6 +348,7 @@ module glm_q4k_system_perf_tb;
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH),
         .EXPERT_STALL(EXPERT_STALL_CFG), .PF_EXACT(PF_EXACT_CFG), .RESIDENT(RESIDENT_CFG),
         .SYS_REQ_LANES(SYS_REQ_LANES_CFG),
+        .GU_CONC(GU_CONC_CFG),
         .DSA_REAL_IDX(DSA_REAL_IDX_CFG),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),
@@ -923,6 +925,12 @@ module glm_q4k_system_perf_tb;
         $display("  [MEASURED] SYS_REQ_LANES=%0d: %0d xbar requests issued over %0d cycles -> %.3f reqs/cycle",
                  SYS_REQ_LANES_CFG, xbar_req_count, cyc_sum,
                  (cyc_sum > 0) ? (1.0*xbar_req_count)/(1.0*cyc_sum) : 0.0);
+        // ---- rank 9: the two buckets GU_CONC targets, reported directly so the
+        //   effect is read off rather than inferred.  Both are exact integers at
+        //   this slice (ffnd = 8 x 695, expw = 24 x 363 + 140 stall), so a real
+        //   saving appears as an exact drop, not as noise.
+        $display("  [MEASURED] GU_CONC=%0d: ffnd=%0d expw=%0d (sum=%0d), decode cycles=%0d",
+                 GU_CONC_CFG, st_cyc[5], st_cyc[8], st_cyc[5]+st_cyc[8], cyc_sum);
         $display("PERF q4k flash_lat=%0d ddr_nch=%0d cache_slots=%0d n_expert=%0d L=%0d resident=%0d expert_stall=%0d tokens=%0d cycles/token=%0d stall/token=%0d compute/token=%0d cyc_sum=%0d stall_sum=%0d hit=%0d miss=%0d dropped=%0d",
                  FLASH_LAT, DDR_NCH, CACHE_SLOTS, N_EXPERT, L,
                  RESIDENT_CFG, EXPERT_STALL_CFG, N_TOK,

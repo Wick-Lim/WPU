@@ -404,6 +404,21 @@ model-q4k-acthw:
 	    || { echo "FAILED: glm_model_q4k_full ACT_HW=1"; exit 1; }
 	@echo "model-q4k-acthw: ACT_HW=1 (serialized glm_act) == same golden BIT-EXACT -> knob is result-invariant"
 
+# Bit-exactness gate for rank 9's GU_CONC (concurrent SwiGLU gate||up GEMVs).
+#   It MUST be the numpy golden, not the perf TB's binding check: that check
+#   compares glm_q4k_system against a standalone glm_model_q4k and BOTH
+#   instantiate swiglu_expert_q4k, so a leaf parameter moves both sides
+#   identically and the check goes BLIND.  tools/glm_model_q4k_ref.py contains no
+#   RTL at all, so it cannot.
+model-q4k-guconc:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_GU_CONC=1 -o $(BUILD_DIR)/glm_model_q4k_guconc_sim $(MODEL_Q4K_SRCS)
+	@printf '[%s] ' "glm_model_q4k_full(GU_CONC=1)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_guconc_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm_model_q4k_full GU_CONC=1"; exit 1; }
+	@echo "model-q4k-guconc: GU_CONC=1 (concurrent gate||up) == same numpy golden BIT-EXACT"
+
+
 # Mixed-type (Q6_K / Q8_0 / F16) consumer sub-gate: the two per-type dequant-primitive
 # TBs (q6k_prim / q8_0_prim) + the integrated mixed-column GEMM (glm_matmul_mixed) that
 # drives one tile whose PE_N columns carry different w_type -- exercising the w_type mux,
@@ -1173,7 +1188,7 @@ clean:
 #   is a gate that does not exist, so: one command, run it after any src/*.v change
 #   alongside `make release-gate-strict`.
 # ============================================================================
-perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys rank14
+perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys rank14 rank9 rank9-measure
 	@echo "perf-gates: all measurement gates ran (read the [MEASURED] lines above -- they are numbers, not verdicts)"
 
 rank3: rank2
@@ -1313,6 +1328,58 @@ rank14:
 	    echo "[glm_softmax_pipe_INJECT_ooo] injection correctly FAILED (in-order capture is load-bearing once the interlock is removed)"; \
 	  fi
 	@echo "rank14: SM_PIPE=1 is BIT-EXACT (DUT-vs-DUT, raw 16-bit ===) and FASTER; SM_PIPE=0 netlist unchanged"
+
+# ============================================================================
+# rank9 : concurrent SwiGLU gate||up GEMVs (docs/ULTRA_PERF_MODULES.md)
+#   The up pass re-issued the IDENTICAL request key as the gate pass, so a second
+#   matmul engine fed the *_up buses can run it CONCURRENTLY and S_UPP/S_UP/S_UPW
+#   are never entered.  Five layers, because four of them have been fooled before:
+#     (1) default netlist == a PINNED rev  (not HEAD -- that goes vacuous on commit)
+#     (2) liveness: GU_CONC=1 MUST differ, else (1) proves nothing
+#     (3)+(4) numpy-golden bit-exactness at BOTH settings.  It must be the numpy
+#         golden: the perf TB's binding check compares glm_q4k_system against a
+#         standalone glm_model_q4k and BOTH instantiate swiglu_expert_q4k, so a leaf
+#         parameter moves both sides identically and that check goes BLIND.
+#     (5) injection: capture the gate result as `up` -- the golden MUST fail.
+# ============================================================================
+GU_CONC_BASE ?= 2781924
+rank9:
+	@mkdir -p $(BUILD_DIR)
+	@tools/synth_equiv.sh swiglu_expert_q4k $(GU_CONC_BASE) "HIDDEN 16" "INTER 16" "TN 4" "KMAX 32" \
+	  || { echo "FAILED: rank9 -- GU_CONC=0 changed the swiglu_expert_q4k netlist vs $(GU_CONC_BASE)"; exit 1; }
+	@if SE_NEW_PARAMS="GU_CONC 1" tools/synth_equiv.sh swiglu_expert_q4k $(GU_CONC_BASE) "HIDDEN 16" "INTER 16" "TN 4" "KMAX 32" >/dev/null 2>&1; then \
+	    echo "FAILED: rank9 self-test -- GU_CONC=1 netlist == GU_CONC=0: the identity check above is BLIND"; exit 1; \
+	  else \
+	    echo "[rank9_netlist] PROVEN: swiglu_expert_q4k(GU_CONC=0) == $(GU_CONC_BASE); GU_CONC=1 differs (check is live)"; \
+	  fi
+	@$(MAKE) --no-print-directory model-q4k
+	@$(MAKE) --no-print-directory model-q4k-guconc
+	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_GU_CONC=1 -DINJ_GU_WRONGUP -o $(BUILD_DIR)/rank9_inj $(MODEL_Q4K_SRCS) 2>/dev/null \
+	  || { echo "FAILED: rank9 injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/rank9_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: rank9 injection PASSED -- capturing the gate result as \`up\` is supposed to break the golden; it constrains nothing"; exit 1; \
+	  else \
+	    echo "[rank9_INJECT_wrongup] injection correctly FAILED (the golden constrains the CONCURRENT engine's value, not just the gate's)"; \
+	  fi
+	@echo "rank9: GU_CONC=1 is BIT-EXACT vs the numpy golden and GU_CONC=0 is netlist-unchanged; run \`make rank9-measure\` for the cycle numbers"
+
+# separate because it is a MEASUREMENT, not a pass/fail property
+rank9-measure:
+	@mkdir -p $(BUILD_DIR)
+	@for g in 0 1; do \
+	  $(IVERILOG) $(IFLAGS) -Pglm_q4k_system_perf_tb.GU_CONC_CFG=$$g \
+	    -Pglm_q4k_system_perf_tb.RESIDENT_CFG=1 -Pglm_q4k_system_perf_tb.N_EXPERT_CFG=8 \
+	    -Pglm_q4k_system_perf_tb.CACHE_SLOTS_CFG=2 \
+	    -o $(BUILD_DIR)/rank9m_$$g test/glm_q4k_system_perf_tb.v $(GLM_Q4K_SYS_SRCS) 2>/dev/null \
+	    || { echo "FAILED: rank9-measure compile (GU_CONC=$$g)"; exit 1; }; \
+	  $(VVP) $(BUILD_DIR)/rank9m_$$g 2>/dev/null > $(BUILD_DIR)/rank9m_$$g.log; \
+	  grep -E '\[MEASURED\] GU_CONC' $(BUILD_DIR)/rank9m_$$g.log || { echo "FAILED: rank9-measure run (GU_CONC=$$g)"; exit 1; }; \
+	done
+	@bash -c 'a=$$(grep -oE "decode cycles=[0-9]+" $(BUILD_DIR)/rank9m_0.log | grep -oE "[0-9]+"); \
+	          b=$$(grep -oE "decode cycles=[0-9]+" $(BUILD_DIR)/rank9m_1.log | grep -oE "[0-9]+"); \
+	          echo "[rank9_measure] decode cycles $$a -> $$b (saved $$((a-b)))"; \
+	          [ "$$b" -lt "$$a" ] || { echo "FAILED: rank9 GU_CONC=1 did not reduce decode cycles"; exit 1; }'
 
 # ============================================================================
 # rank12 : WIDE-BEAT clock-domain crossing (docs/ULTRA_PERF_MODULES.md rank 12)

@@ -61,6 +61,19 @@ module glm_model_q4k_full_tb;
     localparam integer ACT_HW = 0;
 `endif
 
+    // ---- GU_CONC under test: 0 = committed serial gate-then-up passes.
+    //   -DTB_GU_CONC=1 runs the SAME golden vectors with the up GEMV executed
+    //   CONCURRENTLY with the gate GEMV.  This gate has to be the one that proves
+    //   rank 9 bit-exact: the perf TB's binding check compares glm_q4k_system
+    //   against a standalone glm_model_q4k and BOTH instantiate
+    //   swiglu_expert_q4k, so a leaf parameter moves both sides identically and
+    //   that check goes BLIND.  The numpy golden contains no RTL, so it cannot. ----
+`ifdef TB_GU_CONC
+    localparam integer GU_CONC = `TB_GU_CONC;
+`else
+    localparam integer GU_CONC = 0;
+`endif
+
     // ---- derived widths (mirror the DUT) ----
     localparam integer IDXW   = (S_MAX <= 1) ? 1 : $clog2(S_MAX);
     localparam integer QK_DIM = NOPE + ROPE;
@@ -372,7 +385,7 @@ module glm_model_q4k_full_tb;
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
         .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN),
-        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW)
+        .BLK(BLK), .LM_TN(LM_TN), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC)
     ) dut (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done),
         .token_id(token_id), .pos(pos), .pos_vec({POSW{1'b0}}),

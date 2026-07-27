@@ -147,6 +147,8 @@ module glm_q4k_system #(
     parameter integer BLK        = 128,
     parameter integer LM_TN      = 4,
     parameter integer ACT_HW     = 0,   // activation HW lanes (0 = full) -- result-invariant knob
+    // ---- GU_CONC : rank 9, forwarded to glm_model_q4k (default 0 = committed path)
+    parameter integer GU_CONC    = 0,
     // ---- PE_M : query tokens decoded in lockstep (batch B), threaded straight to
     //   u_model (glm_model_q4k -> decoder -> mla_attn_q4k, all already PE_M-capable).
     //   Default 1 == the committed single-token forward = NO speculation, BYTE-IDENTICAL
@@ -723,7 +725,7 @@ module glm_q4k_system #(
         .Q_LORA(Q_LORA), .KV_LORA(KV_LORA), .S_MAX(S_MAX), .TOPK_ATTN(TOPK_ATTN),
         .SWIN(SWIN), .THETA(THETA), .PE_N(PE_N), .POSW(POSW), .N_EXPERT(N_EXPERT),
         .TOPK(TOPK), .INTER_MOE(INTER_MOE), .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE),
-        .TN(TN), .BLK(BLK), .LM_TN(LM_TN), .PE_M(PE_M), .ACT_HW(ACT_HW),
+        .TN(TN), .BLK(BLK), .LM_TN(LM_TN), .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
         .DSA_REAL_IDX(DSA_REAL_IDX), .INTRA_CAUSAL(INTRA_CAUSAL)
     ) u_model (

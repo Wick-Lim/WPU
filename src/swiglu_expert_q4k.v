@@ -25,7 +25,16 @@ module swiglu_expert_q4k #(
     parameter integer TN     = 4,     // output-tile width = matmul PE_N
     parameter integer KMAX   = 256,   // >= max(HIDDEN, INTER); matmul counter / NSB
     parameter integer PE_M   = 1,    // token ROWS (batch B) sharing one weight fetch
-    parameter integer ACT_HW = 0     // silu HW lanes (0 = full) -- result-invariant resource knob (glm_act HW_LANES)
+    parameter integer ACT_HW = 0,    // silu HW lanes (0 = full) -- result-invariant resource knob (glm_act HW_LANES)
+    // rank 9 (docs/ULTRA_PERF_MODULES.md): 0 = committed serial gate-then-up
+    //   passes; 1 = a SECOND matmul engine runs the up GEMV concurrently with the
+    //   gate GEMV, so S_UPP/S_UP/S_UPW are never entered.  Measured ceiling at the
+    //   profiled slice: 23 cyc x 160 groups = 3,680 cycles.
+    //   Default 0 is netlist-identical to the committed module -- the committed
+    //   control block is kept VERBATIM in the GU_CONC==0 generate branch, because
+    //   folding a `GU_CONC ?` term into the FSM is the shape that has broken
+    //   default netlist identity three times in this repo.
+    parameter integer GU_CONC = 0
 )(
     input  wire                     clk,
     input  wire                     rst,        // sync, active-high
@@ -109,6 +118,39 @@ module swiglu_expert_q4k #(
     );
     /* verilator lint_on UNUSEDSIGNAL */
 
+    // ---- rank 9: concurrent UP engine (GU_CONC=1 only) ----------------------
+    //   Same clk/rst/start/k_len/in_valid/a_col as u_mm, but fed the *_up weight
+    //   buses.  Identical k_len and identical accept stream => gu_ov and g_ov
+    //   assert on the SAME cycle by construction; the assert below makes a future
+    //   divergence loud instead of silent.
+    wire                 gu_ov;
+    wire [16*MTN-1:0]    gu_c;
+    generate
+    if (GU_CONC == 0) begin : g_up_none
+        assign gu_ov = 1'b0;
+        assign gu_c  = {(16*MTN){1'b0}};
+    end else begin : g_up_conc
+        /* verilator lint_off UNUSEDSIGNAL */
+        wire gu_busy;
+        glm_matmul_q4k #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX)) u_mm_up (
+            .clk(clk), .rst(rst), .start(mm_start), .k_len(mm_k_len),
+            .w_d(w_d_up), .w_dmin(w_dmin_up), .w_scales(w_scales_up),
+            .in_valid(mm_in_valid), .a_col(a_col), .w_q(w_q_up),
+            .busy(gu_busy), .out_valid(gu_ov), .c_out(gu_c)
+        );
+        /* verilator lint_on UNUSEDSIGNAL */
+        // Simulation-only: a per-cycle $fatal is not synthesizable (yosys:
+        // "Can't resolve task name $fatal").  `ifndef YOSYS, not `ifndef SYNTHESIS
+        // -- nothing in this repo ever defines SYNTHESIS, so that guard would not
+        // actually exclude this from synthesis.  yosys predefines YOSYS.
+`ifndef YOSYS
+        always @(posedge clk)
+            if (!rst && (state == S_GATEW) && (g_ov !== gu_ov))
+                $fatal(1, "swiglu GU_CONC: gate/up engines diverged (g_ov=%b gu_ov=%b) -- the concurrency premise is broken", g_ov, gu_ov);
+`endif
+    end
+    endgenerate
+
     reg [16*MTN-1:0] gate_hold, up_hold;
     reg [GW-1:0]     grp_hold;
 
@@ -145,59 +187,137 @@ module swiglu_expert_q4k #(
     assign w_grp = grp[GW-1:0];
     assign w_k   = kcnt;
 
-    // ---- main control ----
-    integer yi, yr;
-    always @(posedge clk) begin
-        if (rst) begin
-            state <= S_IDLE; busy <= 0; done <= 0; grp <= 0; kcnt <= 0;
-            pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 0; mm_k_len <= 0;
-            act_in_valid <= 0; act_x_in <= 0; up_hold <= 0; gate_hold <= 0; grp_hold <= 0;
-        end else begin
-            done <= 0; mm_start <= 0; act_in_valid <= 0;
-            case (state)
-            S_IDLE: if (start) begin
-                busy <= 1; grp <= 0; state <= S_GATEP; kcnt <= 0;
-                pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_gu;
-            end
-            S_GATEP: begin kcnt <= 0; state <= S_GATE; end
-            S_GATE:  begin if (kcnt == k_len_gu - 1'b1) state <= S_GATEW; kcnt <= kcnt + 1'b1; end
-            S_GATEW: if (g_ov) begin
-                gate_hold <= g_c; grp_hold <= grp; state <= S_UPP; kcnt <= 0;
-                up_pass <= 1; mm_start <= 1; mm_k_len <= k_len_gu;
-            end
-            S_UPP: begin kcnt <= 0; state <= S_UP; end
-            S_UP:  begin if (kcnt == k_len_gu - 1'b1) state <= S_UPW; kcnt <= kcnt + 1'b1; end
-            S_UPW: if (g_ov) begin
-                act_in_valid <= 1; act_x_in <= gate_hold; up_hold <= g_c;
-                up_pass <= 0; state <= S_GUW;
-            end
-            S_GUW: if (act_ov) begin
-                if (grp == NG_GU[GW-1:0] - 1'b1) begin
-                    state <= S_DNP; grp <= 0; kcnt <= 0; pass_sel <= SEL_DOWN;
-                    up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_dn;
-                end else begin
-                    grp <= grp + 1'b1; kcnt <= 0; state <= S_GATEP;
+    generate
+    if (GU_CONC == 0) begin : g_fsm_serial
+        // DEFAULT: the committed control block, VERBATIM.
+        // ---- main control ----
+        integer yi, yr;
+        always @(posedge clk) begin
+            if (rst) begin
+                state <= S_IDLE; busy <= 0; done <= 0; grp <= 0; kcnt <= 0;
+                pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 0; mm_k_len <= 0;
+                act_in_valid <= 0; act_x_in <= 0; up_hold <= 0; gate_hold <= 0; grp_hold <= 0;
+            end else begin
+                done <= 0; mm_start <= 0; act_in_valid <= 0;
+                case (state)
+                S_IDLE: if (start) begin
+                    busy <= 1; grp <= 0; state <= S_GATEP; kcnt <= 0;
                     pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_gu;
                 end
-            end
-            S_DNP: begin kcnt <= 0; state <= S_DN; end
-            S_DN:  begin if (kcnt == k_len_dn - 1'b1) state <= S_DNW; kcnt <= kcnt + 1'b1; end
-            S_DNW: if (g_ov) begin
-                for (yr = 0; yr < PE_M; yr = yr + 1)
-                    for (yi = 0; yi < TN; yi = yi + 1)
-                        if (DN_FULL || (grp*TN + yi < HIDDEN))
-                            y_out[16*(HIDDEN*yr + grp*TN + yi) +: 16] <= g_c[16*(yr*TN + yi) +: 16];
-                if (grp == NG_D[GW-1:0] - 1'b1) state <= S_DONE;
-                else begin
-                    grp <= grp + 1'b1; kcnt <= 0; state <= S_DNP;
-                    pass_sel <= SEL_DOWN; mm_start <= 1; mm_k_len <= k_len_dn;
+                S_GATEP: begin kcnt <= 0; state <= S_GATE; end
+                S_GATE:  begin if (kcnt == k_len_gu - 1'b1) state <= S_GATEW; kcnt <= kcnt + 1'b1; end
+                S_GATEW: if (g_ov) begin
+                    gate_hold <= g_c; grp_hold <= grp; state <= S_UPP; kcnt <= 0;
+                    up_pass <= 1; mm_start <= 1; mm_k_len <= k_len_gu;
                 end
+                S_UPP: begin kcnt <= 0; state <= S_UP; end
+                S_UP:  begin if (kcnt == k_len_gu - 1'b1) state <= S_UPW; kcnt <= kcnt + 1'b1; end
+                S_UPW: if (g_ov) begin
+                    act_in_valid <= 1; act_x_in <= gate_hold; up_hold <= g_c;
+                    up_pass <= 0; state <= S_GUW;
+                end
+                S_GUW: if (act_ov) begin
+                    if (grp == NG_GU[GW-1:0] - 1'b1) begin
+                        state <= S_DNP; grp <= 0; kcnt <= 0; pass_sel <= SEL_DOWN;
+                        up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_dn;
+                    end else begin
+                        grp <= grp + 1'b1; kcnt <= 0; state <= S_GATEP;
+                        pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_gu;
+                    end
+                end
+                S_DNP: begin kcnt <= 0; state <= S_DN; end
+                S_DN:  begin if (kcnt == k_len_dn - 1'b1) state <= S_DNW; kcnt <= kcnt + 1'b1; end
+                S_DNW: if (g_ov) begin
+                    for (yr = 0; yr < PE_M; yr = yr + 1)
+                        for (yi = 0; yi < TN; yi = yi + 1)
+                            if (DN_FULL || (grp*TN + yi < HIDDEN))
+                                y_out[16*(HIDDEN*yr + grp*TN + yi) +: 16] <= g_c[16*(yr*TN + yi) +: 16];
+                    if (grp == NG_D[GW-1:0] - 1'b1) state <= S_DONE;
+                    else begin
+                        grp <= grp + 1'b1; kcnt <= 0; state <= S_DNP;
+                        pass_sel <= SEL_DOWN; mm_start <= 1; mm_k_len <= k_len_dn;
+                    end
+                end
+                S_DONE: begin done <= 1; busy <= 0; state <= S_IDLE; end
+                default: state <= S_IDLE;
+                endcase
             end
-            S_DONE: begin done <= 1; busy <= 0; state <= S_IDLE; end
-            default: state <= S_IDLE;
-            endcase
         end
+
+    end else begin : g_fsm_conc
+        // GU_CONC=1: identical except S_GATEW captures both engines.
+        // S_UPP/S_UP/S_UPW remain in the encoding (state width unchanged)
+        // but are unreachable.
+        // ---- main control ----
+        integer yi, yr;
+        always @(posedge clk) begin
+            if (rst) begin
+                state <= S_IDLE; busy <= 0; done <= 0; grp <= 0; kcnt <= 0;
+                pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 0; mm_k_len <= 0;
+                act_in_valid <= 0; act_x_in <= 0; up_hold <= 0; gate_hold <= 0; grp_hold <= 0;
+            end else begin
+                done <= 0; mm_start <= 0; act_in_valid <= 0;
+                case (state)
+                S_IDLE: if (start) begin
+                    busy <= 1; grp <= 0; state <= S_GATEP; kcnt <= 0;
+                    pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_gu;
+                end
+                S_GATEP: begin kcnt <= 0; state <= S_GATE; end
+                S_GATE:  begin if (kcnt == k_len_gu - 1'b1) state <= S_GATEW; kcnt <= kcnt + 1'b1; end
+                // GU_CONC: the up engine finished on this same cycle, so capture BOTH
+                // results here and go straight to S_GUW.  up_pass is never raised, so
+                // the four operand muxes at :97-100 collapse to the plain gate buses --
+                // a mux REMOVED, not added.
+                S_GATEW: if (g_ov) begin
+`ifdef INJ_GU_WRONGUP
+                    // INJECTION: capture the GATE result as `up`, giving
+                    // silu(gate)*gate instead of silu(gate)*up.  The numpy golden
+                    // MUST catch this -- if it does not, the golden is not
+                    // constraining the concurrent engine's VALUE at all and the
+                    // whole rank-9 bit-exactness proof is vacuous.
+                    gate_hold <= g_c; up_hold <= g_c;  grp_hold <= grp;
+`else
+                    gate_hold <= g_c; up_hold <= gu_c; grp_hold <= grp;
+`endif
+                    act_in_valid <= 1; act_x_in <= g_c;
+                    state <= S_GUW; kcnt <= 0;
+                end
+                S_UPP: begin kcnt <= 0; state <= S_UP; end
+                S_UP:  begin if (kcnt == k_len_gu - 1'b1) state <= S_UPW; kcnt <= kcnt + 1'b1; end
+                S_UPW: if (g_ov) begin
+                    act_in_valid <= 1; act_x_in <= gate_hold; up_hold <= g_c;
+                    up_pass <= 0; state <= S_GUW;
+                end
+                S_GUW: if (act_ov) begin
+                    if (grp == NG_GU[GW-1:0] - 1'b1) begin
+                        state <= S_DNP; grp <= 0; kcnt <= 0; pass_sel <= SEL_DOWN;
+                        up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_dn;
+                    end else begin
+                        grp <= grp + 1'b1; kcnt <= 0; state <= S_GATEP;
+                        pass_sel <= SEL_GATE; up_pass <= 0; mm_start <= 1; mm_k_len <= k_len_gu;
+                    end
+                end
+                S_DNP: begin kcnt <= 0; state <= S_DN; end
+                S_DN:  begin if (kcnt == k_len_dn - 1'b1) state <= S_DNW; kcnt <= kcnt + 1'b1; end
+                S_DNW: if (g_ov) begin
+                    for (yr = 0; yr < PE_M; yr = yr + 1)
+                        for (yi = 0; yi < TN; yi = yi + 1)
+                            if (DN_FULL || (grp*TN + yi < HIDDEN))
+                                y_out[16*(HIDDEN*yr + grp*TN + yi) +: 16] <= g_c[16*(yr*TN + yi) +: 16];
+                    if (grp == NG_D[GW-1:0] - 1'b1) state <= S_DONE;
+                    else begin
+                        grp <= grp + 1'b1; kcnt <= 0; state <= S_DNP;
+                        pass_sel <= SEL_DOWN; mm_start <= 1; mm_k_len <= k_len_dn;
+                    end
+                end
+                S_DONE: begin done <= 1; busy <= 0; state <= S_IDLE; end
+                default: state <= S_IDLE;
+                endcase
+            end
+        end
+
     end
+    endgenerate
 
     // ---- silu*up merge -> h buffer (bf16(silu(gate) * up)) ----
     reg [15:0] n_hval [0:MTN-1];

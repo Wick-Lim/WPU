@@ -77,6 +77,32 @@ drain does.
 **Incidental finding:** `src/sampler.v` is in `GLM_Q4K_SYS_SRCS` but is **instantiated nowhere** in
 `src/` — it is compiled into every system build and used by nothing.
 
+## UNVERIFIED: timing and area of every landed lever
+
+Every perf item landed so far is proven on **cycles and bits**, and on **nothing else**. That is a
+real gap, not a formality, and it is stated here so no reader mistakes a cycle number for a tok/s
+number.
+
+The repo has exactly ONE measured routed-Fmax limiter: `u_moe/y_out → hbuf`, **21.2 ns, 59% wire,
+46.5 MHz**. At that frequency a 1.7% Fmax loss cancels a 1.7% cycle win outright — so for any lever
+whose new hardware lands near that path, the sign of the net effect is currently **unknown**.
+
+| lever | what it adds | why timing/area is open |
+|---|---|---|
+| **9 `GU_CONC`** | a **second `glm_matmul_q4k`** per `swiglu_expert_q4k` (×2 instances in the decoder) | Its `c_out` feeds `up_hold` → the silu·up merge → `hbuf`. That is *exactly* the measured critical-path region. Biggest cycle win (8.42%) **and** the biggest timing risk. |
+| **7 `REG_COUT`** | a register stage on `glm_matmul_q4k.c_out` | Intended to *help* Fmax — that is the whole point of the item — but the benefit is `[EST]` until a re-fit measures it. |
+| **14 `SM_PIPE`** | no new hardware (deletes two interlock terms) | Cannot add logic depth, but it raises fp-pipe utilisation; area is flat, timing is presumably neutral — **presumably**, not measured. |
+| **2/3 `RESP_LANES`/`REQ_LANES`** | per-lane muxes + a wider drain in `ddr5_xbar` | Widening the fabric is where the doc's own header predicts congestion risk lands. |
+
+**What a re-fit must report, per lever, at `GLM52_SLICE_*` and at the shipping shape:**
+WNS/TNS on the `u_moe/y_out → hbuf` path, achieved Fmax, LUT/FF/DSP/BRAM deltas vs the default
+build, and post-route congestion. The decision rule is one line:
+`net tok/s = (cycle win) × (Fmax_new / Fmax_base)` — a lever is only real if that product exceeds 1.
+
+**Until then**: every landed lever ships **default-off**, every claim in this document is a *cycle*
+claim, and no tok/s claim is made for any of them. `make perf-gates` measures cycles; nothing in
+this repo measures timing.
+
 ## Ranked plan (highest tok/s impact first)
 
 ### 1. Non-blocking MSHR expert-cache refill (overlap the 8 top-k miss latencies)
@@ -229,40 +255,56 @@ drain does.
 
 ### 9. SwiGLU gate||up concurrency + inter-pass double-buffering
 
-> **STATUS: ANALYSED + PLANNED, NOT BUILT. Biggest remaining lever — measured ceiling 6,368
-> cycles (14.6% of the decode window)** of 9,056 absolute. The cost model was re-derived from the
-> RTL and closes to the exact cycle against the histogram: dense `8 × 695 = 5,560 == ffnd` EXACT;
-> MoE `24 × 363 = 8,712`, `+140` refill stall `= 8,852 == expw` EXACT. `GU_CONC` deletes
-> `S_UPP+S_UP+S_UPW = 23 cyc × 160 groups = 3,680`, and the FSM is strictly serial so the saving is
-> additive — no downstream stage re-serialises it (the rank-3 failure mode was checked for and is
-> absent at `ACT_HW=0`).
+> **STATUS: BUILT + MEASURED (`make rank9`, `make rank9-measure`), default-off. The predicted
+> ceiling was realised EXACTLY.** `swiglu_expert_q4k` gained `GU_CONC`; at 1 a second
+> `glm_matmul_q4k` runs the up GEMV concurrently with the gate GEMV off the same `mm_start` /
+> `mm_in_valid` / `a_col`, so `S_UPP`/`S_UP`/`S_UPW` are never entered and `up_pass` never rises
+> (which *removes* the four operand muxes at `:97-100` rather than adding any).
 >
-> Bit-exactness is structural, not empirical: during `S_UP` the module today re-issues the
-> **identical** request key — `pass_sel` is not changed at `:166` (only `up_pass` is), `w_grp = grp`
-> is unchanged, `w_k` restarts at 0 — so the up pass is a byte-for-byte replay of the gate pass.
-> Merging them issues a strict **subset** of today's requests (each `(sel,grp,k)` once instead of
-> twice) and never a different one.
+> | | `ffnd` | `expw` | decode cycles |
+> |---|---|---|---|
+> | `GU_CONC=0` | 5,560 | 8,852 | 43,724 |
+> | `GU_CONC=1` | **4,088** | **6,644** | **40,044** |
 >
-> **THE PROOF TRAP, recorded because it would otherwise be walked into again.** The perf TB's
-> binding check compares `glm_q4k_system` against an independent standalone `glm_model_q4k`
-> (`test/glm_q4k_system_perf_tb.v:26-29`) — and **both sides instantiate `swiglu_expert_q4k`**. A
-> leaf-level parameter changes both identically, so that check goes **blind** for rank 9. It was a
-> valid proof for ranks 3 and 4 only because those changed `glm_q4k_system`, which the reference
-> does not contain. Rank 9's bit-exactness must be proven by `make model-q4k` against the **numpy
-> golden** (`tools/glm_model_q4k_ref.py`), which is independent of the RTL entirely.
+> **−3,680 cycles = 8.42% of the decode window.** Three things agree independently:
+> (a) the predicted ceiling was `23 cyc × 160 groups = 3,680` and the measurement is **exactly
+> 3,680**; (b) the decode window fell by **exactly the same 3,680**, so nothing downstream absorbed
+> any of it; (c) the saving decomposes cleanly — dense `1,472/8 = 184 = 8 groups × 23`, MoE
+> `2,208/24 = 92 = 4 groups × 23`, total `8×8 + 24×4 = 160` groups.
 >
-> **Prerequisites — now DONE** (they were the reason this could not start): `tools/synth_equiv.sh`
-> failed on `swiglu_expert_q4k` on the *unmodified* tree (three independent bugs: reading all of
-> `src/*.v` so an unrelated file consumed `glm_fp.vh`'s `ifndef` guard; reading the module under
-> test *before* its own children; collecting only one module name per file). Fixed — it now walks
-> the instantiation closure, and `swiglu_expert_q4k` reports `IDENTICAL (13,688 cells)`. A liveness
-> self-test was also missing entirely (`SE_NEW_PARAMS` applies overrides to the working-tree side
-> only), so a new parameter can now be proven to actually build different hardware — without it a
-> netlist gate can only ever say IDENTICAL, which constrains nothing.
+> **Contrast with rank 3, because the contrast is the lesson.** Rank 3's arithmetic was also
+> correct and its measured effect was still ZERO cycles: the die simply did not have the requests
+> to fill the widened port. Here the serialisation removed *was* on the critical path. Being able
+> to compute a ceiling says nothing about whether removing that thing helps; only the measurement does.
 >
-> **Stage 2 (`GU_PIPE`) is NOT part of this** — it must be dropped or guarded by an elaboration
-> assert, because `glm_act`'s `HW_LANES` wrapper drops `in_valid` while running, so `GU_PIPE`
-> requires `ACT_HW==0` and would be silently wrong in the configuration the FPGA fit was measured in.
+> **Proof, and why the usual one could not be used.** The perf TB's binding check compares
+> `glm_q4k_system` against a standalone `glm_model_q4k` and **both instantiate
+> `swiglu_expert_q4k`** — a leaf parameter moves both sides identically, so that check is BLIND
+> here. It was valid for ranks 3 and 4 only because those changed `glm_q4k_system`, which the
+> reference does not contain. Bit-exactness is therefore proven against the **numpy golden**
+> (`tools/glm_model_q4k_ref.py`), which contains no RTL at all: **1155/1155 at both `GU_CONC=0` and
+> `GU_CONC=1`**. Netlist: `GU_CONC=0` is **IDENTICAL** to the pinned base (13,688 cells) and
+> `GU_CONC=1` **DIFFERS** (liveness — without that second half the first proves nothing);
+> `glm_q4k_system.v` stays PROVEN against `05639bf` after the parameter threading.
+> Injection `-DINJ_GU_WRONGUP` captures the gate result as `up` (giving `silu(gate)·gate`) and must
+> fail the golden — otherwise the golden is not constraining the concurrent engine's *value*.
+>
+> Bit-exactness is structural: during `S_UP` the committed FSM re-issues the **identical** request
+> key (`:166` changes only `up_pass`; `pass_sel`, `w_grp = grp` and `w_k` restarting at 0 are all
+> unchanged), so the up pass is a byte-for-byte replay of the gate pass. Merging them issues a
+> strict **subset** of today's weight requests — each `(sel,grp,k)` once instead of twice — and
+> never a different one.
+>
+> **Found while building this:** a per-cycle `$fatal` is not synthesizable (yosys: "Can't resolve
+> task name `$fatal`"); every other `$fatal` in `src/` sits in an `initial` block, which yosys
+> tolerates. It is guarded with `` `ifndef YOSYS ``, **not** the repo's `` `ifndef SYNTHESIS `` —
+> nothing in this repo ever defines `SYNTHESIS` (zero hits across the Makefile and `tools/*.sh`),
+> so that guard does not actually exclude anything from synthesis.
+>
+> **Stage 2 (`GU_PIPE`) was NOT built** — `glm_act`'s `HW_LANES` wrapper drops `in_valid` while
+> running, so it would require `ACT_HW==0` and be silently wrong in the configuration the FPGA fit
+> was measured in.
+
 
 - **Modules:** `src/swiglu_expert_q4k.v (serial S_GATE then S_UP on one shared matmul :162-173; drain-stall S_GATEW/S_UPW/S_DNW :164-195)`
 - **Change:** (a) Add a second glm_matmul_q4k (or widen PE_N to consume w_q|w_q_up in one pass) so the gate and up GEMVs — structurally independent over the same activation, with both weight codes already arriving every beat — run concurrently instead of time-multiplexed. (b) Double-buffer the group accumulator/weight-scale latch so the next group's K-stream launches while the current group drains and its silu*up merge completes.
