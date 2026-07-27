@@ -1188,7 +1188,7 @@ clean:
 #   is a gate that does not exist, so: one command, run it after any src/*.v change
 #   alongside `make release-gate-strict`.
 # ============================================================================
-perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys rank14 rank9 rank9-measure
+perf-gates: mshr rank2 rank3 rank4 rank7 rank12 rank3sys rank14 rank14-measure rank9 rank9-measure
 	@echo "perf-gates: all measurement gates ran (read the [MEASURED] lines above -- they are numbers, not verdicts)"
 
 rank3: rank2
@@ -1328,6 +1328,34 @@ rank14:
 	    echo "[glm_softmax_pipe_INJECT_ooo] injection correctly FAILED (in-order capture is load-bearing once the interlock is removed)"; \
 	  fi
 	@echo "rank14: SM_PIPE=1 is BIT-EXACT (DUT-vs-DUT, raw 16-bit ===) and FASTER; SM_PIPE=0 netlist unchanged"
+
+# separate because it is a MEASUREMENT, not a pass/fail property.  Runs with
+# GU_CONC=1 so the number is the one that matters on top of rank 9.
+rank14-measure:
+	@mkdir -p $(BUILD_DIR)
+	@for sp in 0 1; do \
+	  $(IVERILOG) $(IFLAGS) -Pglm_q4k_system_perf_tb.SM_PIPE_CFG=$$sp \
+	    -Pglm_q4k_system_perf_tb.GU_CONC_CFG=1 -Pglm_q4k_system_perf_tb.RESIDENT_CFG=1 \
+	    -Pglm_q4k_system_perf_tb.N_EXPERT_CFG=8 -Pglm_q4k_system_perf_tb.CACHE_SLOTS_CFG=2 \
+	    -o $(BUILD_DIR)/rank14m_$$sp test/glm_q4k_system_perf_tb.v $(GLM_Q4K_SYS_SRCS) 2>/dev/null \
+	    || { echo "FAILED: rank14-measure compile (SM_PIPE=$$sp)"; exit 1; }; \
+	  $(VVP) $(BUILD_DIR)/rank14m_$$sp 2>/dev/null > $(BUILD_DIR)/rank14m_$$sp.log; \
+	  grep -qE '\(==ref' $(BUILD_DIR)/rank14m_$$sp.log \
+	    || { echo "FAILED: rank14-measure (SM_PIPE=$$sp) produced no reference-checked token"; exit 1; }; \
+	done
+	@bash -c 'a=$$(grep -oE "decode cycles=[0-9]+" $(BUILD_DIR)/rank14m_0.log | grep -oE "[0-9]+" | head -1); \
+	  b=$$(grep -oE "decode cycles=[0-9]+" $(BUILD_DIR)/rank14m_1.log | grep -oE "[0-9]+" | head -1); \
+	  sa=$$(grep -oE "soft=[0-9]+" $(BUILD_DIR)/rank14m_0.log | grep -oE "[0-9]+" | head -1); \
+	  sb=$$(grep -oE "soft=[0-9]+" $(BUILD_DIR)/rank14m_1.log | grep -oE "[0-9]+" | head -1); \
+	  ea=$$(grep -oE "expw=[0-9]+" $(BUILD_DIR)/rank14m_0.log | grep -oE "[0-9]+" | head -1); \
+	  eb=$$(grep -oE "expw=[0-9]+" $(BUILD_DIR)/rank14m_1.log | grep -oE "[0-9]+" | head -1); \
+	  echo "[rank14_measure] soft $$sa -> $$sb ; decode $$a -> $$b (saved $$((a-b))) ; expw $$ea -> $$eb"; \
+	  [ "$$b" -lt "$$a" ] || { echo "FAILED: SM_PIPE=1 did not reduce decode cycles"; exit 1; }; \
+	  [ "$$((sa-sb))" = "$$((a-b))" ] \
+	    && echo "    the softmax saving lands 1:1 at the decode window -- nothing downstream reabsorbs it" \
+	    || echo "    NOTE: soft saved $$((sa-sb)) but the window only moved $$((a-b)) -- something downstream absorbed the difference"; \
+	  [ "$$ea" = "$$eb" ] || echo "    NOTE: expw moved $$ea -> $$eb; an attention saving changed expert-refill lead"'
+
 
 # ============================================================================
 # rank9 : concurrent SwiGLU gate||up GEMVs (docs/ULTRA_PERF_MODULES.md)

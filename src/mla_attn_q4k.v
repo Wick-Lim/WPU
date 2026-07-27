@@ -121,6 +121,10 @@ module mla_attn_q4k #(
     //   (<=S<=S_MAX) -- which shrinks the SWIN-sized scratch AND matches the S_MAX-
     //   sized index widths (clears the SWINW>ksel SELRANGE lints; docs/FULL_CONFIG_ELAB.md).
     parameter integer SWIN      = (S_MAX < TOPK) ? S_MAX : TOPK,
+    // ---- SM_PIPE : rank 14 -- 1 issue/cycle in glm_softmax's shift+normalize.
+    //   Pure forwarding; default 0 keeps the committed serial interlock, so this
+    //   module's default netlist is unchanged.
+    parameter integer SM_PIPE   = 0,
     parameter integer THETA     = 8000000,
     parameter integer PE_N      = 4,    // matmul tile width (output lanes/pass)
     parameter integer POSW      = 20,
@@ -845,7 +849,7 @@ module mla_attn_q4k #(
     genvar gs;
     generate
     for (gs = 0; gs < PE_M; gs = gs + 1) begin : SM
-        glm_softmax #(.LEN(SWIN), .LANES(1)) u_softmax (
+        glm_softmax #(.LEN(SWIN), .LANES(1), .SM_PIPE(SM_PIPE)) u_softmax (
             .clk(clk), .rst(rst), .start(sm_start),
             .in_valid(sm_in_valid), .x_in(sm_x_in[16*gs +: 16]),
             .busy(sm_busy[gs]), .out_valid(sm_out_valid[gs]), .p_out(sm_p_out[16*gs +: 16]),

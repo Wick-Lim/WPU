@@ -95,6 +95,8 @@ module glm_model_q4k #(
     parameter integer ACT_HW     = 0,
     // ---- GU_CONC : rank 9, forwarded to the decoder (default 0 = committed path)
     parameter integer GU_CONC    = 0,
+    // ---- SM_PIPE : rank 14, forwarded down (default 0 = committed path)
+    parameter integer SM_PIPE    = 0,
     parameter integer PER_ROW_POS = 0,  // 1 = per-row query positions via pos_vec (P1.3a)
     parameter integer PER_ROW_SLEN= 0,  // 1 = per-row causal extents via s_len_vec (P1.3d)
     parameter integer PER_ROW_SEQ = 0,  // 1 = per-row sequence ids via seq_vec (A2; kc_seq out)
@@ -311,6 +313,7 @@ module glm_model_q4k #(
         .INTER_DENSE(INTER_DENSE), .RSCALE(RSCALE), .TN(TN), .BLK(BLK), .PE_M(PE_M),
         .ACT_HW(ACT_HW),
         .GU_CONC(GU_CONC),
+        .SM_PIPE(SM_PIPE),
         .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
         .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX),
         .INTRA_CAUSAL(INTRA_CAUSAL)

@@ -157,6 +157,8 @@ module glm_decoder_block_q4k #(
     //   Pure forwarding; default 0 keeps every swiglu_expert_q4k instance on the
     //   committed serial path, so this module's default netlist is unchanged.
     parameter integer GU_CONC    = 0,
+    // ---- SM_PIPE : rank 14, forwarded to mla_attn_q4k (default 0 = committed path)
+    parameter integer SM_PIPE    = 0,
     // ---- derived (do NOT override) ----
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -384,6 +386,7 @@ module glm_decoder_block_q4k #(
         .PE_M(PE_M), .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
         .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX),
         .INTRA_CAUSAL(INTRA_CAUSAL)
+    , .SM_PIPE(SM_PIPE)
     ) u_attn (
         .clk(clk), .rst(rst), .start(at_start), .busy(at_busy), .done(at_done),
         .pos(pos_q), .s_len(slen_q), .x_vec(nrm_vec),
