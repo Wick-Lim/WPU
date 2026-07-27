@@ -1336,10 +1336,13 @@ rank14:
 #   are never entered.  Five layers, because four of them have been fooled before:
 #     (1) default netlist == a PINNED rev  (not HEAD -- that goes vacuous on commit)
 #     (2) liveness: GU_CONC=1 MUST differ, else (1) proves nothing
-#     (3)+(4) numpy-golden bit-exactness at BOTH settings.  It must be the numpy
-#         golden: the perf TB's binding check compares glm_q4k_system against a
-#         standalone glm_model_q4k and BOTH instantiate swiglu_expert_q4k, so a leaf
-#         parameter moves both sides identically and that check goes BLIND.
+#     (3)+(4) numpy-golden bit-exactness at BOTH settings -- an RTL-free reference.
+#         (An earlier comment here claimed the perf TB's binding check goes BLIND for
+#         a leaf parameter because system and reference both instantiate
+#         swiglu_expert_q4k.  That was WRONG: the TB's u_ref parameter list has no
+#         GU_CONC, so the reference stays SERIAL while the DUT runs CONCURRENT and
+#         the token match is a real cross-check.  The numpy golden remains the
+#         primary proof; the binding check is a second, independent one.)
 #     (5) injection: capture the gate result as `up` -- the golden MUST fail.
 # ============================================================================
 GU_CONC_BASE ?= 2781924

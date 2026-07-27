@@ -277,13 +277,25 @@ this repo measures timing.
 > to fill the widened port. Here the serialisation removed *was* on the critical path. Being able
 > to compute a ceiling says nothing about whether removing that thing helps; only the measurement does.
 >
-> **Proof, and why the usual one could not be used.** The perf TB's binding check compares
-> `glm_q4k_system` against a standalone `glm_model_q4k` and **both instantiate
-> `swiglu_expert_q4k`** — a leaf parameter moves both sides identically, so that check is BLIND
-> here. It was valid for ranks 3 and 4 only because those changed `glm_q4k_system`, which the
-> reference does not contain. Bit-exactness is therefore proven against the **numpy golden**
-> (`tools/glm_model_q4k_ref.py`), which contains no RTL at all: **1155/1155 at both `GU_CONC=0` and
-> `GU_CONC=1`**. Netlist: `GU_CONC=0` is **IDENTICAL** to the pinned base (13,688 cells) and
+> **Proof — including a claim of mine that was WRONG and is corrected here.** The primary proof is
+> the **numpy golden** (`tools/glm_model_q4k_ref.py`), which contains no RTL at all: **1155/1155 at
+> both `GU_CONC=0` and `GU_CONC=1`**.
+>
+> Commit `ee018a3` additionally asserted that the perf TB's binding check "goes BLIND" for rank 9,
+> reasoning that the system and its standalone `glm_model_q4k` reference both instantiate
+> `swiglu_expert_q4k` so a leaf parameter would move both sides identically. **That is false.** The
+> TB instantiates `u_ref` directly and its parameter list does not include `GU_CONC`, so the
+> reference stayed on the **serial** path while the DUT ran **concurrent** — and the tokens still
+> matched. It was a genuine independent RTL-vs-RTL cross-check, not a blind one.
+>
+> The tell was in the histogram: `idle` grew by **exactly 3,514** while the decode window fell by
+> 3,680 and the histogram total moved only 166. The DUT was finishing ~920 cycles earlier per token
+> and then *waiting for the slower serial reference*. Chasing that inconsistency is what exposed the
+> error.
+>
+> Same failure mode as the `resident-equiv` mistake earlier in this document, with the sign flipped:
+> there a check was assumed to cover more than it did, here one was assumed to cover less. **Read
+> what a check actually instantiates before characterising it.** Netlist: `GU_CONC=0` is **IDENTICAL** to the pinned base (13,688 cells) and
 > `GU_CONC=1` **DIFFERS** (liveness — without that second half the first proves nothing);
 > `glm_q4k_system.v` stays PROVEN against `05639bf` after the parameter threading.
 > Injection `-DINJ_GU_WRONGUP` captures the gate result as `up` (giving `silu(gate)·gate`) and must
