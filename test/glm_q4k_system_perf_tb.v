@@ -130,6 +130,22 @@ module glm_q4k_system_perf_tb;
     always @(posedge clk) if (!rst && dut.u_model.u_block.state == 5'd2)
         at_cyc[dut.u_model.u_block.u_attn.state] <= at_cyc[dut.u_model.u_block.u_attn.state] + 1;
 
+    // ---- per-kst histogram inside S_KEY ---------------------------------------
+    //   key=9560 is 40 visits x 239 cycles, but the split across the S_KEY substates
+    //   was only ever DERIVED from the RTL.  This measures it, and the printed sum is
+    //   the self-check: it must equal PERF_ATTN's key bucket exactly.
+    //   Measured at the profile config: rdreq=40 rdwait=80 nwait=1400 uk=2480 uv=2480
+    //   score=80 nexth=2960 next=40, sum=9560.  That makes "159 cycles per visit are
+    //   what a previously-projected key could skip" a measured number, not a residue.
+    //   Pure observation: samples the FSM, drives nothing, lives in the TB.
+    integer k_cyc [0:15];
+    integer kk;
+    initial for (kk = 0; kk < 16; kk = kk + 1) k_cyc[kk] = 0;
+    always @(posedge clk)
+        if (!rst && (dut.u_model.u_block.state == 5'd2)
+                 && (dut.u_model.u_block.u_attn.state == 5'd9))
+            k_cyc[dut.u_model.u_block.u_attn.kst] <= k_cyc[dut.u_model.u_block.u_attn.kst] + 1;
+
     // ================= small-but-faithful slice =================
     //   (the fp8 perf TB's slice geometry, at the SPEC_SLICE-proven PE_N=2)
     parameter integer MODEL_DIM = 16;
@@ -935,6 +951,10 @@ module glm_q4k_system_perf_tb;
                  SM_PIPE_CFG, st_cyc[2], cyc_sum);
         $display("  [MEASURED] GU_CONC=%0d: ffnd=%0d expw=%0d (sum=%0d), decode cycles=%0d",
                  GU_CONC_CFG, st_cyc[5], st_cyc[8], st_cyc[5]+st_cyc[8], cyc_sum);
+        // kst codes: 0 RDREQ, 1 RDWAIT, 3 NWAIT, 4 UK, 5 UV, 7 SCORE, 8 NEXTH, 9 NEXT
+        $display("PERF_KEY rdreq=%0d rdwait=%0d nwait=%0d uk=%0d uv=%0d score=%0d nexth=%0d next=%0d sum=%0d",
+                 k_cyc[0], k_cyc[1], k_cyc[3], k_cyc[4], k_cyc[5], k_cyc[7], k_cyc[8], k_cyc[9],
+                 k_cyc[0]+k_cyc[1]+k_cyc[3]+k_cyc[4]+k_cyc[5]+k_cyc[7]+k_cyc[8]+k_cyc[9]);
         $display("PERF q4k flash_lat=%0d ddr_nch=%0d cache_slots=%0d n_expert=%0d L=%0d resident=%0d expert_stall=%0d tokens=%0d cycles/token=%0d stall/token=%0d compute/token=%0d cyc_sum=%0d stall_sum=%0d hit=%0d miss=%0d dropped=%0d",
                  FLASH_LAT, DDR_NCH, CACHE_SLOTS, N_EXPERT, L,
                  RESIDENT_CFG, EXPERT_STALL_CFG, N_TOK,

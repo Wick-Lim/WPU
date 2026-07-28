@@ -226,6 +226,24 @@ module glm_q4k_system_cdc #(
     // Q4_K staging word: super-block header packs into [127:0] (d/dmin/scales)
     // and a nibble-code beat into [4*PE_N-1:0]; DATA_W stays 256 (== ddr5 beat).
     parameter integer WL_DATA_W  = 256,
+    // ---- L3 bring-up: parameters the product top did NOT forward ------------
+    //   These six are implemented and GATED in glm_q4k_system.v, but were pinned at
+    //   their defaults here, so nothing above this module could reach them.  The
+    //   three LOOPBACK knobs matter most: they are the repo's PHY-closure path --
+    //   the die's weight pulls leave through ddr5_xbar, take a REAL round trip, and
+    //   the die is clock-gated meanwhile, with the committed token proven bit-exact.
+    //   That is the one hard thing a board needs and it was already proven; it was
+    //   simply unreachable from the product top.  SELF_KV is the only mechanism that
+    //   closes kc_ckv/kc_krope, so two "same-cycle families with no answer" are also
+    //   already solved and were likewise unreachable.
+    //   All six keep the value that was hard-pinned before, so the default build is
+    //   a dead-parameter change.  Same shape as commit 43de204 (DSA_REAL_IDX).
+    parameter integer LOOPBACK      = 0,
+    parameter integer LOOPBACK_FW   = 0,
+    parameter integer LOOPBACK_REST = 0,
+    parameter integer SELF_KV       = 0,
+    parameter integer EXPERT_STALL  = 0,
+    parameter integer SYS_REQ_LANES = 1,
     // ---- this wrapper's packed-request width ----
     parameter integer REQ_W      = TOKW + POSW + (IDXW+1)
 )(
@@ -590,7 +608,9 @@ module glm_q4k_system_cdc #(
         .KV_RESIDENT(KV_RESIDENT), .EFIFO_DEPTH(EFIFO_DEPTH), .RESIDENT(RESIDENT),
         .DDR_NCH(DDR_NCH), .DDR_ADDR_W(DDR_ADDR_W), .DDR_DATA_W(DDR_DATA_W),
         .DDR_TAG_W(DDR_TAG_W), .DDR_ROW_LAT(DDR_ROW_LAT), .DDR_RESP_QD(DDR_RESP_QD),
-        .WL_KMAX(WL_KMAX), .WL_ADDR_W(WL_ADDR_W), .LOADER_KLEN(LOADER_KLEN)
+        .WL_KMAX(WL_KMAX), .WL_ADDR_W(WL_ADDR_W), .LOADER_KLEN(LOADER_KLEN),
+        .LOOPBACK(LOOPBACK), .LOOPBACK_FW(LOOPBACK_FW), .LOOPBACK_REST(LOOPBACK_REST),
+        .SELF_KV(SELF_KV), .EXPERT_STALL(EXPERT_STALL), .SYS_REQ_LANES(SYS_REQ_LANES)
     ) u_sys (
         .clk(core_clk), .rst(core_rst_sync),
         // host port -- now driven from the core-side request unpack / captured back

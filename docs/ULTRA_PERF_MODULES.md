@@ -414,6 +414,53 @@ this repo measures timing.
 - **Contract:** preserving · **Effort:** medium · **vs ULTRA_PERF:** refines-ULTRA_PERF
 
 ### 16. MLA per-key prefetch + concurrent W_uk||W_uv + two-engine overlap
+
+> **STATUS: ATTEMPTED AND SHELVED. The ceiling is MEASURED (3,816 cycles, 9.7%); the
+> implementation is not, and the RTL was reverted rather than committed.** Recorded in full
+> because the next attempt should start from these facts, not from the original `[EST]`.
+>
+> **What is measured and keeps its value.** `make rank9-measure` now prints `PERF_KEY`, a per-kst
+> histogram inside `S_KEY` whose printed sum must equal the `key` bucket exactly (it does — 9,560):
+>
+> | kst | cycles | /visit |
+> |---|---|---|
+> | `rdreq` / `rdwait` | 40 / 80 | 1 / 2 |
+> | **`nwait`** | **1,400** | **35** |
+> | **`uk`** | **2,480** | **62** |
+> | **`uv`** | **2,480** | **62** |
+> | `score` / `nexth` / `next` | 80 / 2,960 / 40 | 2 / 74 / 1 |
+> | **sum** | **9,560** | **239** |
+>
+> A key already projected can skip `nwait+uk+uv` = **159 cycles**, and 24 of the 40 visits are
+> repeats (`L(4) × N(N−1)/2`), so the ceiling is **3,816 cycles = 9.7%** of the 39,180-cycle window.
+> That is now a measured number rather than the residue of a rounding.
+>
+> **A working implementation was built and it did reach 3,816 exactly** — `PERF_KVR hits=24`,
+> `nwait/uk/uv` falling to exactly 16 visits' worth, decode 39,180 → 35,364, tokens still matching
+> the perf TB's serial reference. It was still wrong, and that is the point of this entry.
+>
+> **FIVE distinct defects, and what caught each.** None were caught by comparing tokens:
+>
+> | defect | caught by |
+> |---|---|
+> | hit path left `gv_dst` at the stale `GVD_KR`, so the score pass would write `krope_cur` — the KV latent write-back | the `S_KEY` invariant guard added *pre-emptively* in `00c6a87`, via `-DINJ_KREUSE_NODST` |
+> | `(KV_REUSE != 0) && kr_hit` does not fold: mixing a constant with a net builds the AND cell first, leaving one `$ne` | `synth_equiv` (15,854 → 15,855); bisected with **positive controls** (`litZero`, `emptyBody`), which is what finally isolated it |
+> | flush keyed on `s_len` alone would keep the cache across two unrelated runs whose `s_len` differs by one — exactly how `glm_model_q4k_full_tb` drives the module | reasoning about the TB's actual drive pattern, before it bit |
+> | the cache held `X` while its valid bit read 1 | a `DIAG_KREUSE_VERIFY` build that compares cached vs recomputed **values**, after four wrong hypotheses |
+> | the fill samples `knope_j` when it is already `X` — root cause unresolved, and the trace runs into `mm_c` being `X` at `K_UK` capture, which is a separate question about the committed design | the same value-level diagnostic |
+>
+> **Why it was shelved rather than pushed through.** Ranks 9 and 14 rest on *structural* arguments —
+> "the up pass is a byte-for-byte replay of the gate pass", "the fp pipes are flat feed-forward chains
+> with no shared per-op state" — so their bit-exactness is proven, not tested, and both landed first
+> try. KV_REUSE rests on a *state* assumption ("a key's projection is invariant within a sequence").
+> The assumption is true; the surface it touches is not small — `gv_dst`, `gv_head`, `vstore`, the
+> layer index, memory-write syntax, flush conditions — and five rounds in, the diagnostics were
+> leading away from the feature and into unrelated behaviour of the committed design.
+>
+> **The single most valuable thing learned:** the perf TB reported `hits=24` with **matching tokens**
+> while the cache contained `X`. A wrong-but-self-consistent cache passes a token comparison. Only
+> the `SELF_KV=1` round-trip (the one oracle that closes `kv_lat_row → pager → kc_krope`) and a
+> value-level diagnostic could see it. **Any future attempt must gate on those two from the start.**
 - **Modules:** `src/mla_attn_q4k.v (serial per-key K_RDREQ..K_SCORE loop :908-917; mutually-exclusive u_mm_fp8/u_mm_bf16 by gv_score :727-744; 13 serial phases :870-885)`
 - **Change:** (a) Prefetch the next union key's c_kv/k_rope during the current key's UK/UV/score (the kc_* port is idle then). (b) Run W_uk||W_uv concurrently (second engine or fused PE_N) since both read the shared ckv_n. (c) Overlap the bf16 score engine of already-projected keys with the Q4_K W_o output projection of the accumulating context. Keep each accumulation's operand order to stay bit-exact.
 - **Why (perf model):** The S_KEY loop serializes cache-read latency of key s+1 behind projection/score of key s, and W_uk/W_uv run sequentially though both consume ckv_n; only one of the two GEMV engines is ever active. At real TOPK_ATTN=2048 this loop is the sparse-attention cost driver and the module-local face of sublinear lane scaling. The cross-phase reorderings that preserve operand order are bit-exact; the two-engine overlap must be checked against the golden to confirm no accumulation-order change (mark output-changing if it reorders any sum).
