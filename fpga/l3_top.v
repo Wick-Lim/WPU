@@ -215,13 +215,25 @@ module l3_top #(
     always @(posedge host_clk) boot_start_q <= !host_rst;   // one-shot after reset
     wire boot_start = !host_rst && !boot_start_q;
 
-    boot_loader #(.ADDR_W(32), .DATA_W(BOOT_DW), .SEG_MAX(4), .BURST(8),
-                  .LEN_W(16), .INTEGRITY(0)) u_boot (
+    //   LEN_W=20: the fw-routed DENSE store space is 4096 entries x 16 sub-words
+    //   = 65,536 boot words, one past what LEN_W=16 can express (the first seg
+    //   table written here had 16'd16384 there -- a quarter-filled store that
+    //   elaborated fine, which is exactly why elaboration is not the gate).
+    boot_loader #(.ADDR_W(32), .DATA_W(BOOT_DW), .SEG_MAX(8), .BURST(8),
+                  .LEN_W(20), .INTEGRITY(0)) u_boot (
         .clk(host_clk), .rst(host_rst), .start(boot_start),
-        .seg_count(3'd3),
-        .seg_flash_base({32'h0, 32'h0002_0000, 32'h0001_0000, 32'h0000_0000}),
-        .seg_ddr_base  ({32'h0, 32'hF000_0000, 32'hE000_0000, 32'h0000_0000}),
-        .seg_len       ({16'h0, 16'd32,        16'd8192,      16'd16384}),
+        .seg_count(4'd7),
+        //   seg 0 weights->DDR, 1 em, 2 fn, 3 aw-store, 4 fw-routed, 5 fw-shared, 6 rw
+        //   flash bases are WORD addresses, spaced so no image region overlaps.
+        .seg_flash_base({32'h0,
+                         32'h0003_4000, 32'h0003_0000, 32'h0002_0000, 32'h0001_A000,
+                         32'h0001_8000, 32'h0000_6000, 32'h0000_0000}),
+        .seg_ddr_base  ({32'h0,
+                         32'hD000_0000, 32'hC000_0000, 32'hB000_0000, 32'hA000_0000,
+                         32'hF000_0000, 32'hE000_0000, 32'h0000_0000}),
+        .seg_len       ({20'h0,
+                         20'd96,        20'd16384,     20'd65536,     20'd24576,
+                         20'd32,        20'd8192,      20'd16384}),
         .mf_magic(32'h4D4F_444C), .mf_version(16'd1), .mf_len(32'd0), .mf_crc(32'd0),
         .flash_req(bf_req), .flash_addr(bf_addr), .flash_ready(bf_ready),
         .flash_rvalid(bf_rvalid), .flash_rdata(bf_rdata),
@@ -236,7 +248,8 @@ module l3_top #(
     // ---- boot write decode: em / fn stores vs DDR (AXI) ---------------------
     wire b_is_em  = (b_addr[31:28] == 4'hE);
     wire b_is_fn  = (b_addr[31:28] == 4'hF);
-    wire b_is_ddr = !b_is_em && !b_is_fn;
+    wire b_is_hdr = (b_addr[31:28] >= 4'hA) && (b_addr[31:28] <= 4'hD);
+    wire b_is_ddr = !b_is_em && !b_is_fn && !b_is_hdr;
     wire aw_ready;
     assign b_ready = b_is_ddr ? aw_ready : 1'b1;   // stores accept every cycle
 
@@ -306,6 +319,92 @@ module l3_top #(
     //   inference must not start before the weights are in DDR
     wire sys_start = u_start && boot_done && !boot_fail;
 
+    // ===================== dequant HEADER stores (item 0, second half) ========
+    //   HDR_LATE=1 (c54224a) moved the matmul's header consumption to accept
+    //   time, so a sync-read BRAM addressed by the pass key delivers EXACTLY in
+    //   time: key settles on the edge entering the start cycle, the BRAM samples
+    //   it one edge later, data valid during the first-accept cycle.
+    //   Sizing (f686217): aw dense 1.5 Mb; fw MUST split (dense would need ~24 Mb
+    //   against a 12.6 Mb budget) into routed + shared/dense; rw is per-layer
+    //   only.  ~190 of 360 RAMB36, against a measured fit using 0.
+    //   Boot decode windows: 0xA aw / 0xB fw-routed / 0xC fw-shared / 0xD rw.
+    //   64b boot words assemble MSB-first into the wide store words.
+    localparam integer AWW  = (16+16+96)*PE_N*A_NSB;            // 256b at the fit
+    localparam integer FWW  = (16+16+96)*TN*FF_NSB_D * 2;       // gate+up paired
+    localparam integer RWW  = (16+16+96)*N_EXPERT*R_NSB;
+    localparam integer AW_AB = LAYW + 4 + A_GRPW;               // {ly, sel, grp}
+    localparam integer FR_AB = LAYW + 1 + EIDXW + 5;            // {ly, sel, eidx, grp<32}
+    localparam integer FS_AB = LAYW + 1 + 6;                    // {ly, sel, grp<64}
+
+    wire [LAYW-1:0]  db_layer;
+    wire [3:0]       aw_sel;
+    wire [A_GRPW-1:0] aw_grp;
+    wire [1:0]       fw_sel;
+    wire [FF_GWD-1:0] fw_grp;
+    wire             fw_shared;
+    wire [EIDXW-1:0] fw_eidx;
+
+    reg [AWW-1:0] aw_store [0:(1<<AW_AB)-1];
+    reg [FWW-1:0] fwr_store[0:(1<<FR_AB)-1];
+    reg [FWW-1:0] fws_store[0:(1<<FS_AB)-1];
+    reg [RWW-1:0] rw_store [0:(1<<((LAYW<3)?3:LAYW))-1];
+
+    // sync reads in the CORE clock domain (the die's domain)
+    reg [AWW-1:0] aw_q_st;
+    reg [FWW-1:0] fwr_q_st, fws_q_st;
+    reg [RWW-1:0] rw_q_st;
+    reg           fw_sh_q;
+    always @(posedge core_clk) begin
+        aw_q_st  <= aw_store [{db_layer, aw_sel, aw_grp}];
+        fwr_q_st <= fwr_store[{db_layer, fw_sel[0], fw_eidx, fw_grp[4:0]}];
+        fws_q_st <= fws_store[{db_layer, fw_sel[0], fw_grp[5:0]}];
+        rw_q_st  <= rw_store [db_layer];
+        fw_sh_q  <= fw_shared;      // align the split-select with the read latency
+    end
+    wire [FWW-1:0] fw_q_st = fw_sh_q ? fws_q_st : fwr_q_st;
+
+    // unpack: word = {scales, dmin, d} per bus, gate half then up half for fw
+    localparam integer AWD_B = 16*PE_N*A_NSB;
+    localparam integer FWD_B = 16*TN*FF_NSB_D;
+    localparam integer FWS_B = 96*TN*FF_NSB_D;
+    localparam integer RWD_B = 16*N_EXPERT*R_NSB;
+    wire [AWD_B-1:0]           aw_d_st      = aw_q_st[0 +: AWD_B];
+    wire [AWD_B-1:0]           aw_dmin_st   = aw_q_st[AWD_B +: AWD_B];
+    wire [96*PE_N*A_NSB-1:0]   aw_scales_st = aw_q_st[2*AWD_B +: 96*PE_N*A_NSB];
+    wire [FWD_B-1:0]           fw_d_g_st      = fw_q_st[0 +: FWD_B];
+    wire [FWD_B-1:0]           fw_dmin_g_st   = fw_q_st[FWD_B +: FWD_B];
+    wire [FWS_B-1:0]           fw_scales_g_st = fw_q_st[2*FWD_B +: FWS_B];
+    wire [FWD_B-1:0]           fw_d_u_st      = fw_q_st[2*FWD_B+FWS_B +: FWD_B];
+    wire [FWD_B-1:0]           fw_dmin_u_st   = fw_q_st[3*FWD_B+FWS_B +: FWD_B];
+    wire [FWS_B-1:0]           fw_scales_u_st = fw_q_st[3*FWD_B+2*FWS_B +: FWS_B];
+    wire [RWD_B-1:0]           rw_d_st      = rw_q_st[0 +: RWD_B];
+    wire [RWD_B-1:0]           rw_dmin_st   = rw_q_st[RWD_B +: RWD_B];
+    wire [96*N_EXPERT*R_NSB-1:0] rw_scales_st = rw_q_st[2*RWD_B +: 96*N_EXPERT*R_NSB];
+
+    // ---- boot fill (host clock; boot completes before inference starts) ------
+    //   64b sub-words assemble MSB-first; a store word commits on its LAST
+    //   sub-word.  Boot address low bits select the sub-word.
+    localparam integer AW_SW = AWW/BOOT_DW;   // 4
+    localparam integer FW_SW = FWW/BOOT_DW;   // 16
+    localparam integer RW_SW = RWW/BOOT_DW;   // 16 at the fitted config
+    wire b_is_aws = (b_addr[31:28] == 4'hA);
+    wire b_is_fwr = (b_addr[31:28] == 4'hB);
+    wire b_is_fws = (b_addr[31:28] == 4'hC);
+    wire b_is_rws = (b_addr[31:28] == 4'hD);
+    reg [FWW-BOOT_DW-1:0] b_sh;             // widest assembler (top word arrives last)
+    always @(posedge host_clk) begin
+        if (b_we && (b_is_aws || b_is_fwr || b_is_fws || b_is_rws))
+            b_sh <= {b_sh[FWW-2*BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_aws && (b_addr[1:0] == AW_SW-1))
+            aw_store[b_addr[2 +: AW_AB]] <= {b_sh[AWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_fwr && (b_addr[3:0] == FW_SW-1))
+            fwr_store[b_addr[4 +: FR_AB]] <= {b_sh[FWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_fws && (b_addr[3:0] == FW_SW-1))
+            fws_store[b_addr[4 +: FS_AB]] <= {b_sh[FWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_rws && (b_addr[3:0] == RW_SW-1))
+            rw_store[b_addr[4 +: ((LAYW<3)?3:LAYW)]] <= {b_sh[RWW-BOOT_DW-1:0], b_wdata};
+    end
+
     glm_q4k_system_cdc #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
         .H_HEADS(H_HEADS), .NOPE(NOPE), .ROPE(ROPE), .V_DIM(V_DIM),
@@ -335,26 +434,26 @@ module l3_top #(
         .logits(),
         // em / fn: REAL boot-filled stores (same-cycle async reads)
         .em_req(em_req), .em_tok(em_tok), .em_idx(em_idx), .em_val(em_val),
-        .db_layer(), .idx_fresh(), .idx_win(),
+        .db_layer(db_layer), .idx_fresh(), .idx_win(),
         .fn_req(fn_req), .fn_idx(fn_idx), .fn_val(fn_val),
         // families covered by LOOPBACK/LOOPBACK_FW/LOOPBACK_REST/SELF_KV:
         //   the die consumes the xbar round-trip internally; these stub inputs
         //   are don't-care and tied off.
         .gn_req(), .gn_which(), .gn_idx(), .gn_val(16'h0),
-        .aw_req(), .aw_sel(), .aw_grp(), .aw_k(),
+        .aw_req(), .aw_sel(aw_sel), .aw_grp(aw_grp), .aw_k(),
         .aw_q({(PE_N*4){1'b0}}),
-        .aw_d({(16*PE_N*A_NSB){1'b0}}), .aw_dmin({(16*PE_N*A_NSB){1'b0}}),
-        .aw_scales({(96*PE_N*A_NSB){1'b0}}),
+        .aw_d(aw_d_st), .aw_dmin(aw_dmin_st),
+        .aw_scales(aw_scales_st),
         .rw_req(), .rw_k(),
         .rw_q({(4*N_EXPERT){1'b0}}),
-        .rw_d({(16*N_EXPERT*R_NSB){1'b0}}), .rw_dmin({(16*N_EXPERT*R_NSB){1'b0}}),
-        .rw_scales({(96*N_EXPERT*R_NSB){1'b0}}),
-        .fw_req(), .fw_sel(), .fw_grp(), .fw_k(), .fw_shared(), .fw_eidx(),
+        .rw_d(rw_d_st), .rw_dmin(rw_dmin_st),
+        .rw_scales(rw_scales_st),
+        .fw_req(), .fw_sel(fw_sel), .fw_grp(fw_grp), .fw_k(), .fw_shared(fw_shared), .fw_eidx(fw_eidx),
         .fw_q({(4*TN){1'b0}}), .fw_q_up({(4*TN){1'b0}}),
-        .fw_d_g({(16*TN*FF_NSB_D){1'b0}}), .fw_dmin_g({(16*TN*FF_NSB_D){1'b0}}),
-        .fw_scales_g({(96*TN*FF_NSB_D){1'b0}}),
-        .fw_d_u({(16*TN*FF_NSB_D){1'b0}}), .fw_dmin_u({(16*TN*FF_NSB_D){1'b0}}),
-        .fw_scales_u({(96*TN*FF_NSB_D){1'b0}}),
+        .fw_d_g(fw_d_g_st), .fw_dmin_g(fw_dmin_g_st),
+        .fw_scales_g(fw_scales_g_st),
+        .fw_d_u(fw_d_u_st), .fw_dmin_u(fw_dmin_u_st),
+        .fw_scales_u(fw_scales_u_st),
         .lw_req(), .lw_vtile(), .lw_k(), .lw_col({(LM_TN*16){1'b0}}),
         .kc_ckv({(KV_LORA*16){1'b0}}), .kc_krope({(ROPE*16){1'b0}}),
         .kc_req(), .kc_idx(),
