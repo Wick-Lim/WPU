@@ -322,7 +322,8 @@ module l3_top #(
         .REQ_AW(REQ_AW), .TOK_AW(TOK_AW),
         // the PHY-closure path, reachable since 0959277
         .LOOPBACK(1), .LOOPBACK_FW(1), .LOOPBACK_REST(1), .SELF_KV(1),
-        .EXPERT_STALL(1), .SYS_REQ_LANES(1), .LB_MARKER_LSB(LB_MARKER_LSB)
+        .EXPERT_STALL(1), .SYS_REQ_LANES(1), .LB_MARKER_LSB(LB_MARKER_LSB),
+        .HDR_LATE(1)
     ) u_sys (
         .host_clk(host_clk), .host_rst(host_rst),
         .core_clk(core_clk), .core_rst(core_rst),

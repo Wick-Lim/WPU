@@ -16,6 +16,9 @@
 `ifndef TB_TIMEOUT_NS
     `define TB_TIMEOUT_NS 2000000
 `endif
+`ifndef TB_HDR_LATE
+`define TB_HDR_LATE 0
+`endif
 module glm_matmul_q4k_tb;
     localparam integer PE_M = 2;
     localparam integer PE_N = 2;
@@ -28,6 +31,8 @@ module glm_matmul_q4k_tb;
     reg                        start = 0;
     reg  [$clog2(KMAX+1)-1:0]  k_len = 0;
     reg  [16*PE_N*NSB-1:0]     w_d = 0, w_dmin = 0;
+    reg  [16*PE_N*NSB-1:0]     saved_d, saved_dmin;
+    reg  [96*PE_N*NSB-1:0]     saved_scales;
     reg  [96*PE_N*NSB-1:0]     w_scales = 0;
     reg                   in_valid = 0;
     reg  [16*PE_M-1:0]    a_col = 0;
@@ -41,7 +46,7 @@ module glm_matmul_q4k_tb;
     // REG_COUT=1 registers the C bus + delays out_valid with it (rank 7).  The TB
     // waits on out_valid, so the SAME golden must pass in BOTH settings -- that is
     // exactly the property that makes the pipeline stage safe to enable.
-    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(PE_N), .KMAX(KMAX), .REG_COUT(`TB_REG_COUT)) dut (
+    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(PE_N), .KMAX(KMAX), .REG_COUT(`TB_REG_COUT), .HDR_LATE(`TB_HDR_LATE)) dut (
         .clk(clk), .rst(rst), .start(start), .k_len(k_len),
         .w_d(w_d), .w_dmin(w_dmin), .w_scales(w_scales),
         .in_valid(in_valid), .a_col(a_col), .w_q(w_q),
@@ -77,8 +82,23 @@ module glm_matmul_q4k_tb;
                 code = $fscanf(fd, "%h", stmp); w_scales[96*(pj*NSB + sb) +: 96] = stmp; end
 
             // start pulse (latches params)
+`ifdef TB_HDR_STAGE
+            // LATE-HEADER stimulus (the L3 BRAM-store timing): GARBAGE on the
+            //   header buses during the start cycle, the real values from the
+            //   first stream cycle on.  HDR_LATE=1 must be immune (it reads the
+            //   wires at accept time); HDR_LATE=0 MUST fail (its start-latch
+            //   grabs the garbage) -- that failure is what proves this stimulus
+            //   actually poisons the early latch, so the =1 pass is not vacuous.
+            saved_d = w_d; saved_dmin = w_dmin; saved_scales = w_scales;
+            w_d = {16*PE_N*NSB{1'b1}}; w_dmin = {16*PE_N*NSB{1'b1}};
+            w_scales = {96*PE_N*NSB{1'b1}};
             @(negedge clk); start = 1; k_len = K[$clog2(KMAX+1)-1:0]; in_valid = 0;
             @(negedge clk); start = 0;
+            w_d = saved_d; w_dmin = saved_dmin; w_scales = saved_scales;
+`else
+            @(negedge clk); start = 1; k_len = K[$clog2(KMAX+1)-1:0]; in_valid = 0;
+            @(negedge clk); start = 0;
+`endif
 
             // stream K beats
             for (k = 0; k < K; k = k + 1) begin

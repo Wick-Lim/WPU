@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1356,6 +1356,49 @@ rank14-measure:
 	    || echo "    NOTE: soft saved $$((sa-sb)) but the window only moved $$((a-b)) -- something downstream absorbed the difference"; \
 	  [ "$$ea" = "$$eb" ] || echo "    NOTE: expw moved $$ea -> $$eb; an attention saving changed expert-refill lead"'
 
+
+# ============================================================================
+# hdr-late : late header consumption in glm_matmul_q4k (L3 header path, item 0)
+#   The L3 board serves the dequant headers from a boot-filled sync-read BRAM
+#   addressed by {sel,grp}.  Those settle on the edge ENTERING the start cycle,
+#   so the BRAM's data arrives one cycle AFTER the committed start-latch samples
+#   -- and a die clock-gate cannot fix it (a global freeze preserves internal
+#   relative timing).  HDR_LATE=1 makes the P1 dequant read the header WIRES at
+#   accept time instead; the first accept is one cycle after start, exactly when
+#   the BRAM delivers.  Contract: header buses stable per pass (every existing
+#   feeder is a function of {sel,grp}, so all satisfy it).
+#   Four legs; (d) is the paired must-fail that keeps (c) from being vacuous.
+# ============================================================================
+HDR_LATE_BASE ?= 602d876
+hdr-late:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/q4k_matmul_gen.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/hdrl_0 test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v 2>/dev/null \
+	    || { echo "FAILED: hdr-late compile (0)"; exit 1; }
+	@printf '[glm_matmul_q4k(HDR:0)] '; $(VVP) $(BUILD_DIR)/hdrl_0 2>/dev/null | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: hdr-late (0)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DTB_HDR_LATE=1 -o $(BUILD_DIR)/hdrl_1 test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v 2>/dev/null \
+	    || { echo "FAILED: hdr-late compile (1)"; exit 1; }
+	@printf '[glm_matmul_q4k(HDR:1)] '; $(VVP) $(BUILD_DIR)/hdrl_1 2>/dev/null | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: hdr-late (1)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DTB_HDR_LATE=1 -DTB_HDR_STAGE -o $(BUILD_DIR)/hdrl_1L test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v 2>/dev/null \
+	    || { echo "FAILED: hdr-late compile (1L)"; exit 1; }
+	@printf '[glm_matmul_q4k(HDR:1L)] '; $(VVP) $(BUILD_DIR)/hdrl_1L 2>/dev/null | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: hdr-late (1L, the late-header leg)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DTB_HDR_STAGE -o $(BUILD_DIR)/hdrl_inj test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v 2>/dev/null \
+	    || { echo "FAILED: hdr-late injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/hdrl_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: hdr-late injection PASSED -- start-cycle garbage should poison the HDR_LATE=0 latch; the late-header leg proves nothing"; exit 1; \
+	  else \
+	    echo "[glm_matmul_q4k_INJECT_hdrstage] injection correctly FAILED (the early latch really is poisoned by start-cycle garbage)"; \
+	  fi
+	@tools/synth_equiv.sh glm_matmul_q4k $(HDR_LATE_BASE) "PE_M 2" "PE_N 2" "KMAX 256" \
+	    || { echo "FAILED: hdr-late -- HDR_LATE=0 changed the glm_matmul_q4k netlist vs $(HDR_LATE_BASE)"; exit 1; }
+	@if SE_NEW_PARAMS="HDR_LATE 1" tools/synth_equiv.sh glm_matmul_q4k $(HDR_LATE_BASE) "PE_M 2" "PE_N 2" "KMAX 256" >/dev/null 2>&1; then \
+	    echo "FAILED: hdr-late self-test -- HDR_LATE=1 netlist == HDR_LATE=0: the identity check is BLIND"; exit 1; \
+	  else \
+	    echo "[hdr_late_netlist] PROVEN: glm_matmul_q4k(HDR_LATE=0) == $(HDR_LATE_BASE); HDR_LATE=1 differs (check is live)"; \
+	  fi
 
 # ============================================================================
 # boot-writer : boot_loader's DDR writes -> AXI4 write channels (L3 S7)

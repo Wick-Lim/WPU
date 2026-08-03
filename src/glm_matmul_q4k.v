@@ -64,7 +64,24 @@ module glm_matmul_q4k #(
     //       bus of exactly this shape (u_moe/y_out -> hbuf, 21.2 ns, 59% wire,
     //       pinning routed Fmax at 46.5 MHz).  This is that shape one module deeper.
     //       The Fmax gain itself is [EST] until a Vivado re-fit measures it.
-    parameter integer REG_COUT = 0
+    parameter integer REG_COUT = 0,
+    // ---- HDR_LATE : consume the Q4_K dequant headers from the WIRES, not the
+    //   start-latched copies.  0 (default) = committed behaviour, netlist-proven
+    //   unchanged.  1 = the P1 stage reads w_d/w_dmin/w_scales directly.
+    //
+    //   WHY: on the L3 board the headers come from a boot-filled BRAM addressed by
+    //   {sel,grp}.  Those settle on the edge ENTERING the start cycle, so a
+    //   sync-read BRAM's data arrives one cycle AFTER the start-latch samples --
+    //   measured, not styled: the naive store misses the latch by exactly one
+    //   cycle, and die clock-gating cannot fix it (a global freeze preserves the
+    //   internal latch-vs-settle order).  Late consumption removes the deadline:
+    //   the first accept is one cycle after start, exactly when the BRAM delivers.
+    //
+    //   CONTRACT (the TB gate enforces it with a paired must-fail): at HDR_LATE=1
+    //   the header buses must be STABLE from the first accept to the last beat of
+    //   the pass.  Every existing feeder satisfies it -- the stubs are functions
+    //   of {sel,grp} (stable per pass), and the BRAM address is {sel,grp}.
+    parameter integer HDR_LATE = 0
 ) (
     input  wire                       clk,
     input  wire                       rst,        // sync, active-high
@@ -110,6 +127,23 @@ module glm_matmul_q4k #(
     reg [KW-1:0]              k_len_r;
     reg [16*PE_N*NSB-1:0]     d_r, dmin_r;
     reg [96*PE_N*NSB-1:0]     scales_r;
+    //  header source select -- a generate, NOT a `HDR_LATE ? w_d : d_r` ternary:
+    //  parameter-mixed expressions have failed to fold three times in this repo.
+    //  At HDR_LATE=0 these are pure aliases of the committed registers (the
+    //  byte-identical-alias idiom, same as die_clk_awfw).
+    wire [16*PE_N*NSB-1:0]    hdr_d, hdr_dmin;
+    wire [96*PE_N*NSB-1:0]    hdr_scales;
+    generate
+    if (HDR_LATE == 0) begin : g_hdr_reg
+        assign hdr_d      = d_r;
+        assign hdr_dmin   = dmin_r;
+        assign hdr_scales = scales_r;
+    end else begin : g_hdr_wire
+        assign hdr_d      = w_d;
+        assign hdr_dmin   = w_dmin;
+        assign hdr_scales = w_scales;
+    end
+    endgenerate
     reg [2*PE_N-1:0]          wtype_r;    // per-column weight type (latched at start)
     reg [128*PE_N*NSB-1:0]    q6sc_r;     // Q6_K 16xint8 scales / (col, super-block)
     reg [16*PE_N*NB8-1:0]     q8d_r;      // Q8_0 fp16 d / (col, 32-weight block)
@@ -212,7 +246,7 @@ module glm_matmul_q4k #(
                         case (wtype_r[2*pj +: 2])
                             WT_Q6K: begin
                                 sidx = k_cnt >> 4;         // (k%256)/16
-                                p1_d1[pj] <= fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
+                                p1_d1[pj] <= fp32_mul(fp16_to_fp32(hdr_d[16*col +: 16]),
                                                       s8_to_fp32(q6sc_r[128*col + 8*sidx +: 8]));
                                 p1_m1[pj] <= 32'd0;
                             end
@@ -227,10 +261,10 @@ module glm_matmul_q4k #(
                                 p1_m1[pj] <= 32'd0;
                             end
                             default: begin                 // Q4_K (and undriven)
-                                sm = q4k_scale_min({1'b0, sub}, scales_r[96*col +: 96]);
-                                p1_d1[pj] <= fp32_mul(fp16_to_fp32(d_r[16*col +: 16]),
+                                sm = q4k_scale_min({1'b0, sub}, hdr_scales[96*col +: 96]);
+                                p1_d1[pj] <= fp32_mul(fp16_to_fp32(hdr_d[16*col +: 16]),
                                                       u7_to_fp32({1'b0, sm[5:0]}));
-                                p1_m1[pj] <= fp32_mul(fp16_to_fp32(dmin_r[16*col +: 16]),
+                                p1_m1[pj] <= fp32_mul(fp16_to_fp32(hdr_dmin[16*col +: 16]),
                                                       u7_to_fp32({1'b0, sm[11:6]}));
                             end
                         endcase

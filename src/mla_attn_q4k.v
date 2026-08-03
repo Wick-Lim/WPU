@@ -125,6 +125,8 @@ module mla_attn_q4k #(
     //   Pure forwarding; default 0 keeps the committed serial interlock, so this
     //   module's default netlist is unchanged.
     parameter integer SM_PIPE   = 0,
+    // ---- HDR_LATE : L3 header path -- forwarded ONLY to the stub-fed Q4_K engine
+    parameter integer HDR_LATE  = 0,
     parameter integer THETA     = 8000000,
     parameter integer PE_N      = 4,    // matmul tile width (output lanes/pass)
     parameter integer POSW      = 20,
@@ -728,7 +730,7 @@ module mla_attn_q4k #(
     wire [16*PE_M*PE_N-1:0] bf16_c;
     reg  [PE_N*16-1:0]   score_w_lanes;           // assembled K lanes (lane0 meaningful; SHARED)
 
-    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(PE_N), .KMAX(KMAX)) u_mm_fp8 (
+    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(PE_N), .KMAX(KMAX), .HDR_LATE(HDR_LATE)) u_mm_fp8 (
         .clk(clk), .rst(rst),
         .start(mm_start & ~gv_score), .k_len(mm_klen),
         .w_d(w_d), .w_dmin(w_dmin), .w_scales(w_scales),

@@ -245,6 +245,7 @@ module glm_q4k_system_cdc #(
     parameter integer EXPERT_STALL  = 0,
     parameter integer SYS_REQ_LANES = 1,
     parameter integer LB_MARKER_LSB = 24,
+    parameter integer HDR_LATE      = 0,
     // ---- this wrapper's packed-request width ----
     parameter integer REQ_W      = TOKW + POSW + (IDXW+1)
 )(
@@ -612,7 +613,7 @@ module glm_q4k_system_cdc #(
         .WL_KMAX(WL_KMAX), .WL_ADDR_W(WL_ADDR_W), .LOADER_KLEN(LOADER_KLEN),
         .LOOPBACK(LOOPBACK), .LOOPBACK_FW(LOOPBACK_FW), .LOOPBACK_REST(LOOPBACK_REST),
         .SELF_KV(SELF_KV), .EXPERT_STALL(EXPERT_STALL), .SYS_REQ_LANES(SYS_REQ_LANES),
-        .LB_MARKER_LSB(LB_MARKER_LSB)
+        .LB_MARKER_LSB(LB_MARKER_LSB), .HDR_LATE(HDR_LATE)
     ) u_sys (
         .clk(core_clk), .rst(core_rst_sync),
         // host port -- now driven from the core-side request unpack / captured back

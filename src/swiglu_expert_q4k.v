@@ -34,7 +34,9 @@ module swiglu_expert_q4k #(
     //   control block is kept VERBATIM in the GU_CONC==0 generate branch, because
     //   folding a `GU_CONC ?` term into the FSM is the shape that has broken
     //   default netlist identity three times in this repo.
-    parameter integer GU_CONC = 0
+    parameter integer GU_CONC = 0,
+    // ---- HDR_LATE : L3 header path -- both engines consume stub-fed fw headers
+    parameter integer HDR_LATE = 0
 )(
     input  wire                     clk,
     input  wire                     rst,        // sync, active-high
@@ -110,7 +112,7 @@ module swiglu_expert_q4k #(
     wire          mm_in_valid;
 
     /* verilator lint_off UNUSEDSIGNAL */
-    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX)) u_mm (
+    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX), .HDR_LATE(HDR_LATE)) u_mm (
         .clk(clk), .rst(rst), .start(mm_start), .k_len(mm_k_len),
         .w_d(wd_mm), .w_dmin(wdm_mm), .w_scales(wsc_mm),
         .in_valid(mm_in_valid), .a_col(a_col), .w_q(w_q_mm),
@@ -132,7 +134,7 @@ module swiglu_expert_q4k #(
     end else begin : g_up_conc
         /* verilator lint_off UNUSEDSIGNAL */
         wire gu_busy;
-        glm_matmul_q4k #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX)) u_mm_up (
+        glm_matmul_q4k #(.PE_M(PE_M), .PE_N(TN), .KMAX(KMAX), .HDR_LATE(HDR_LATE)) u_mm_up (
             .clk(clk), .rst(rst), .start(mm_start), .k_len(mm_k_len),
             .w_d(w_d_up), .w_dmin(w_dmin_up), .w_scales(w_scales_up),
             .in_valid(mm_in_valid), .a_col(a_col), .w_q(w_q_up),

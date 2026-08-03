@@ -58,6 +58,9 @@ glm_matmul 42
 glm_matmul_mixed 32 32 32
 glm_matmul_pipe 480
 glm_matmul_q4k 160 160
+glm_matmul_q4k(HDR:0) 160
+glm_matmul_q4k(HDR:1) 160
+glm_matmul_q4k(HDR:1L) 160
 glm_matmul_q4k(K=6144) 120
 glm_model 5
 glm_model_q4k_full 1155

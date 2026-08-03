@@ -96,6 +96,8 @@
 //   glm_matmul_q4k + glm_act + topk_select + glm_fp(_pipe) UNCHANGED.
 //============================================================================
 module moe_router_q4k #(
+    // ---- HDR_LATE : L3 header path (the rw headers are stub-fed) ----
+    parameter integer HDR_LATE= 0,
     parameter integer HIDDEN  = 128,           // model hidden size (scales to 6144)
     parameter integer N_EXPERT= 8,             // routed experts (real 256)
     parameter integer TOPK    = 2,             // experts per token (real 8)
@@ -210,7 +212,7 @@ module moe_router_q4k #(
     // mm_busy is unused (FSM gates on out_valid + deterministic drain). Waived.
     /* verilator lint_off UNUSEDSIGNAL */
     wire             mm_busy;
-    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(N_EXPERT), .KMAX(KMAX)) u_gemv (
+    glm_matmul_q4k #(.PE_M(PE_M), .PE_N(N_EXPERT), .KMAX(KMAX), .HDR_LATE(HDR_LATE)) u_gemv (
         .clk(clk), .rst(rst),
         .start(mm_start), .k_len(mm_k_len),
         .w_d(w_d), .w_dmin(w_dmin), .w_scales(w_scales),

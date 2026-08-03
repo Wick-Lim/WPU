@@ -159,6 +159,8 @@ module glm_decoder_block_q4k #(
     parameter integer GU_CONC    = 0,
     // ---- SM_PIPE : rank 14, forwarded to mla_attn_q4k (default 0 = committed path)
     parameter integer SM_PIPE    = 0,
+    // ---- HDR_LATE : L3 header path, forwarded to mla/swiglu/router ----
+    parameter integer HDR_LATE   = 0,
     // ---- derived (do NOT override) ----
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -386,7 +388,7 @@ module glm_decoder_block_q4k #(
         .PE_M(PE_M), .PER_ROW_POS(PER_ROW_POS), .PER_ROW_SLEN(PER_ROW_SLEN),
         .PER_ROW_SEQ(PER_ROW_SEQ), .DSA_REAL_IDX(DSA_REAL_IDX),
         .INTRA_CAUSAL(INTRA_CAUSAL)
-    , .SM_PIPE(SM_PIPE)
+    , .SM_PIPE(SM_PIPE), .HDR_LATE(HDR_LATE)
     ) u_attn (
         .clk(clk), .rst(rst), .start(at_start), .busy(at_busy), .done(at_done),
         .pos(pos_q), .s_len(slen_q), .x_vec(nrm_vec),
@@ -412,7 +414,8 @@ module glm_decoder_block_q4k #(
     wire [TOPK*16*PE_M-1:0]    rt_sel_weight;
     moe_router_q4k #(
         .HIDDEN(MODEL_DIM), .N_EXPERT(N_EXPERT), .TOPK(TOPK),
-        .SCALE(RSCALE), .KMAX(FF_KMAX_M), .PE_M(PE_M), .ACT_HW(ACT_HW)
+        .SCALE(RSCALE), .KMAX(FF_KMAX_M), .PE_M(PE_M), .ACT_HW(ACT_HW),
+        .HDR_LATE(HDR_LATE)
     ) u_router (
         .clk(clk), .rst(rst), .start(rt_start), .busy(rt_busy), .done(rt_done),
         .x_vec(nrm_vec),
@@ -444,7 +447,7 @@ module glm_decoder_block_q4k #(
     wire [FF_KWD-1:0]    ed_wk;
     swiglu_expert_q4k #(
         .HIDDEN(MODEL_DIM), .INTER(INTER_DENSE), .TN(TN), .KMAX(FF_KMAX_D),
-        .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC)
+        .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC), .HDR_LATE(HDR_LATE)
     ) u_dense (
         .clk(clk), .rst(rst), .start(ed_start), .busy(ed_busy), .done(ed_done),
         .x_vec(nrm_vec),
@@ -468,7 +471,7 @@ module glm_decoder_block_q4k #(
     wire [FF_KWM-1:0]    em_wk;
     swiglu_expert_q4k #(
         .HIDDEN(MODEL_DIM), .INTER(INTER_MOE), .TN(TN), .KMAX(FF_KMAX_M),
-        .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC)
+        .PE_M(PE_M), .ACT_HW(ACT_HW), .GU_CONC(GU_CONC), .HDR_LATE(HDR_LATE)
     ) u_moe (
         .clk(clk), .rst(rst), .start(em_start), .busy(em_busy), .done(em_done),
         .x_vec(nrm_vec),
