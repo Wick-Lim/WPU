@@ -108,7 +108,20 @@ header pull (the exact freeze mechanism LOOPBACK already proved bit-exact), sinc
 small (~tens of KB at the fitted config) and BRAM sits at 0%.
 
 **Still open, in dependency order** (1-2 are sim-verifiable; 3-6 need the board):
-0. **the dequant-header path** (the correction above) — sim-verifiable end to end;
+0. **the dequant-header path** — HALF DONE: `HDR_LATE` (commit `c54224a`) moved the matmul's
+   header consumption from the start-latch to accept-time wire reads, removing the one-cycle
+   deadline a sync-read BRAM cannot meet (and which die clock-gating cannot fix -- a global freeze
+   preserves internal latch-vs-settle order).  Remaining, all OUTSIDE frozen RTL: the `l3_top`
+   stores + boot segments + the packer's header images + an end-to-end sim gate.
+   **Sizing at the fitted config (measured key spaces, not guesses):**
+   - `rw`: keyed by `db_layer` alone (one router pass per layer) — 6 × (16+16+96)·8 = **6 Kb**;
+   - `aw`: keyed `{db_layer, aw_sel, aw_grp}`, dense 6×16×64 × 256 b = **1.5 Mb ≈ 43 RAMB36**;
+   - `fw`: the word must pair GATE+UP headers (both buses live in one pass) = 1024 b.  A dense
+     `{ly,sel,shared,eidx,grp}` address is **~24 Mb — exceeds the whole 12.6 Mb BRAM budget**, so
+     the store SPLITS: routed `{ly,sel,eidx,grp≤32}` 4096×1024 b = 4 Mb ≈ 114 RAMB36, plus
+     shared/dense `{ly,sel,grp≤64}` 1024×1024 b = 1 Mb ≈ 29 RAMB36;
+   - total ≈ **190 of 360 RAMB36** (BRAM is at 0% in the measured fit) — fits, with pure
+     concatenation addressing (no index adders).
 
 1. a packer mode that lays the DDR image out at the **loopback address encoding**
    (`packer-rtl-crosscheck` covers the `wl_mem` staging layout, which is observability-only);
