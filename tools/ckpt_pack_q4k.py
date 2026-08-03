@@ -31,7 +31,11 @@
 #   TRANSPOSE of the GGUF [out,in] weight, so GGUF row n supplies RTL column n.
 #   A "tile" = PE_N output columns over the full K.  Per Q4_K tile, from `base`,
 #   with NSB = ceil(K/256) super-blocks:
-#     HEADER region : entry (sb*PE_N + pj), sb=0..NSB-1, pj=0..PE_N-1
+#     HEADER region : entry (pj*NSB + sb), pj=0..PE_N-1, sb=0..NSB-1
+#         (col-OUTER / super-block-INNER -- the order weight_loader_q4k
+#         actually issues header reads in; see its rd_slot comment.  This
+#         file used to emit sb-outer, which COINCIDES at NSB==1 -- every
+#         test geometry -- and silently diverges at real K>256.)
 #         word = d[15:0] | dmin[31:16] | scales[127:32]   (fp16 d, fp16 dmin,
 #         96-bit packed 6-bit scales) -- assembled by the loader into the
 #         mm_w_d / mm_w_dmin / mm_w_scales buses glm_matmul_q4k latches at start.
@@ -347,9 +351,15 @@ def pack_q4k_weight(w, pe_n=PE_N):
     for ct in range(n_tiles):
         col0 = ct * pe_n
         base = len(words)
-        # HEADER : entry (sb*PE_N + pj) = d | dmin<<16 | scales<<32
-        for sb in range(nb):
-            for pj in range(pe_n):
+        # HEADER : entry (pj*nb + sb) = d | dmin<<16 | scales<<32
+        #   col-OUTER / super-block-INNER: weight_loader_q4k reads header word
+        #   (pj, sb) from memory offset pj*n_sblk+sb (its issue loop is
+        #   "col-outer / super-block-inner").  The old sb-outer order here only
+        #   matched at nb==1, which is every sim geometry -- at real K (nb=24)
+        #   each super-block's d/dmin/scales landed on the wrong column, which is
+        #   a plausible-looking, silently wrong model, not an error.
+        for pj in range(pe_n):
+            for sb in range(nb):
                 col = col0 + pj
                 if col < N:
                     word = (d_h[col][sb] & 0xFFFF) | ((dm_h[col][sb] & 0xFFFF) << 16) \
@@ -426,12 +436,12 @@ def unpack_q4k_weight(words, desc, pe_n):
     codes = [[0] * K for _ in range(N)]
     for t in desc["tiles"]:
         base, col0 = t["base"], t["col0"]
-        for sb in range(nb):
-            for pj in range(pe_n):
+        for pj in range(pe_n):
+            for sb in range(nb):
                 col = col0 + pj
                 if col >= N:
                     continue
-                word = words[base + sb * pe_n + pj]
+                word = words[base + pj * nb + sb]
                 d_h[col][sb]  = word & 0xFFFF
                 dm_h[col][sb] = (word >> 16) & 0xFFFF
                 sc96[col][sb] = (word >> 32) & ((1 << 96) - 1)

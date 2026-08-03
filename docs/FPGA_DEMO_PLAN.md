@@ -70,6 +70,39 @@ cell histograms from `make synth-glm` remain a *sanity* cross-check, **not** a r
 > is DONE and supersedes them**; do not read the FP8 numbers as the current product's fit. (The
 > Gowin/nextpnr scaffold itself has been removed from `fpga/`, superseded by the Vivado flow.)
 
+## L3 integration status (2026-07) -- the sim side is BUILT; the board side is named, not pretended
+
+Everything between the verified RTL and a live XCKU3P board was mapped, and every piece that can
+exist WITHOUT the physical board now exists, is default-off, and sits in `release-gate` with a
+paired must-fail injection:
+
+| piece | artefact | proven in sim | gate |
+|---|---|---|---|
+| product top could not reach its own proven paths | 6 params forwarded (`LOOPBACK`×3, `SELF_KV`, `EXPERT_STALL`, `SYS_REQ_LANES`) | liveness: `LOOPBACK=1` DIFFERS at the system level | commit `0959277` |
+| die vs memory backpressure | `-DTB_REQ_STALL` LFSR on `mem_req_ready` | **7,688 stall cycles, tokens bit-exact; 60 cycles of held-request payload churn measured** (the AXI-illegal waveform) | `loopback-rest` variant |
+| runtime reads → MIG | `src/ddr4_mig_shim.v` (per-channel registered skid slot → one AXI AR/R master) | AR payload stable under a requester churning a held request EVERY cycle (14,692 churn cycles absorbed) | `mig-shim` |
+| boot writes → MIG | `src/axi_boot_writer.v` (AW/W/B; read/write channels are independent, so no arbiter) | 400 hostile-requester writes retired intact against a slave refusing ~half of AW and W | `boot-writer` |
+| storage | `src/spi_flash_reader.v` (SPI-NOR 0x03) + `boot_loader` | end-to-end boot copy over REAL mode-0 SPI waveforms, byte-for-byte into DDR | `spi-boot` |
+| weight image | `tools/ckpt_pack_q4k.py` header-order **BUG FIXED** (sb-outer vs the loader's pj-outer -- coincides at nb==1, silently diverges at real K>256) | the packer's own file consumed by the real `weight_loader_q4k` at nb=3: every header slot + every code nibble == the pre-pack source | `packer-rtl-crosscheck` |
+| host | `src/uart_host_bridge.v` ('T'/'K' frames, 8N1) | real waveforms both directions, independent TB-side decode | `uart-host` |
+| the board top itself | `fpga/l3_top.v` -- all of the above + em/fn LUTRAM stores wired to `glm_q4k_system_cdc` with the PHY-closure params ON | ELABORATES (that is all elaboration proves) | `l3-elab` |
+
+Two geometry facts discovered on the way, both now encoded rather than remembered:
+* the fitted geometry needs a **25-bit fw loopback key**, which the elaboration guards correctly
+  reject at the default marker position -- `LB_MARKER_LSB` (default 24 = byte-identical, boards use
+  32 with `DDR_ADDR_W=40`);
+* `em`/`fn` are the two weight families with **no loopback path** and a SAME-CYCLE combinational
+  contract, so `l3_top` serves them from boot-filled LUTRAM (`[EST]` ~8K LUTs at the fitted config;
+  a BRAM migration needs a die clock-gate term and is a named optimisation, not assumed).
+
+**Still board-only, in dependency order** (nothing below can be closed from this repo alone):
+1. a packer mode that lays the DDR image out at the **loopback address encoding**
+   (`packer-rtl-crosscheck` covers the `wl_mem` staging layout, which is observability-only);
+2. MIG IP instantiation + pins + XDC for the chosen board; `l3_top` exposes exactly one AXI port;
+3. the Vivado re-fit: the measured fit is 87.5% LUT with **BRAM/URAM at 0%**, and `l3_top` adds the
+   shim/writer/UART/SPI/em-store on top -- whether it closes is a MEASUREMENT, not a claim;
+4. flash the compact-config image, `T`-frame over UART, and read tok/s off the wire -- the actual L3.
+
 ## The demo ladder (each rung is cheap and de-risks the next)
 
 | Rung | What | Tooling | Proves | Status |

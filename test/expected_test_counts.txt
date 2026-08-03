@@ -31,6 +31,7 @@
 #   and host-test had banner formats the parser could not see, and ran count-unchecked;
 #   their banners are normalized and pinned below).
 
+axi_boot_writer 403
 axi_master_dma 7
 boot_loader 9240
 boot_loader_manifest 3712
@@ -39,6 +40,7 @@ cdc_protocol_ctx 11
 clk_en_ctrl 12
 clk_gate_cluster 16
 clk_throttle 4
+ddr4_mig_shim 12
 ddr5_xbar 3073
 dsa-sparse-correct(DSA_REAL_IDX=0) 4
 dsa-sparse-correct(DSA_REAL_IDX=1) 4
@@ -86,6 +88,7 @@ moe_router 896
 moe_router_q4k 40 40
 moe_router_q4k(256/top-8) 40
 mtp_head 5
+packer_rtl_crosscheck 1608
 q4k_prim 18 18
 q6k_prim 91220 91220 91220
 q8_0_prim 10816 10816 10816
@@ -101,10 +104,12 @@ spec_decode_seq 621
 spec_decode_seq(K>1) 3702
 spec_decode_top 18
 spec_depth_adapt 31522 31522
+spi_boot 51
 swiglu_expert 20
 swiglu_expert_q4k 240 240
 swiglu_expert_q4k(INTER=2048) 256
 topk_select 442
+uart_host_bridge 15
 weight_decomp 34368 34368
 weight_ecc 67
 weight_loader_lanes(PE_N=32) 1536

@@ -616,7 +616,57 @@ module glm_q4k_loopback_rest_tb;
     integer lblw_req_seen, lblw_resp_seen;
     integer lbgn_req_seen, lbgn_resp_seen;
 
+    // ---- L3 S2: does the die survive a memory that says WAIT? --------------------
+    //   EVERY system-level TB in this repo ties mem_req_ready to all-ones, so the
+    //   whole system has never been exercised against backpressure.  A real DDR4
+    //   controller refuses on most cycles (refresh, bank conflict, arbitration), so
+    //   this is a property the board WILL exercise on day one and simulation never has.
+    //
+    //   -DTB_REQ_STALL drives a deterministic LFSR pattern instead: each channel is
+    //   ready roughly half the time, with runs of both accept and refuse.  The
+    //   committed token stream must be UNCHANGED -- backpressure may cost cycles, it
+    //   may never change a value.
+`ifdef TB_REQ_STALL
+    reg [15:0] rq_lfsr;
+    always @(posedge clk)
+        if (rst) rq_lfsr <= 16'hACE1;
+        else     rq_lfsr <= {rq_lfsr[14:0],
+                             rq_lfsr[15] ^ rq_lfsr[13] ^ rq_lfsr[12] ^ rq_lfsr[10]};
+    assign mem_req_ready = rq_lfsr[DDR_NCH-1:0];
+`else
     assign mem_req_ready = {DDR_NCH{1'b1}};
+`endif
+
+    // ---- S2 evidence: was the stall REAL, and does the request port hold stable? --
+    //   (1) stall_cyc: cycles where the system asserted a request and the memory
+    //       refused.  If this is 0 the backpressure test proved nothing.
+    //   (2) unstable_cyc: cycles where a request was held (valid high, ready low) and
+    //       the presented {addr,tag} CHANGED.  glm_q4k_system drives
+    //       `xreq_valid = any_pending` over a COMBINATIONAL priority mux, so a refused
+    //       request can be replaced by a different one next cycle.  Internally that is
+    //       consistent (accept is evaluated in the same cycle), and the tokens above
+    //       prove it -- but AXI4 requires ARADDR to stay put until ARREADY, so this is
+    //       exactly what a MIG shim must absorb with a registered skid buffer.
+    integer s2_stall_cyc, s2_unstable_cyc, s2_i;
+    reg [DDR_ADDR_W-1:0] s2_addr_q [0:DDR_NCH-1];
+    reg [DDR_TAG_W-1:0]  s2_tag_q  [0:DDR_NCH-1];
+    reg [DDR_NCH-1:0]    s2_held;
+    initial begin s2_stall_cyc = 0; s2_unstable_cyc = 0; s2_held = 0; end
+    always @(posedge clk) if (!rst) begin
+        for (s2_i = 0; s2_i < DDR_NCH; s2_i = s2_i + 1) begin
+            if (mem_req_valid[s2_i] && !mem_req_ready[s2_i]) begin
+                s2_stall_cyc = s2_stall_cyc + 1;
+                if (s2_held[s2_i]
+                    && ((mem_req_addr[s2_i*DDR_ADDR_W +: DDR_ADDR_W] !== s2_addr_q[s2_i])
+                     || (mem_req_tag [s2_i*DDR_TAG_W  +: DDR_TAG_W ] !== s2_tag_q [s2_i])))
+                    s2_unstable_cyc = s2_unstable_cyc + 1;
+                s2_addr_q[s2_i] <= mem_req_addr[s2_i*DDR_ADDR_W +: DDR_ADDR_W];
+                s2_tag_q [s2_i] <= mem_req_tag [s2_i*DDR_TAG_W  +: DDR_TAG_W ];
+                s2_held[s2_i]   <= 1'b1;
+            end else s2_held[s2_i] <= 1'b0;
+        end
+    end
+    final $display("S2_EVIDENCE stall_cyc=%0d unstable_cyc=%0d", s2_stall_cyc, s2_unstable_cyc);
 
     reg [31:0] presIdx [0:DDR_NCH-1];
     reg        presV   [0:DDR_NCH-1];

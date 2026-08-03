@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1356,6 +1356,139 @@ rank14-measure:
 	    || echo "    NOTE: soft saved $$((sa-sb)) but the window only moved $$((a-b)) -- something downstream absorbed the difference"; \
 	  [ "$$ea" = "$$eb" ] || echo "    NOTE: expw moved $$ea -> $$eb; an attention saving changed expert-refill lead"'
 
+
+# ============================================================================
+# boot-writer : boot_loader's DDR writes -> AXI4 write channels (L3 S7)
+#   The read shim covers AR/R; the boot copy needs AW/W/B.  The requester side
+#   retargets refused writes combinationally (the measured system waveform), so
+#   the writer's registered slot is what makes AWADDR/WDATA AXI-stable.
+#   Injection: drive AW straight from the requester -- MUST fail.
+# ============================================================================
+boot-writer:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/bwr_sim test/axi_boot_writer_tb.v src/axi_boot_writer.v
+	@printf '[%s] ' "axi_boot_writer"; $(VVP) $(BUILD_DIR)/bwr_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: axi_boot_writer"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_BWR_NOSLOT -o $(BUILD_DIR)/bwr_inj test/axi_boot_writer_tb.v src/axi_boot_writer.v 2>/dev/null \
+	    || { echo "FAILED: boot-writer injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/bwr_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: boot-writer injection PASSED -- driving AW from the churning requester should break stability"; exit 1; \
+	  else \
+	    echo "[axi_boot_writer_INJECT_noslot] injection correctly FAILED (the registered slot is what makes AW stable)"; \
+	  fi
+
+# ============================================================================
+# uart-host : UART <-> host protocol bridge (L3 S6)
+#   Real 8N1 waveforms both directions; an independent TB-side receiver decodes
+#   the TX line.  Injection: edge-sampling instead of mid-bit MUST break framing.
+# ============================================================================
+uart-host:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/uart_host_sim test/uart_host_tb.v src/uart_host_bridge.v
+	@printf '[%s] ' "uart_host_bridge"; $(VVP) $(BUILD_DIR)/uart_host_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: uart_host_bridge"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_UART_EDGE -o $(BUILD_DIR)/uart_host_inj test/uart_host_tb.v src/uart_host_bridge.v 2>/dev/null \
+	    || { echo "FAILED: uart-host injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/uart_host_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: uart-host injection PASSED -- edge sampling should break 8N1 framing"; exit 1; \
+	  else \
+	    echo "[uart_host_INJECT_edge] injection correctly FAILED (mid-bit sampling is load-bearing)"; \
+	  fi
+
+# ============================================================================
+# l3-elab : the L3 BOARD TOP elaborates (fpga/l3_top.v)
+#   glm_q4k_system_cdc + ddr4_mig_shim(AR/R) + axi_boot_writer(AW/W/B) +
+#   spi_flash_reader + boot_loader + uart_host_bridge + em/fn LUTRAM stores,
+#   with LOOPBACK/LOOPBACK_FW/LOOPBACK_REST/SELF_KV/EXPERT_STALL ON and the
+#   loopback marker relocated to bit 32 (the fitted geometry needs a 25-bit fw
+#   key, which the guards correctly reject at the default 24).
+#   ELABORATION ONLY -- the fit and the board are explicitly out of scope here.
+# ============================================================================
+l3-elab:
+	@printf '[%s] ' "l3_top(elab)"; \
+	$(IVERILOG) -g2012 -I src -tnull fpga/l3_top.v $(wildcard src/*.v) \
+	    && echo "iverilog -tnull elaboration OK (l3_top: full L3 board top, PHY-closure ON, marker@32)" \
+	    || { echo "FAILED: l3-elab"; exit 1; }
+	@# LIVENESS of LB_MARKER_LSB, as a must-fail: at the L3 geometry the fw loopback
+	@# key needs 25 bits, so the DEFAULT marker position (24) must be REJECTED by the
+	@# elaboration guard.  If this build ever succeeds, the guard -- and with it the
+	@# whole marker-relocation mechanism -- has stopped constraining anything.
+	@# (A netlist-level liveness run is NOT possible below DDR_ADDR_W=40: marker@26
+	@# would sit at bits 26..33 of a 32-bit address, an ill-formed configuration --
+	@# one such run was launched and discarded during bring-up.)
+	@if $(IVERILOG) -g2012 -I src -tnull -s l3_top_mark24 fpga/l3_top_mark24.v fpga/l3_top.v $(wildcard src/*.v) 2>/dev/null; then \
+	    echo "FAILED: l3-elab marker liveness -- marker@24 elaborated at the L3 geometry; the 25-bit-key guard is dead"; exit 1; \
+	  else \
+	    echo "[l3_top_INJECT_marker24] injection correctly FAILED (the fw-key guard rejects marker@24 at this geometry)"; \
+	  fi
+
+# ============================================================================
+# spi-boot : boot_loader -> spi_flash_reader -> SPI-NOR integration (L3 S4)
+#   At RESIDENT=1 runtime decode never touches Flash for weights, so the storage
+#   path is exactly one job: the power-up Flash->DDR copy boot_loader already
+#   sequences.  This gate closes it end-to-end over REAL mode-0 SPI waveforms
+#   against a behavioural NOR serving a known image, byte-for-byte into DDR.
+# ============================================================================
+spi-boot:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spi_boot_sim test/spi_boot_tb.v src/spi_flash_reader.v src/boot_loader.v
+	@printf '[%s] ' "spi_boot"; $(VVP) $(BUILD_DIR)/spi_boot_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: spi_boot"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_SPI_BYTESWAP -o $(BUILD_DIR)/spi_boot_inj test/spi_boot_tb.v src/spi_flash_reader.v src/boot_loader.v 2>/dev/null \
+	    || { echo "FAILED: spi-boot injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/spi_boot_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: spi-boot injection PASSED -- swapped word halves should break the byte-for-byte image check"; exit 1; \
+	  else \
+	    echo "[spi_boot_INJECT_byteswap] injection correctly FAILED (the image comparison constrains assembly order)"; \
+	  fi
+
+# ============================================================================
+# packer-rtl-crosscheck : the packer's file, consumed by the RTL (L3 S5)
+#   tools/ckpt_pack_q4k.py emitted HEADER words sb-outer; weight_loader_q4k reads
+#   pj*n_sblk+sb (col-outer).  The orders COINCIDE at nb==1 -- every sim geometry
+#   this repo ever ran -- and silently diverge at real K>256 (GLM-5.2: nb=24).
+#   The packer's own selftest mirrored the same order on its unpack side, so only
+#   a cross-TOOL check can see it: the real packer writes an image at nb=3, the
+#   real loader consumes it, every header slot and code nibble must equal the
+#   PRE-pack source.  Injection re-permutes the image to the old order: MUST fail.
+# ============================================================================
+packer-rtl-crosscheck:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/packer_rtl_crosscheck.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/pkx_sim test/packer_rtl_crosscheck_tb.v src/weight_loader_q4k.v src/ecc_secded.v
+	@printf '[%s] ' "packer_rtl_crosscheck"; $(VVP) $(BUILD_DIR)/pkx_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: packer_rtl_crosscheck"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_PKX_OLDORDER -o $(BUILD_DIR)/pkx_inj test/packer_rtl_crosscheck_tb.v src/weight_loader_q4k.v src/ecc_secded.v 2>/dev/null \
+	    || { echo "FAILED: packer-rtl-crosscheck injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/pkx_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: crosscheck injection PASSED -- the old sb-outer order should be distinguishable at nb=3; the gate constrains nothing"; exit 1; \
+	  else \
+	    echo "[packer_rtl_crosscheck_INJECT_oldorder] injection correctly FAILED (the gate tells the two header orders apart)"; \
+	  fi
+
+# ============================================================================
+# mig-shim : ddr5_xbar memory side -> AXI4 read master (L3 board bring-up, S3)
+#   glm_q4k_system drives `xreq_valid = any_pending` over a COMBINATIONAL priority
+#   mux, so a refused request can change payload next cycle.  Harmless to the die --
+#   `make loopback-rest -DTB_REQ_STALL` measured 7,688 stall cycles with the token
+#   stream still bit-exact -- but the SAME run measured 60 cycles where a HELD
+#   request's {addr,tag} moved, which AXI4 forbids.  ddr4_mig_shim absorbs that in a
+#   per-channel registered skid slot, so the fix lives in new code instead of in the
+#   frozen, netlist-pinned system RTL.
+#   The injection is the point: without the skid slot the A1 assertion must fire.
+# ============================================================================
+mig-shim:
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/mig_shim_sim test/ddr4_mig_shim_tb.v src/ddr4_mig_shim.v
+	@printf '[%s] ' "ddr4_mig_shim"; $(VVP) $(BUILD_DIR)/mig_shim_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: ddr4_mig_shim"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_MIG_NOSKID -o $(BUILD_DIR)/mig_shim_inj test/ddr4_mig_shim_tb.v src/ddr4_mig_shim.v 2>/dev/null \
+	    || { echo "FAILED: mig-shim injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/mig_shim_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: mig-shim injection PASSED -- driving AR straight from the requester is supposed to break AXI payload stability; the skid slot constrains nothing"; exit 1; \
+	  else \
+	    echo "[ddr4_mig_shim_INJECT_noskid] injection correctly FAILED (the registered skid slot is what makes ARADDR/ARID stable)"; \
+	  fi
 
 # ============================================================================
 # rank9 : concurrent SwiGLU gate||up GEMVs (docs/ULTRA_PERF_MODULES.md)

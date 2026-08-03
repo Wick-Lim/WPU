@@ -146,6 +146,20 @@ confirmed vs the real safetensors; `kv_lora 512` is `[PENDING safetensors]` (Dee
 
 ---
 
+## Die-side cycle work (2026-07) — measured, and honestly bounded
+
+Three parameter-gated, default-off levers cut the measured decode window by **19.1%**
+(43,724 → 35,364 cycles at the profiled slice): concurrent SwiGLU gate‖up (−3,680), 1-issue/cycle
+softmax (−864), and a (layer,key) K/V projection cache (−3,816, later shelved for a correctness
+gap its own oracle caught — the write-up in `docs/ULTRA_PERF_MODULES.md` keeps both the measured
+ceiling and the five defects). Each realised its predicted ceiling exactly; one earlier lever
+(multi-port issue) measured exactly zero, and both outcomes are recorded.
+
+**None of this changes the tok/s table below.** The design is bandwidth-bound and the die is
+~20–25% utilized — cycles are not the binding constraint, so cycle savings buy Fmax/batch headroom,
+not tokens. Net tok/s = cycle win × (Fmax_new / Fmax_base), and no re-fit has measured the right
+factor yet; every lever therefore ships default-off.
+
 ## Throughput — `[EST]`, an optimistic ceiling
 
 The design is **bandwidth-bound**, so `tok/s ≈ memory BW ÷ 13.87 GB/token`, where 13.87 GB is `A_eff=1.87`
