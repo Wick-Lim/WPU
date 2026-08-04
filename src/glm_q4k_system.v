@@ -799,8 +799,22 @@ module glm_q4k_system #(
     //   KV_EXT_APPEND=1 (5c): the OUTER spec loop drives the append (suppress-during-
     //   pass + committed-prefix write-back).  At KV_EXT_APPEND=0 (default) both ternaries
     //   fold to the pre-5c wiring -> BYTE-IDENTICAL.
+    //   SELF_KV append is RISING-EDGE qualified: the model's commit is a
+    //   1-cycle pulse in the DIE's (possibly clock-gated) view, but the pager
+    //   samples it LEVEL on the free clock -- a freeze landing on the commit
+    //   cycle stretches the pulse across many free cycles and the level-fed
+    //   pager would append the same row repeatedly (count inflated, ring
+    //   smeared).  Commits are never back-to-back (one per layer per token),
+    //   so edge-qualification loses nothing.  At SELF_KV=0 the new flop feeds
+    //   nothing that reaches an output (resident-equiv unchanged).
+    reg mdl_kv_lat_valid_q;
+    always @(posedge clk) begin
+        if (rst) mdl_kv_lat_valid_q <= 1'b0;
+        else     mdl_kv_lat_valid_q <= mdl_kv_lat_valid;
+    end
     wire pg_append_valid = (KV_EXT_APPEND != 0) ? ext_append_valid
-                         : (SELF_KV != 0) ? mdl_kv_lat_valid : (ap_active || ap_decode);
+                         : (SELF_KV != 0) ? (mdl_kv_lat_valid && !mdl_kv_lat_valid_q)
+                         : (ap_active || ap_decode);
     wire [ROW_BITS-1:0] pg_append_row = (KV_EXT_APPEND != 0) ? ext_append_row
                          : (SELF_KV != 0) ? mdl_kv_lat_row : kv_row_in;
     assign kv_row_sel = ap_decode ? {{(KVPOSW-(IDXW+1)){1'b0}}, s_len}

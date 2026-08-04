@@ -108,11 +108,23 @@ header pull (the exact freeze mechanism LOOPBACK already proved bit-exact), sinc
 small (~tens of KB at the fitted config) and BRAM sits at 0%.
 
 **Still open, in dependency order** (1-2 are sim-verifiable; 3-6 need the board):
-0. **the dequant-header path** — HALF DONE: `HDR_LATE` (commit `c54224a`) moved the matmul's
-   header consumption from the start-latch to accept-time wire reads, removing the one-cycle
-   deadline a sync-read BRAM cannot meet (and which die clock-gating cannot fix -- a global freeze
-   preserves internal latch-vs-settle order).  Remaining, all OUTSIDE frozen RTL: the `l3_top`
-   stores + boot segments + the packer's header images + an end-to-end sim gate.
+0. **the dequant-header path — CLOSED (sim-side complete).**  `HDR_LATE` (commit `c54224a`)
+   moved the matmul's header consumption from the start-latch to accept-time wire reads; the
+   `l3_top` BRAM stores + derived boot segments landed next; `tools/l3_image_pack.py` emits the
+   images with `make l3-hash-mirror` pinning the Python/Verilog hash mirrors (704 probes);
+   and **`make l3-e2e` closes the loop end to end**: `l3_top` at a tiny config boots the
+   packer's SPI image through the real chain (SPI reader → boot_loader → em/fn LUTRAM +
+   3 header BRAM stores + axi_boot_writer), decodes 4 greedy tokens against the marker-decoded
+   DDR model with SELF_KV, answers over real UART framing, and every token equals a shadow-fed
+   standalone reference (ALL 10, ~9 min/leg, iverilog).  Injections: one corrupted boot-image
+   header byte and one flipped DDR code bit each diverge the token stream.  The E2E also caught
+   and fixed three integration bugs the unit gates missed: the shim arbiter switching grant
+   mid-ARREADY-stall (now hold-locked + its own must-fail leg), `flash_done=0` deadlocking the
+   first token's empty-KV cold gather (now a zero-row responder, matching the proven self-kv
+   stub semantics), and a freeze-stretched SELF_KV append pulse (now edge-qualified).
+   NOTE: the gate runs **iverilog only** — Verilator 5.048 miscomputes an assign-context
+   `narrow_wire * localparam` function argument (minimal repro `tools/verilator_5048_repro.v`),
+   so its token values are out of the proof chain (it remains a fast bring-up loop).
    **Sizing at the fitted config (measured key spaces, not guesses):**
    - `rw`: keyed by `db_layer` alone (one router pass per layer) — 6 × (16+16+96)·8 = **6 Kb**;
    - `aw`: keyed `{db_layer, aw_sel, aw_grp}`, dense 6×16×64 × 256 b = **1.5 Mb ≈ 43 RAMB36**;

@@ -21,7 +21,7 @@
 module l3_hash_mirror_tb;
 
     // geometry constants matching the packer's defaults (tiny E2E config)
-    localparam integer L = 2, N_EXPERT = 4, MODEL_DIM = 32, VOCAB = 64, LM_TN = 4;
+    localparam integer L = 2, N_EXPERT = 4, MODEL_DIM = 16, VOCAB = 16, LM_TN = 4;
     localparam integer NVT = VOCAB / LM_TN;
 
     // ---- Verilog hash primitives, VERBATIM from the loopback TBs ------------

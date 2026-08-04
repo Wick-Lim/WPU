@@ -84,6 +84,7 @@ module l3_top #(
                                               //   committed default, which the guards REJECT
                                               //   at this geometry -- the liveness leg proves it)
     parameter integer BOOT_SEGS    = 3,       // weights / em / fn
+    parameter integer WT_SEGLEN    = 16384,   // DDR weight seg length in boot words
     // derived (mirror glm_q4k_system_cdc exactly; do NOT override)
     parameter integer QK_DIM     = NOPE + ROPE,
     parameter integer IDXW       = (S_MAX <= 1) ? 1 : $clog2(S_MAX),
@@ -146,7 +147,7 @@ module l3_top #(
 
     // ---- ONE AXI4 master to the MIG (reads: runtime; writes: boot) ----
     output wire [AXI_ID_W-1:0]     m_axi_arid,
-    output wire [31:0]             m_axi_araddr,
+    output wire [DDR_ADDR_W-1:0]   m_axi_araddr,
     output wire [7:0]              m_axi_arlen,
     output wire [2:0]              m_axi_arsize,
     output wire [1:0]              m_axi_arburst,
@@ -179,8 +180,15 @@ module l3_top #(
     localparam integer FWW  = (16+16+96)*TN*FF_NSB_D * 2;       // gate+up paired
     localparam integer RWW  = (16+16+96)*N_EXPERT*R_NSB;
     localparam integer AW_AB = LAYW + 4 + A_GRPW;               // {ly, sel, grp}
-    localparam integer FR_AB = LAYW + 1 + EIDXW + 5;            // {ly, sel, eidx, grp<32}
-    localparam integer FS_AB = LAYW + 1 + 6;                    // {ly, sel, grp<64}
+    //   fw store grp-field widths are DERIVED per pass type (routed vs shared);
+    //   the first version used literals 5/6 -- correct at the fitted config,
+    //   out of range (fw_grp[5:0] of a 4-bit wire) at any smaller one.
+    localparam integer GR_R  = ((INTER_MOE  >MODEL_DIM)?INTER_MOE  :MODEL_DIM)/TN;
+    localparam integer GR_S  = ((INTER_DENSE>MODEL_DIM)?INTER_DENSE:MODEL_DIM)/TN;
+    localparam integer GW_R  = (GR_R<=1)?1:$clog2(GR_R);
+    localparam integer GW_S  = (GR_S<=1)?1:$clog2(GR_S);
+    localparam integer FR_AB = LAYW + 1 + EIDXW + GW_R;         // {ly, sel1, eidx, grp}
+    localparam integer FS_AB = LAYW + 1 + GW_S;                 // {ly, sel1, grp}
 
     // ===================== host: UART bridge ================================
     wire        u_start;
@@ -235,7 +243,8 @@ module l3_top #(
     localparam integer RW_SEGLEN  = (1 << ((LAYW<3)?3:LAYW)) * (RWW/BOOT_DW);
     localparam integer EM_SEGLEN  = (VOCAB*MODEL_DIM)/4;      // 4 bf16 / boot word
     localparam integer FN_SEGLEN  = MODEL_DIM/4;
-    localparam integer WT_SEGLEN  = 16384;                    // DDR weight image [board]
+    //   WT_SEGLEN is a top PARAMETER (below), not derived: the DDR weight image
+    //   length is a board-image property, and the E2E sim overrides it small.
     //   flash layout: segments packed back-to-back in seg order (0..6)
     localparam integer FB0 = 0;
     localparam integer FB1 = FB0 + WT_SEGLEN;
@@ -318,8 +327,12 @@ module l3_top #(
     wire [DDR_NCH*DDR_DATA_W-1:0]   mem_resp_data;
     wire [DDR_NCH*DDR_TAG_W-1:0]    mem_resp_tag;
 
+    //   AXI_ADDR_W must carry the FULL loopback address: the marker byte sits at
+    //   [LB_MARKER_LSB +: 8] = [32 +: 8] here, and the shim's default 32-bit AXI
+    //   address would silently TRUNCATE it -- every marked read would alias into
+    //   the plain-DDR space.  Found while designing the E2E gate, not by it.
     ddr4_mig_shim #(.N_CH(DDR_NCH), .ADDR_W(DDR_ADDR_W), .DATA_W(DDR_DATA_W),
-                    .TAG_W(DDR_TAG_W)) u_shim (
+                    .TAG_W(DDR_TAG_W), .AXI_ADDR_W(DDR_ADDR_W)) u_shim (
         .clk(core_clk), .rst(core_rst),
         .mem_req_valid(mem_req_valid), .mem_req_ready(mem_req_ready),
         .mem_req_addr(mem_req_addr), .mem_req_tag(mem_req_tag),
@@ -375,8 +388,11 @@ module l3_top #(
     reg           fw_sh_q;
     always @(posedge core_clk) begin
         aw_q_st  <= aw_store [{db_layer, aw_sel, aw_grp}];
-        fwr_q_st <= fwr_store[{db_layer, fw_sel[0], fw_eidx, fw_grp[4:0]}];
-        fws_q_st <= fws_store[{db_layer, fw_sel[0], fw_grp[5:0]}];
+        //   fw_sel is {0=gate(+up), 2=down}: bit [1] distinguishes them; bit [0]
+        //   is ALWAYS ZERO and using it aliased gate and down headers into the
+        //   same slot -- found by inspection while writing the E2E gate.
+        fwr_q_st <= fwr_store[{db_layer, fw_sel[1], fw_eidx, fw_grp[GW_R-1:0]}];
+        fws_q_st <= fws_store[{db_layer, fw_sel[1], fw_grp[GW_S-1:0]}];
         rw_q_st  <= rw_store [db_layer];
         fw_sh_q  <= fw_shared;      // align the split-select with the read latency
     end
@@ -403,9 +419,16 @@ module l3_top #(
     // ---- boot fill (host clock; boot completes before inference starts) ------
     //   64b sub-words assemble MSB-first; a store word commits on its LAST
     //   sub-word.  Boot address low bits select the sub-word.
-    localparam integer AW_SW = AWW/BOOT_DW;   // 4
-    localparam integer FW_SW = FWW/BOOT_DW;   // 16
-    localparam integer RW_SW = RWW/BOOT_DW;   // 16 at the fitted config
+    localparam integer AW_SW  = AWW/BOOT_DW;
+    localparam integer FW_SW  = FWW/BOOT_DW;
+    localparam integer RW_SW  = RWW/BOOT_DW;
+    //   sub-word select widths are DERIVED -- the first version hardcoded the
+    //   fitted config's counts ([1:0]/[3:0]), which silently mis-filled every
+    //   store at any other geometry (e.g. rw at the E2E config is 8 sub-words,
+    //   not 16).  Same bug class as the hand-maintained seg table.
+    localparam integer AW_SWW = $clog2(AW_SW);
+    localparam integer FW_SWW = $clog2(FW_SW);
+    localparam integer RW_SWW = $clog2(RW_SW);
     wire b_is_aws = (b_addr[31:28] == 4'hA);
     wire b_is_fwr = (b_addr[31:28] == 4'hB);
     wire b_is_fws = (b_addr[31:28] == 4'hC);
@@ -414,15 +437,23 @@ module l3_top #(
     always @(posedge host_clk) begin
         if (b_we && (b_is_aws || b_is_fwr || b_is_fws || b_is_rws))
             b_sh <= {b_sh[FWW-2*BOOT_DW-1:0], b_wdata};
-        if (b_we && b_is_aws && (b_addr[1:0] == AW_SW-1))
-            aw_store[b_addr[2 +: AW_AB]] <= {b_sh[AWW-BOOT_DW-1:0], b_wdata};
-        if (b_we && b_is_fwr && (b_addr[3:0] == FW_SW-1))
-            fwr_store[b_addr[4 +: FR_AB]] <= {b_sh[FWW-BOOT_DW-1:0], b_wdata};
-        if (b_we && b_is_fws && (b_addr[3:0] == FW_SW-1))
-            fws_store[b_addr[4 +: FS_AB]] <= {b_sh[FWW-BOOT_DW-1:0], b_wdata};
-        if (b_we && b_is_rws && (b_addr[3:0] == RW_SW-1))
-            rw_store[b_addr[4 +: ((LAYW<3)?3:LAYW)]] <= {b_sh[RWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_aws && (b_addr[AW_SWW-1:0] == AW_SW-1))
+            aw_store[b_addr[AW_SWW +: AW_AB]] <= {b_sh[AWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_fwr && (b_addr[FW_SWW-1:0] == FW_SW-1))
+            fwr_store[b_addr[FW_SWW +: FR_AB]] <= {b_sh[FWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_fws && (b_addr[FW_SWW-1:0] == FW_SW-1))
+            fws_store[b_addr[FW_SWW +: FS_AB]] <= {b_sh[FWW-BOOT_DW-1:0], b_wdata};
+        if (b_we && b_is_rws && (b_addr[RW_SWW-1:0] == RW_SW-1))
+            rw_store[b_addr[RW_SWW +: ((LAYW<3)?3:LAYW)]] <= {b_sh[RWW-BOOT_DW-1:0], b_wdata};
     end
+
+    wire kvf_req;
+    reg  [3:0] kvf_sh;
+    always @(posedge core_clk) begin
+        if (core_rst) kvf_sh <= 4'b0;
+        else          kvf_sh <= {kvf_sh[2:0], kvf_req};
+    end
+    wire kvf_done = kvf_sh[3] && kvf_req;   // 4-cycle latency, held-req protocol
 
     glm_q4k_system_cdc #(
         .MODEL_DIM(MODEL_DIM), .L(L), .N_DENSE(N_DENSE), .VOCAB(VOCAB),
@@ -477,10 +508,18 @@ module l3_top #(
         .kc_ckv({(KV_LORA*16){1'b0}}), .kc_krope({(ROPE*16){1'b0}}),
         .kc_req(), .kc_idx(),
         .kv_row_sel(), .kv_row_in({ROW_BITS{1'b0}}),
-        // KV spill / cold-expert flash: sized out at L3 (KV_RESIDENT covers the
-        // demo context) -- never granted, tied off
-        .flash_req(), .flash_is_expert(), .flash_expert_id(), .flash_row_idx(),
-        .flash_done(1'b0), .flash_row({ROW_BITS{1'b0}}),
+        // KV spill / cold-expert flash.  KV_RESIDENT covers every REAL row at
+        // the demo context -- but the FIRST token of a sequence still issues a
+        // COLD gather: the commit pulse fires AFTER a token's gathers (causal:
+        // attend 0..s_len-1, append at s_len), so the empty-KV first gather
+        // falls outside [resident_lo, append_count) and the pager HOLDS
+        // flash_req until flash_done.  The proven self-kv TBs answered it with
+        // a ZERO row (the reference shadow reads zeros there too); tying
+        // flash_done=0 -- the first version here -- deadlocks the die on token
+        // 0.  Found by the E2E gate.  kvf_sh answers every flash_req with a
+        // zero row after a short fixed latency.
+        .flash_req(kvf_req), .flash_is_expert(), .flash_expert_id(), .flash_row_idx(),
+        .flash_done(kvf_done), .flash_row({ROW_BITS{1'b0}}),
         .pf_valid(1'b0), .pf_expert_id({EIDXW{1'b0}}),
         // runtime memory: the REAL shim
         .mem_req_valid(mem_req_valid), .mem_req_ready(mem_req_ready),

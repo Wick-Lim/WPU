@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1358,6 +1358,34 @@ rank14-measure:
 
 
 # ============================================================================
+# l3-e2e : the L3 board top END TO END -- SPI boot image -> stores/em/fn/DDR
+#   -> 4 greedy tokens over UART == a shadow-fed standalone reference.  This is
+#   the gate that closes open item 0 (the dequant-header gap): the DUT's
+#   headers come from the packer's boot image through the real boot chain, its
+#   codes from the marker-decoded DDR round trip, its output over the real
+#   UART framing.  Injections: corrupt ONE header byte of the boot image /
+#   flip ONE code bit in the DDR model -- each MUST diverge the token stream.
+# ============================================================================
+l3-e2e:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/l3_image_pack.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -I src -o $(BUILD_DIR)/l3e2e_sim test/l3_e2e_tb.v fpga/l3_top.v src/*.v
+	@printf '[%s] ' "l3_e2e"; $(VVP) $(BUILD_DIR)/l3e2e_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: l3_e2e"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -I src -DINJ_E2E_HDR -o $(BUILD_DIR)/l3e2e_ih test/l3_e2e_tb.v fpga/l3_top.v src/*.v
+	@if $(VVP) $(BUILD_DIR)/l3e2e_ih 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: E2E header injection PASSED -- a corrupted boot-image header byte must diverge the tokens"; exit 1; \
+	  else \
+	    echo "[l3_e2e_INJECT_hdr] injection correctly FAILED (the header path the DUT eats IS the boot image)"; \
+	  fi
+	@$(IVERILOG) $(IFLAGS) -I src -DINJ_E2E_CODE -o $(BUILD_DIR)/l3e2e_ic test/l3_e2e_tb.v fpga/l3_top.v src/*.v
+	@if $(VVP) $(BUILD_DIR)/l3e2e_ic 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: E2E code injection PASSED -- a flipped DDR code bit must diverge the tokens"; exit 1; \
+	  else \
+	    echo "[l3_e2e_INJECT_code] injection correctly FAILED (the code path IS the DDR round trip)"; \
+	  fi
+
+# ============================================================================
 # l3-hash-mirror : Python packer hashes == Verilog stub hashes (L3 item 0/1 prereq)
 #   The end-to-end gate feeds the DUT from packer-built images and the reference
 #   from the loopback TBs' Verilog functions; one mirrored bit of difference
@@ -1552,6 +1580,13 @@ mig-shim:
 	    echo "FAILED: mig-shim injection PASSED -- driving AR straight from the requester is supposed to break AXI payload stability; the skid slot constrains nothing"; exit 1; \
 	  else \
 	    echo "[ddr4_mig_shim_INJECT_noskid] injection correctly FAILED (the registered skid slot is what makes ARADDR/ARID stable)"; \
+	  fi
+	@$(IVERILOG) $(IFLAGS) -DINJ_MIG_NOHOLD -o $(BUILD_DIR)/migshim_nohold test/ddr4_mig_shim_tb.v src/ddr4_mig_shim.v 2>/dev/null \
+	    || { echo "FAILED: mig-shim NOHOLD injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/migshim_nohold 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: NOHOLD injection PASSED -- the pre-fix arbiter must switch grant mid-stall and trip A1"; exit 1; \
+	  else \
+	    echo "[ddr4_mig_shim_INJECT_nohold] injection correctly FAILED (the A1H scenario constrains the grant hold-lock)"; \
 	  fi
 
 # ============================================================================

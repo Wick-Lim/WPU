@@ -115,8 +115,10 @@ class Geo:
         self.FWW  = (16 + 16 + 96) * self.TN * self.FF_NSB_D * 2
         self.RWW  = (16 + 16 + 96) * self.N_EXPERT * self.R_NSB
         self.AW_AB = self.LAYW + 4 + self.A_GRPW
-        self.FR_AB = self.LAYW + 1 + self.EIDXW + 5
-        self.FS_AB = self.LAYW + 1 + 6
+        self.GW_R  = clog2(max(self.INTER_MOE,   self.MODEL_DIM) // self.TN)
+        self.GW_S  = clog2(max(self.INTER_DENSE, self.MODEL_DIM) // self.TN)
+        self.FR_AB = self.LAYW + 1 + self.EIDXW + self.GW_R
+        self.FS_AB = self.LAYW + 1 + self.GW_S
         self.RW_AB = max(self.LAYW, 3)
         self.BOOT_DW = 64
 
@@ -180,20 +182,22 @@ def words_to_boot(words, width, bdw=64):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--MODEL_DIM", type=int, default=32)
+    ap.add_argument("--MODEL_DIM", type=int, default=16)
     ap.add_argument("--L", type=int, default=2)
-    ap.add_argument("--VOCAB", type=int, default=64)
+    ap.add_argument("--VOCAB", type=int, default=16)
     ap.add_argument("--H_HEADS", type=int, default=2)
     ap.add_argument("--NOPE", type=int, default=4)
     ap.add_argument("--ROPE", type=int, default=4)
-    ap.add_argument("--V_DIM", type=int, default=8)
+    ap.add_argument("--V_DIM", type=int, default=4)
     ap.add_argument("--PE_N", type=int, default=2)
     ap.add_argument("--N_EXPERT", type=int, default=4)
     ap.add_argument("--TN", type=int, default=4)
     ap.add_argument("--LM_TN", type=int, default=4)
+    ap.add_argument("--Q_LORA", type=int, default=8)
     ap.add_argument("--INTER_MOE", type=int, default=16)
     ap.add_argument("--INTER_DENSE", type=int, default=32)
     ap.add_argument("--KV_LORA", type=int, default=8)
+    ap.add_argument("--WT_SEGLEN", type=int, default=64)
     ap.add_argument("--out", default="build")
     g = Geo(ap.parse_args())
     os.makedirs(g.out, exist_ok=True)
@@ -201,11 +205,14 @@ def main():
     # ---- store segments (boot image) ----------------------------------------
     aw_words = [aw_word(g, (a >> (4 + g.A_GRPW)), (a >> g.A_GRPW) & 15, a & ((1 << g.A_GRPW) - 1))
                 for a in range(1 << g.AW_AB)]
-    fwr_words = [fw_word(g, (a >> (1 + g.EIDXW + 5)),
-                         2 if ((a >> (g.EIDXW + 5)) & 1) else 0,   # sel bit: 0=gate,1=down
-                         0, (a >> 5) & ((1 << g.EIDXW) - 1), a & 31)
+    fwr_words = [fw_word(g, (a >> (1 + g.EIDXW + g.GW_R)),
+                         2 if ((a >> (g.EIDXW + g.GW_R)) & 1) else 0,  # sel1: 0=gate,1=down
+                         0, (a >> g.GW_R) & ((1 << g.EIDXW) - 1),
+                         a & ((1 << g.GW_R) - 1))
                  for a in range(1 << g.FR_AB)]
-    fws_words = [fw_word(g, (a >> 7), 2 if ((a >> 6) & 1) else 0, 1, 0, a & 63)
+    fws_words = [fw_word(g, (a >> (1 + g.GW_S)),
+                         2 if ((a >> g.GW_S) & 1) else 0, 1, 0,
+                         a & ((1 << g.GW_S) - 1))
                  for a in range(1 << g.FS_AB)]
     rw_words  = [rw_word(g, a % g.L) for a in range(1 << g.RW_AB)]
 
@@ -221,7 +228,7 @@ def main():
             out.append(w)
         return out
 
-    wt_seg  = [0] * 1024                       # DDR weight seg: unused at RESIDENT=1+loopback
+    wt_seg  = [0] * g.WT_SEGLEN                # DDR weight seg: unused at RESIDENT=1+loopback
     segs = [wt_seg, elems_to_boot(em_elems), elems_to_boot(fn_elems),
             words_to_boot(aw_words, g.AWW), words_to_boot(fwr_words, g.FWW),
             words_to_boot(fws_words, g.FWW), words_to_boot(rw_words, g.RWW)]

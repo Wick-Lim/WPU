@@ -40,7 +40,7 @@ cdc_protocol_ctx 11
 clk_en_ctrl 12
 clk_gate_cluster 16
 clk_throttle 4
-ddr4_mig_shim 12
+ddr4_mig_shim 16
 ddr5_xbar 3073
 dsa-sparse-correct(DSA_REAL_IDX=0) 4
 dsa-sparse-correct(DSA_REAL_IDX=1) 4
@@ -83,6 +83,7 @@ kv_cache_pager(ECC) 42
 kv_cache_pager(NSEQ>1) 84
 kv_cache_pager(RESIDENT=S_MAX) 69
 kv_ecc_ring 8
+l3_e2e 11
 l3_hash_mirror 704
 mbist_ctrl 12
 mbist_ctrl_2p 11

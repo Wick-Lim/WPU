@@ -72,6 +72,7 @@ module ddr4_mig_shim_tb;
     integer seen_ar  [0:N_CH-1];      // AR beats that carried channel i
     integer seen_r   [0:N_CH-1];      // R beats returned to channel i
     integer wiggles;                  // cycles the stimulus changed a held payload
+    integer a1h_base, a1h_r0;  reg a1h_stall;
 
     // the payload the shim ACCEPTED, per channel -- what AR must later show
     reg [ADDR_W-1:0] acc_addr [0:N_CH-1];
@@ -138,6 +139,8 @@ module ddr4_mig_shim_tb;
         end
     end
 
+    reg stall_force;   // phase 2 (A1H): pin ARREADY low deterministically
+    reg phase2;        // phase 2 drives req_* by hand; the churn driver yields
     // ---------------- AXI slave model: variable AR latency, tagged returns ------
     integer q_n;  reg [IDW-1:0] q_id [0:63];  integer q_age [0:63];
     integer lfsr;
@@ -147,7 +150,7 @@ module ddr4_mig_shim_tb;
             rresp <= 2'b00; rlast <= 1'b1;
         end else begin
             lfsr = {lfsr[30:0], lfsr[31]^lfsr[21]^lfsr[1]^lfsr[0]};
-            arready <= lfsr[3];                       // refuse roughly half the time
+            arready <= stall_force ? 1'b0 : lfsr[3];  // refuse ~half; phase 2 forces stalls
             if (arvalid && arready && q_n < 64) begin
                 q_id[q_n] = arid; q_age[q_n] = 4 + (lfsr[6:4]); q_n = q_n + 1;
             end
@@ -169,7 +172,7 @@ module ddr4_mig_shim_tb;
     // ---------------- hostile stimulus: change a HELD payload every cycle -------
     //   This is the waveform glm_q4k_system actually produces under backpressure.
     integer sl;
-    always @(posedge clk) if (!rst) begin
+    always @(posedge clk) if (!rst && !phase2) begin
         lfsr_s = {lfsr_s[30:0], lfsr_s[31]^lfsr_s[21]^lfsr_s[1]^lfsr_s[0]};
         for (sl = 0; sl < N_CH; sl = sl + 1) begin
             req_valid[sl] <= 1'b1;                    // always want to send
@@ -186,13 +189,66 @@ module ddr4_mig_shim_tb;
             accepted[i] = 0; seen_ar[i] = 0; seen_r[i] = 0;
         end
         acc_live = {N_CH{1'b0}}; lfsr_s = 32'hBEEF_0001;
+        stall_force = 1'b0; phase2 = 1'b0; a1h_stall = 1'b0;
         req_valid = {N_CH{1'b0}}; req_addr = 0; req_tag = 0;
         resp_ready = {N_CH{1'b1}};
         rst = 1'b1; repeat (6) @(posedge clk); rst = 1'b0;
 
         repeat (4000) @(posedge clk);
+        phase2 = 1'b1;
+        @(posedge clk);                       // let the churn driver's last NBA land
         req_valid = {N_CH{1'b0}};
-        repeat (200) @(posedge clk);
+        //  drain COMPLETELY: the A1H construction below assumes empty slots, and
+        //  the churn/phase boundary can leave several captured-but-unissued
+        while (req_ready != {N_CH{1'b1}}) @(posedge clk);
+        repeat (4) @(posedge clk);
+
+        // ---------------- A1H: arbiter grant HOLD across an ARREADY stall ------
+        //   The churn phase above keeps ALL slots full, so the round-robin pick
+        //   from a fixed rr never moves during a stall -- it structurally CANNOT
+        //   produce the failure this scenario targets (found by the L3 E2E gate):
+        //   a slot EMPTY at pick time that FILLS mid-stall AHEAD of the granted
+        //   one in rr order.  Deterministic construction:
+        //     1. one clean fire on ch0            -> rr becomes 1
+        //     2. request on ch2, ARREADY forced 0 -> gnt=2, AR held stalled
+        //     3. request on ch1 mid-stall         -> rr order visits 1 BEFORE 2:
+        //        an unlocked arbiter SWITCHES (A1 trips); the lock must hold.
+        a1h_base = errors;
+        a1h_r0 = seen_r[0];
+        req_addr[0*ADDR_W +: ADDR_W] = 32'h0000A000;  req_tag[0*TAG_W +: TAG_W] = 8'h0A;
+        //  phase-2 stimulus is NEGEDGE-driven: blocking assigns from this initial
+        //  race the DUT's posedge sampling in the active region (both submits
+        //  were silently MISSED when driven at the posedge)
+        @(negedge clk);
+        while (!req_ready[0]) @(negedge clk);   // wait EMPTY, then one-cycle submit
+        req_valid[0] = 1'b1;  @(negedge clk);
+        req_valid[0] = 1'b0;
+        //  counter-based wait: a pulse-based wait races the fire and can hang
+        while (seen_r[0] == a1h_r0) @(posedge clk);     // ch0 round trip done -> rr=1
+        repeat (10) @(posedge clk);
+
+        stall_force = 1'b1;                             // pin ARREADY low
+        repeat (2) @(posedge clk);
+        req_addr[2*ADDR_W +: ADDR_W] = 32'h0000C200;  req_tag[2*TAG_W +: TAG_W] = 8'hC2;
+        @(negedge clk);
+        while (!req_ready[2]) @(negedge clk);
+        req_valid[2] = 1'b1;  @(negedge clk);
+        req_valid[2] = 1'b0;                            // gnt=2 now stalled at AR
+        repeat (3) @(posedge clk);
+        a1h_stall = (arvalid && !arready);              // the stall is real
+        req_addr[1*ADDR_W +: ADDR_W] = 32'h0000B100;  req_tag[1*TAG_W +: TAG_W] = 8'hB1;
+        @(negedge clk);
+        while (!req_ready[1]) @(negedge clk);
+        req_valid[1] = 1'b1;  @(negedge clk);
+        req_valid[1] = 1'b0;                            // slot1 filled MID-STALL
+        repeat (8) @(posedge clk);                      // A1 watches every cycle
+        stall_force = 1'b0;                             // release; both must fire
+        repeat (60) @(posedge clk);
+
+        chk(a1h_stall, "A1H: AR was genuinely stalled when the second slot filled");
+        chk(seen_ar[1] > 0 && seen_r[1] > 0, "A1H: ch1 issued and returned after release");
+        chk(seen_ar[2] > 0 && seen_r[2] > 0, "A1H: ch2 issued and returned after release");
+        chk(errors == a1h_base, "A1H: ARADDR/ARID stayed pinned across the mid-stall fill");
 
         $display("  [MEASURED] held-payload churn cycles=%0d, AR issued=%0d, R returned=%0d",
                  wiggles, dbg_ar, dbg_r);

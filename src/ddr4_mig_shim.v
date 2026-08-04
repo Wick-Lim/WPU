@@ -99,6 +99,7 @@ module ddr4_mig_shim #(
     assign mem_req_ready = ~slot_full;      // registered: slot_full is a flop
 
     // ---------------- round-robin arbitration onto the single AR channel -----
+    wire ar_fire;   // declared here: the grant-hold lock below uses it
     reg  [CH_IDX_W-1:0]   rr;
     reg  [CH_IDX_W-1:0]   gnt;
     reg                   gnt_v;
@@ -115,6 +116,40 @@ module ddr4_mig_shim #(
         end
     end
 
+    // ---- grant HOLD across an ARREADY stall --------------------------------
+    //   The combinational round-robin above re-evaluates every cycle.  If the
+    //   slave stalls AR (ARVALID held, ARREADY low) and the OTHER channel's
+    //   slot fills mid-stall with rr pointing at it, the pick SWITCHES and
+    //   ARADDR/ARID move under a held ARVALID -- the exact AXI4 violation this
+    //   module exists to prevent, one arbiter layer above the skid slots.
+    //   Found by the L3 end-to-end gate (2 channels + a stalling AXI slave);
+    //   the dedicated churn test shook the requester side only and never
+    //   aligned rr with a mid-stall fill.  The lock captures the pick on the
+    //   first stalled cycle and pins it until the handshake fires.
+    reg                 ar_lock;
+    reg [CH_IDX_W-1:0]  gnt_lockv;
+    always @(posedge clk) begin
+        if (rst) begin
+            ar_lock   <= 1'b0;
+            gnt_lockv <= {CH_IDX_W{1'b0}};
+        end else if (ar_fire) begin
+            ar_lock   <= 1'b0;
+        end else if (m_axi_arvalid && !m_axi_arready && !ar_lock) begin
+            ar_lock   <= 1'b1;
+            gnt_lockv <= gnt;
+        end
+    end
+`ifdef INJ_MIG_NOHOLD
+    // INJECTION (never a normal build): the arbiter WITHOUT the stall lock --
+    //   exactly the pre-fix RTL.  The A1H scenario (fill the other slot while
+    //   AR is stalled, rr aligned) MUST trip the stability assertion.
+    wire                gnt_v_eff = gnt_v;
+    wire [CH_IDX_W-1:0] gnt_eff   = gnt;
+`else
+    wire                gnt_v_eff = ar_lock ? 1'b1      : gnt_v;
+    wire [CH_IDX_W-1:0] gnt_eff   = ar_lock ? gnt_lockv : gnt;
+`endif
+
 `ifdef INJ_MIG_NOSKID
     // INJECTION (never a normal build): drive AR straight from the requester instead
     //   of from the registered slot -- the shim minus the only thing it is for.  The
@@ -124,15 +159,15 @@ module ddr4_mig_shim #(
     assign m_axi_araddr  = AXI_ADDR_W'(mem_req_addr[gnt*ADDR_W +: ADDR_W]);
     assign m_axi_arid    = {gnt, mem_req_tag[gnt*TAG_W +: TAG_W]};
 `else
-    assign m_axi_arvalid = gnt_v;
-    assign m_axi_araddr  = AXI_ADDR_W'(slot_addr[gnt]);
-    assign m_axi_arid    = {gnt, slot_tag[gnt]};
+    assign m_axi_arvalid = gnt_v_eff;
+    assign m_axi_araddr  = AXI_ADDR_W'(slot_addr[gnt_eff]);
+    assign m_axi_arid    = {gnt_eff, slot_tag[gnt_eff]};
 `endif
     assign m_axi_arlen   = 8'd0;            // single beat per xbar request
     assign m_axi_arsize  = AXSIZE[2:0];
     assign m_axi_arburst = 2'b01;           // INCR
+    assign ar_fire = m_axi_arvalid && m_axi_arready;
 
-    wire ar_fire = m_axi_arvalid && m_axi_arready;
 
     // ---------------- read data demux back to the originating channel -------
     wire [CH_IDX_W-1:0] r_ch  = m_axi_rid[AXI_ID_W-1 -: CH_IDX_W];
@@ -174,10 +209,10 @@ module ddr4_mig_shim #(
                 end
             // release on AR handshake, and rotate the arbiter
             if (ar_fire) begin
-                slot_full[gnt] <= 1'b0;
-                rr             <= (gnt == N_CH-1) ? {CH_IDX_W{1'b0}}
-                                                  : (gnt + 1'b1);
-                dbg_ar_issued  <= dbg_ar_issued + 32'd1;
+                slot_full[gnt_eff] <= 1'b0;      // the slot actually ISSUED
+                rr                 <= (gnt_eff == N_CH-1) ? {CH_IDX_W{1'b0}}
+                                                          : (gnt_eff + 1'b1);
+                dbg_ar_issued      <= dbg_ar_issued + 32'd1;
             end
             if (m_axi_rvalid && m_axi_rready) begin
                 dbg_r_returned <= dbg_r_returned + 32'd1;
