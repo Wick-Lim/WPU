@@ -174,6 +174,14 @@ module l3_top #(
     output wire                    m_axi_bready
 );
 
+    // ---- header-store geometry (used by the boot segment table below) --------
+    localparam integer AWW  = (16+16+96)*PE_N*A_NSB;            // 256b at the fit
+    localparam integer FWW  = (16+16+96)*TN*FF_NSB_D * 2;       // gate+up paired
+    localparam integer RWW  = (16+16+96)*N_EXPERT*R_NSB;
+    localparam integer AW_AB = LAYW + 4 + A_GRPW;               // {ly, sel, grp}
+    localparam integer FR_AB = LAYW + 1 + EIDXW + 5;            // {ly, sel, eidx, grp<32}
+    localparam integer FS_AB = LAYW + 1 + 6;                    // {ly, sel, grp<64}
+
     // ===================== host: UART bridge ================================
     wire        u_start;
     wire [15:0] u_tok, u_pos;
@@ -215,26 +223,41 @@ module l3_top #(
     always @(posedge host_clk) boot_start_q <= !host_rst;   // one-shot after reset
     wire boot_start = !host_rst && !boot_start_q;
 
-    //   LEN_W=20: the fw-routed DENSE store space is 4096 entries x 16 sub-words
-    //   = 65,536 boot words, one past what LEN_W=16 can express (the first seg
-    //   table written here had 16'd16384 there -- a quarter-filled store that
-    //   elaborated fine, which is exactly why elaboration is not the gate).
+    //   The segment table is DERIVED from the store geometry -- the first version
+    //   hand-maintained these numbers and immediately shipped a real bug: the
+    //   fw-routed dense space is 4096 x 16 = 65,536 boot words, one past what
+    //   LEN_W=16 can express, and a table entry of 16'd16384 quarter-filled the
+    //   store while elaborating cleanly.  Derived lengths make that class of
+    //   error impossible; LEN_W=20 covers every store at any supported config.
+    localparam integer AW_SEGLEN  = (1 << AW_AB) * (AWW/BOOT_DW);
+    localparam integer FWR_SEGLEN = (1 << FR_AB) * (FWW/BOOT_DW);
+    localparam integer FWS_SEGLEN = (1 << FS_AB) * (FWW/BOOT_DW);
+    localparam integer RW_SEGLEN  = (1 << ((LAYW<3)?3:LAYW)) * (RWW/BOOT_DW);
+    localparam integer EM_SEGLEN  = (VOCAB*MODEL_DIM)/4;      // 4 bf16 / boot word
+    localparam integer FN_SEGLEN  = MODEL_DIM/4;
+    localparam integer WT_SEGLEN  = 16384;                    // DDR weight image [board]
+    //   flash layout: segments packed back-to-back in seg order (0..6)
+    localparam integer FB0 = 0;
+    localparam integer FB1 = FB0 + WT_SEGLEN;
+    localparam integer FB2 = FB1 + EM_SEGLEN;
+    localparam integer FB3 = FB2 + FN_SEGLEN;
+    localparam integer FB4 = FB3 + AW_SEGLEN;
+    localparam integer FB5 = FB4 + FWR_SEGLEN;
+    localparam integer FB6 = FB5 + FWS_SEGLEN;
     boot_loader #(.ADDR_W(32), .DATA_W(BOOT_DW), .SEG_MAX(8), .BURST(8),
                   .LEN_W(20), .INTEGRITY(0)) u_boot (
         .clk(host_clk), .rst(host_rst), .start(boot_start),
         .seg_count(4'd7),
         //   seg 0 weights->DDR, 1 em, 2 fn, 3 aw-store, 4 fw-routed, 5 fw-shared, 6 rw
-        //   flash bases are WORD addresses, spaced so no image region overlaps.
         .seg_flash_base({32'h0,
-                         32'h0003_4000, 32'h0003_0000, 32'h0002_0000, 32'h0001_A000,
-                         32'h0001_8000, 32'h0000_6000, 32'h0000_0000}),
+                         32'(FB6), 32'(FB5), 32'(FB4), 32'(FB3),
+                         32'(FB2), 32'(FB1), 32'(FB0)}),
         .seg_ddr_base  ({32'h0,
                          32'hD000_0000, 32'hC000_0000, 32'hB000_0000, 32'hA000_0000,
                          32'hF000_0000, 32'hE000_0000, 32'h0000_0000}),
         .seg_len       ({20'h0,
-                         20'd96,        20'd16384,     20'd65536,     20'd24576,
-                         20'd32,        20'd8192,      20'd16384}),
-        .mf_magic(32'h4D4F_444C), .mf_version(16'd1), .mf_len(32'd0), .mf_crc(32'd0),
+                         20'(RW_SEGLEN), 20'(FWS_SEGLEN), 20'(FWR_SEGLEN), 20'(AW_SEGLEN),
+                         20'(FN_SEGLEN), 20'(EM_SEGLEN), 20'(WT_SEGLEN)}),        .mf_magic(32'h4D4F_444C), .mf_version(16'd1), .mf_len(32'd0), .mf_crc(32'd0),
         .flash_req(bf_req), .flash_addr(bf_addr), .flash_ready(bf_ready),
         .flash_rvalid(bf_rvalid), .flash_rdata(bf_rdata),
         .ddr_we(b_we), .ddr_addr(b_addr), .ddr_wdata(b_wdata), .ddr_ready(b_ready),
@@ -270,18 +293,20 @@ module l3_top #(
 
     // ---- em / fn stores: LUTRAM, async read (the SAME-CYCLE contract) -------
     //   64b boot words carry 4 bf16 elements, MSB-first to match the SPI image.
-    localparam integer EM_ELEMS = VOCAB * MODEL_DIM;      // 256*128 = 32768
+    localparam integer EM_ELEMS = VOCAB * MODEL_DIM;
+    localparam integer EMA_W    = $clog2(EM_ELEMS/4);
+    localparam integer FNA_W    = $clog2((MODEL_DIM/4 < 2) ? 2 : MODEL_DIM/4);
     reg [15:0] em_store [0:EM_ELEMS-1];
     reg [15:0] fn_store [0:MODEL_DIM-1];
     integer bi;
     always @(posedge host_clk) begin
         if (b_we && b_is_em)
             for (bi = 0; bi < 4; bi = bi + 1)
-                em_store[{b_addr[13:0], 2'b00} + bi[1:0]]
+                em_store[{b_addr[EMA_W-1:0], 2'b00} + bi[1:0]]
                     <= b_wdata[BOOT_DW-1-16*bi -: 16];
         if (b_we && b_is_fn)
             for (bi = 0; bi < 4; bi = bi + 1)
-                fn_store[{b_addr[4:0], 2'b00} + bi[1:0]]
+                fn_store[{b_addr[FNA_W-1:0], 2'b00} + bi[1:0]]
                     <= b_wdata[BOOT_DW-1-16*bi -: 16];
     end
 
@@ -329,12 +354,6 @@ module l3_top #(
     //   only.  ~190 of 360 RAMB36, against a measured fit using 0.
     //   Boot decode windows: 0xA aw / 0xB fw-routed / 0xC fw-shared / 0xD rw.
     //   64b boot words assemble MSB-first into the wide store words.
-    localparam integer AWW  = (16+16+96)*PE_N*A_NSB;            // 256b at the fit
-    localparam integer FWW  = (16+16+96)*TN*FF_NSB_D * 2;       // gate+up paired
-    localparam integer RWW  = (16+16+96)*N_EXPERT*R_NSB;
-    localparam integer AW_AB = LAYW + 4 + A_GRPW;               // {ly, sel, grp}
-    localparam integer FR_AB = LAYW + 1 + EIDXW + 5;            // {ly, sel, eidx, grp<32}
-    localparam integer FS_AB = LAYW + 1 + 6;                    // {ly, sel, grp<64}
 
     wire [LAYW-1:0]  db_layer;
     wire [3:0]       aw_sel;

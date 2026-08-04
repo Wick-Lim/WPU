@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late
+release-gate: unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1356,6 +1356,27 @@ rank14-measure:
 	    || echo "    NOTE: soft saved $$((sa-sb)) but the window only moved $$((a-b)) -- something downstream absorbed the difference"; \
 	  [ "$$ea" = "$$eb" ] || echo "    NOTE: expw moved $$ea -> $$eb; an attention saving changed expert-refill lead"'
 
+
+# ============================================================================
+# l3-hash-mirror : Python packer hashes == Verilog stub hashes (L3 item 0/1 prereq)
+#   The end-to-end gate feeds the DUT from packer-built images and the reference
+#   from the loopback TBs' Verilog functions; one mirrored bit of difference
+#   diverges the tokens after HOURS of sim.  This proves the mirrors bit-exact
+#   on 704 probes in seconds.  Injection: skew one f_h multiplier -- MUST fail.
+# ============================================================================
+l3-hash-mirror:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/l3_image_pack.py >/dev/null
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/l3hash_sim test/l3_hash_mirror_tb.v
+	@printf '[%s] ' "l3_hash_mirror"; $(VVP) $(BUILD_DIR)/l3hash_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: l3_hash_mirror"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_HASH_SKEW -o $(BUILD_DIR)/l3hash_inj test/l3_hash_mirror_tb.v 2>/dev/null \
+	    || { echo "FAILED: l3-hash-mirror injection compile"; exit 1; }
+	@if $(VVP) $(BUILD_DIR)/l3hash_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: hash-mirror injection PASSED -- a skewed f_h multiplier should mismatch every family"; exit 1; \
+	  else \
+	    echo "[l3_hash_mirror_INJECT_skew] injection correctly FAILED (the comparison constrains the hash itself)"; \
+	  fi
 
 # ============================================================================
 # hdr-late : late header consumption in glm_matmul_q4k (L3 header path, item 0)

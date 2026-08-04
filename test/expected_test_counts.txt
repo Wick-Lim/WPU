@@ -83,6 +83,7 @@ kv_cache_pager(ECC) 42
 kv_cache_pager(NSEQ>1) 84
 kv_cache_pager(RESIDENT=S_MAX) 69
 kv_ecc_ring 8
+l3_hash_mirror 704
 mbist_ctrl 12
 mbist_ctrl_2p 11
 mla_attn 7
