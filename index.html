@@ -330,7 +330,7 @@
     <div class="open-grid">
       <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The 467 GB GLM file run end-to-end and compared against llama.cpp’s runtime argmax. Needs a GPU / large-memory host; no in-repo tool yet.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed. Licensed PHY IP is integrated + signed off at the silicon rung.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo; running on a physical dev board needs the board + pin XDC + a MIG bridge.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo, and the board-side digital chain is now built and gated in simulation: the board top boots from an SPI-NOR image (flash reader &rarr; boot loader &rarr; embedding/norm + dequant-header stores &rarr; AXI shim &rarr; UART host) and decodes bit-exact tokens end to end. What is left is physical only: the board, the vendor MIG IP + pin XDC, and the re-fit that measures whether the added stores close.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Fab tapeout &amp; dual-port BIST collar</div><p>ASIC tapeout is the rung-③ volume endgame. On-die test: the die already carries an inline clock gate; per-macro BIST collars are memory-compiler-generated in the physical flow.</p></div>
     </div>
     <p class="note">Every tok/s, cost, energy, and LOI figure is <span class="k">[EST]</span> — roofline-modeled with measured model-side inputs, not measured on hardware.</p>

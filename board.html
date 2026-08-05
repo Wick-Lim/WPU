@@ -237,6 +237,7 @@
         <div class="l">bit-exact <span class="tag">repipeline</span> campaign closed at this factor</div>
       </div>
     </div>
+    <p class="note"><b>The board-side digital chain is now complete in simulation.</b> The board top boots from an SPI-NOR image &mdash; flash reader &rarr; boot loader &rarr; embedding/norm LUTRAM + the three dequant-header BRAM stores + the DDR weight segment &rarr; AXI shim &rarr; UART host &mdash; and decodes four greedy tokens bit-exact against an independent reference, with corrupting a single boot-image byte or a single DDR beat each required to break it. That is <span class="k">PROVEN in sim</span>, not measured on hardware: the vendor MIG IP, the pin XDC, and the re-fit that measures whether the added stores close on the part are the remaining physical steps.</p>
     <p class="note">This is rung ① (prove-it). The appliance below is rung ③ (not built). See <a href="roadmap.html">Roadmap</a> for the full ladder.</p>
   </section>
 
