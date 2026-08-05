@@ -88,6 +88,7 @@ SELF_KV / loopback proofs below are release-gate members, no longer opt-in-only.
 | **Intra-batch causal MLA** (`INTRA_CAUSAL`) — batched verify == serial single-row chain | **PROVEN — full-logit bit-exact** | `make intra-batch-verify` · 9/9 |
 | **Die-internal KV write-back** (`SELF_KV`) — the die attends its own written per-(layer,pos) KV | **PROVEN — bit-exact** vs an independent (layer,pos) reference; byte-identical when off | `make self-kv-roundtrip` / `self-kv-equiv` |
 | **PHY-closure loopback** — the die's weight bytes routed OUT as a banked `ddr5_xbar` read and back IN through the fabric, committed stream bit-exact | **PROVEN — all five weight-input families** (aw, fw, rw, lw, gn); output-insensitive rw/gn add a direct per-beat die-input byte binding; each with a corruption-injection build that FAILS | `make loopback` / `loopback-fw` / `loopback-rest` |
+| **L3 board-boot chain** (`fpga/l3_top.v`) — SPI-NOR boot image → em/fn LUTRAM + 3 dequant-header BRAM stores + DDR weight seg, then 4 greedy tokens decoded over the real UART framing against a shadow-fed reference | **PROVEN — bit-exact end to end** (the module a board instantiates, at a tiny config); corrupting one boot-image byte or one DDR beat each diverges the tokens | `make l3-e2e` · 11/11 + 2 must-fail injections · `make l3-hash-mirror` 704/704 |
 | **Batched MLA / batched assembled model** (`PE_M>1`) | **PROVEN — DUT-vs-DUT bit-exact** | `make mla-sparse` / `batched-q4k` |
 | **Memory-system controllers** — routing/FIFO/token-accounting/ECC/done-gates | **FORMAL — BMC** (7 controllers + 1 ECC-ring), + **unbounded k-induction** on 5 | `make formal` / `formal-ind` |
 | **Whole 2-clock product top** (`glm_q4k_system_cdc`) | **ELABORATED** — yosys `hierarchy -check` + `check -assert` exit 0 (no unresolved hierarchy / comb loop / multiple driver / inferred latch); structural sign-off, not a sim | `make synth-glm` |
@@ -201,8 +202,11 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
 
 - **llama.cpp whole-runtime numeric equality** — out-of-contract by design; the 467 GB checkpoint has not
   been consumed end-to-end (needs a GPU / large-memory host).
-- **Board bring-up** — the FPGA P&R is done in-repo; running on a physical dev board needs the board + pin
-  XDC + a MIG bridge.
+- **Board bring-up** — the FPGA P&R is done in-repo, and the whole board-side digital chain now exists and
+  is gated in simulation (SPI flash reader → boot loader → em/fn + header stores → AXI shim → UART host;
+  `make l3-e2e` decodes real tokens through it). What is still missing is physical: the board itself, the
+  vendor **MIG IP** + pin **XDC**, and the re-fit that measures whether the added stores close on the part
+  (the measured fit is 87.5% LUT with BRAM at 0%, so there is room — but room is not a measurement).
 - **Vendor PHY hard-IP** (DDR5 / NVMe / USB-C) — TB-stubbed; the digital PHY-closure loopback is proven, the
   analog hard-IP is licensed IP.
 - **ASIC scan insertion + compiled SRAM macros + their BIST collars** — tool/vendor steps on the RTL (the
@@ -227,6 +231,7 @@ make model-q4k           # assembled full-forward numeric golden (1155 tests)
 make mixedtype           # Q6_K / Q8_0 / F16 mixed-type path
 make spec-greedy         # composed speculating top: spec==greedy + A_eff measured (in release-gate)
 make loopback            # PHY-closure loopback (aw); loopback-fw / loopback-rest for the other families
+make l3-e2e              # the L3 board top end to end: SPI boot image -> tokens over UART (in release-gate)
 make formal / formal-ind # BMC / unbounded k-induction of the memory controllers
 make synth-glm           # yosys whole-chip structural gate on glm_q4k_system_cdc
 make host-test           # host OpenAI-server + device-protocol + tokenizer scaffold (32 tests)

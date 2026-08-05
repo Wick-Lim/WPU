@@ -95,7 +95,8 @@ Two geometry facts discovered on the way, both now encoded rather than remembere
   contract, so `l3_top` serves them from boot-filled LUTRAM (`[EST]` ~8K LUTs at the fitted config;
   a BRAM migration needs a die clock-gate term and is a named optimisation, not assumed).
 
-**CORRECTION (found immediately after the S2-S7 commit, recorded before anything else):**
+**CORRECTION (found immediately after the S2-S7 commit; the gap it describes is now CLOSED --
+see item 0 below -- but the record of the overclaim stays):**
 `l3_top` as committed has a FUNCTIONAL GAP the elaboration gate cannot see.  The LOOPBACK
 parameters loop only the **CODE lanes** (`aw_q`, `fw_q`/`fw_q_up`, `rw_q`/`lw_col`/`gn_val`); the
 dequant **HEADERS** (`aw_d`/`aw_dmin`/`aw_scales`, `fw_d_g`/`fw_dmin_g`/`fw_scales_g`,
@@ -103,9 +104,11 @@ dequant **HEADERS** (`aw_d`/`aw_dmin`/`aw_scales`, `fw_d_g`/`fw_dmin_g`/`fw_scal
 and have NO production path.  `l3_top` ties them to zero, so on a board every dequantised weight
 would be 0 and the tokens garbage.  The S2-S7 commit message's "every stub input they replace is
 tied off here" was therefore an overclaim.  The header path is the top open item below; the
-architecturally consistent fix is a boot-filled BRAM header store + a 1-cycle die clock-gate per
-header pull (the exact freeze mechanism LOOPBACK already proved bit-exact), since headers are
-small (~tens of KB at the fitted config) and BRAM sits at 0%.
+architecturally consistent fix is a boot-filled BRAM header store, since headers are small
+(~tens of KB at the fitted config) and BRAM sits at 0%.  *(What actually shipped: the store, yes
+-- but NOT the die clock-gate this paragraph proposed.  A global freeze preserves the die's
+INTERNAL latch-vs-settle order, so it cannot buy a sync-read BRAM the cycle it needs; `HDR_LATE`
+moved the CONSUMPTION instead.  Recorded because the wrong mechanism was proposed here first.)*
 
 **Still open, in dependency order** (1-2 are sim-verifiable; 3-6 need the board):
 0. **the dequant-header path — CLOSED (sim-side complete).**  `HDR_LATE` (commit `c54224a`)
