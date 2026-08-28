@@ -35,7 +35,8 @@ are shared.
 
 | Model | Checkpoint | Branch | Status |
 |---|---|---|---|
-| **GLM-5.2** | [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF)<br>753B MoE (~40B active/token), ~467 GB | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | **Flagship.** Full datapath bit-exact vs an independent ggml reference, memory-system controllers formally verified, whole product top placed & routed on a real FPGA. The paper is about this build. |
+| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config LOCKED, datapath NOT COMPLETE.** Arch `glm5next` — not a re-dimensioned GLM-5.2: **34 of 45 layers are KDA linear attention** (no RTL here), the residual path is hyper-connections (no RTL), and **34.9% of the bytes are Q5_K** (no kernel). Every dimension is cited from the GGUF and gated; the whole-model top is deliberately un-elaboratable until those land. |
+| **GLM-5.2** | [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF)<br>753B MoE (~40B active/token), ~467 GB | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | **The proven build.** Full datapath bit-exact vs an independent ggml reference, memory-system controllers formally verified, whole product top placed & routed on a real FPGA. The paper is about this build, and the GLM-5.3-Flash branch forked from its tip. |
 | **Laguna-S-2.1** | [`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)<br>118B MoE (~8B active/token) | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | **Port in progress.** Dequant inherited unchanged; MoE path bit-exact in RTL at Laguna's config; the (different) GQA attention machine is specified and reference-verified end to end — the bit-exact orchestrator RTL is scoped, not yet written. |
 
 **Branch naming:** `<model>/<quantization>`, e.g. `glm5.2/UD-Q4_K_XL`. A second quantization of the
@@ -58,6 +59,22 @@ Porting to Laguna-S-2.1 measured how much of this design is model-independent:
 
 That split is why the model branches exist — and why shared-core work is worth merging across them
 rather than forking outright.
+
+**GLM-5.3-Flash is the case that tests the 70–80% figure, and partly breaks it.** Being a
+same-family successor was expected to make it the *cheapest* port yet. It is not:
+
+- The attention machine changed again, and this time it *doubled*: the model is a hybrid, so the
+  branch needs **both** the inherited MLA+DSA machine (11 of 45 layers) **and** a KDA
+  linear-attention machine that does not exist (34 of 45).
+- The residual path changed — hyper-connections with Sinkhorn normalization on every block. Nothing
+  in the "attention is the only per-model part" split anticipated that.
+- **The dequant contract was the one thing assumed to be free**, because it is format-level rather
+  than model-level. GLM-5.3-Flash's UD-Q4_K_XL mix uses **Q5_K**, which this repo has never
+  implemented, for 34.9% of its bytes. Format-level portability holds only across the *set of
+  formats already built*; a k-quant mix is a per-checkpoint fact, and it must be read from the GGUF
+  rather than assumed.
+
+Details: [`docs/GLM53_FLASH_PORT.md`](https://github.com/Wick-Lim/WPU/blob/glm5.3-flash/UD-Q4_K_XL/docs/GLM53_FLASH_PORT.md) on the port branch.
 
 ---
 
@@ -86,6 +103,7 @@ The per-claim ledger lives in each model branch's README.
 | Branch | Contents |
 |---|---|
 | `main` (this) | Project hub: this README, the [project site](https://wick-lim.github.io/WPU/), and the [paper](paper/). |
+| [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | The GLM-5.3-Flash port: locked config + its two-sided guard, the GGUF census tool, the port ledger. Forked at the GLM-5.2 tip, so it carries every gate that branch has. |
 | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | The GLM-5.2 accelerator: RTL, testbenches, `make` gates, docs, host runtime, FPGA flow. |
 | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | The Laguna-S-2.1 port: locked config, executable references, gates. |
 

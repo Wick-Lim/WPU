@@ -202,7 +202,7 @@
   <div class="wrap">
     <div class="mast-row">
       <span class="brand"><b>W</b>PU</span>
-      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.3-Flash · Q4_K · Verilog</span>
       <nav class="nav">
         <a href="index.html">Overview</a>
         <a href="board.html">Board</a>
@@ -261,7 +261,7 @@
           <tr>
             <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">at scale</span></td>
             <td>Custom silicon; 512 GB LPDDR5X full residency (16×32 GB)</td>
-            <td>1024-bit, ~1.1 TB/s; whole ~467 GB resident, cold store one M.2 NVMe (~70 s boot)</td>
+            <td>1024-bit, ~1.1 TB/s; whole checkpoint resident — ~467 GB sizing it for GLM-5.2, ~199.7 GB for GLM-5.3-Flash; cold store one M.2 NVMe (~70 s boot)</td>
             <td class="toks">≈80 tok/s <span class="tag">[measured-inputs EST]</span></td>
             <td>bit-exact (residency ⇒ h=1)</td>
             <td>~$1.8–2.4k</td>
@@ -314,7 +314,7 @@
 
       <div class="card">
         <h3><span style="font-family:var(--mono);color:var(--accent)">③</span> SoC / ASIC <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(at scale)</span></h3>
-        <p>Custom silicon. Primary design point: 512 GB LPDDR5X full residency (16×32 GB, 1024-bit, ~1.1 TB/s). The whole ~467 GB checkpoint is resident; cold store is one M.2 NVMe (~70 s boot).</p>
+        <p>Custom silicon. Primary design point: 512 GB LPDDR5X full residency (16×32 GB, 1024-bit, ~1.1 TB/s). The whole checkpoint is resident; cold store is one M.2 NVMe (~70 s boot). The 512 GB figure was sized against GLM-5.2's ~467 GB — at <b>199.7 GB</b>, GLM-5.3-Flash leaves this rung with a lot of headroom, and full residency stops being the binding constraint well below it.</p>
         <div class="toks-big">≈80 tok/s <span class="tag">[measured-inputs EST]</span></div>
         <div class="meta">
           <span><b>upside</b> ~95 if MTP hits published depth</span>
@@ -330,7 +330,7 @@
 
   <section>
     <div class="sec-head"><h2>Beyond rung ③ — HBF + HBM (future)</h2></div>
-    <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). Source: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
+    <p class="sec-sub">A forward-looking architecture note <span class="k">[EST]</span>, not designed or verified — contingent on emerging memory technology. It maps cleanly onto what the RTL already is: a weight-streaming, bandwidth-bound machine (<span class="k">tok/s ≈ BW ÷ bytes-per-token</span> — 13.87 GB/token for GLM-5.2 after its measured speculative amortization; GLM-5.3-Flash reads <b>14.118 GB/token</b> raw, and its amortized figure is not published because the accept rate feeding it is unmeasured). Source: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
     <div class="flow">
       today &nbsp; <span class="arrow">NVMe (persist)</span> + <span class="arrow">DDR/LPDDR (stream BW)</span> → die &nbsp;·&nbsp; KV in DRAM<br>
       rung ④ &nbsp; <b>512GB HBF</b> <span class="arrow">(weights already resident · non-volatile)</span> <b>&nbsp;—1.6 TB/s→&nbsp;</b> die &nbsp;·&nbsp; die <span class="arrow">&#8644;</span> <b>KV in 96GB HBM</b> &nbsp; <span class="arrow">(no load / no HBF→HBM path)</span>
@@ -365,7 +365,9 @@
     <div class="sec-head"><h2>Open items</h2></div>
     <p class="sec-sub">The gaps between here and rung ③, taken from the repo. Most sit at the physical / process boundary an RTL repo cannot close.</p>
     <div class="open-grid">
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The ~467 GB GLM file run end-to-end and compared against llama.cpp's runtime argmax. Needs a GPU / large-memory host.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>GLM-5.3-Flash model port — KDA linear attention</div><p>The current model target runs linear attention on 34 of its 45 layers, a machine this project has not built. It is the port's critical path, and it is RTL work, not a hardware rung.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>GLM-5.3-Flash model port — Q5_K + hyper-connections</div><p>Q5_K covers 34.9% of the target checkpoint's bytes and has no kernel here; the Sinkhorn hyper-connection residual has no RTL. Both block a whole-model build.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The full GLM checkpoint run end-to-end and compared against llama.cpp's runtime argmax. Needs a GPU / large-memory host.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo; running on a physical board needs the board + a pin XDC + a MIG bridge.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP integration</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed. Licensed PHY IP is integrated and signed off at the silicon rung.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>ASIC tapeout</div><p>Custom-silicon tapeout is the rung-③ volume endgame.</p></div>

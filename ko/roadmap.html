@@ -202,7 +202,7 @@
   <div class="wrap">
     <div class="mast-row">
       <span class="brand"><b>W</b>PU</span>
-      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.3-Flash · Q4_K · Verilog</span>
       <nav class="nav">
         <a href="index.html">개요</a>
         <a href="board.html">보드</a>
@@ -261,7 +261,7 @@
           <tr>
             <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">양산 규모</span></td>
             <td>커스텀 실리콘; 512 GB LPDDR5X 전량 상주(16×32 GB)</td>
-            <td>1024-bit, ~1.1 TB/s; ~467 GB 전체 상주, cold store는 M.2 NVMe 1개(~70 s 부팅)</td>
+            <td>1024-bit, ~1.1 TB/s; 체크포인트 전체 상주 — GLM-5.2 기준 ~467 GB, GLM-5.3-Flash 기준 ~199.7 GB. cold store는 M.2 NVMe 1개(~70 s 부팅)</td>
             <td class="toks">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></td>
             <td>bit-exact (상주 ⇒ h=1)</td>
             <td>~$1.8–2.4k</td>
@@ -314,7 +314,7 @@
 
       <div class="card">
         <h3><span style="font-family:var(--mono);color:var(--accent)">③</span> SoC / ASIC <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(양산 규모)</span></h3>
-        <p>커스텀 실리콘. 주 설계 지점: 512 GB LPDDR5X 전량 상주(16×32 GB, 1024-bit, ~1.1 TB/s). ~467 GB 체크포인트 전체가 상주하며, cold store는 M.2 NVMe 1개다(~70 s 부팅).</p>
+        <p>커스텀 실리콘. 주 설계 지점: 512 GB LPDDR5X 전량 상주(16×32 GB, 1024-bit, ~1.1 TB/s). 체크포인트 전체가 상주하며, cold store는 M.2 NVMe 1개다(~70 s 부팅). 512 GB라는 수치는 GLM-5.2의 ~467 GB에 맞춰 잡은 것이다. <b>199.7 GB</b>인 GLM-5.3-Flash라면 이 rung에 여유가 크게 남고, 전체 상주는 이보다 한참 아래에서 이미 제약 조건이 아니게 된다.</p>
         <div class="toks-big">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></div>
         <div class="meta">
           <span><b>상방</b> MTP가 공개된 depth에 도달하면 ~95</span>
@@ -330,7 +330,7 @@
 
   <section>
     <div class="sec-head"><h2>③ 단 너머 — HBF + HBM (미래)</h2></div>
-    <p class="sec-sub">설계되지도 검증되지도 않은 미래 지향 아키텍처 노트 <span class="k">[추정]</span>이며, 신흥 메모리 기술에 달려 있다. 다만 RTL이 이미 어떤 기계인지에는 깔끔하게 대응된다: 가중치를 스트리밍하는 bandwidth 구속형 기계(<span class="k">tok/s ≈ BW ÷ 13.87 GB/token</span>). 출처: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
+    <p class="sec-sub">설계되지도 검증되지도 않은 미래 지향 아키텍처 노트 <span class="k">[추정]</span>이며, 신흥 메모리 기술에 달려 있다. 다만 RTL이 이미 어떤 기계인지에는 깔끔하게 대응된다: 가중치를 스트리밍하는 bandwidth 구속형 기계(<span class="k">tok/s ≈ BW ÷ 토큰당 바이트</span> — GLM-5.2는 실측된 speculative 분할상각 이후 13.87 GB/token이고, GLM-5.3-Flash는 원시 <b>14.118 GB/token</b>이며 분할상각 수치는 accept rate가 미측정이라 싣지 않는다). 출처: <a href="https://github.com/Wick-Lim/WPU/blob/main/docs/HARDWARE_LADDER.md">HARDWARE_LADDER.md</a>.</p>
     <div class="flow">
       현재 &nbsp; <span class="arrow">NVMe (영속 저장)</span> + <span class="arrow">DDR/LPDDR (스트림 BW)</span> → die &nbsp;·&nbsp; KV는 DRAM에<br>
       ④ 단 &nbsp; <b>512GB HBF</b> <span class="arrow">(가중치 이미 상주 · 비휘발성)</span> <b>&nbsp;—1.6 TB/s→&nbsp;</b> die &nbsp;·&nbsp; die <span class="arrow">&#8644;</span> <b>KV는 96GB HBM에</b> &nbsp; <span class="arrow">(로드 없음 / HBF→HBM 경로 없음)</span>
@@ -365,7 +365,9 @@
     <div class="sec-head"><h2>미해결 항목</h2></div>
     <p class="sec-sub">여기서 ③ 단까지 남은 격차를 저장소에서 그대로 옮긴 것이다. 대부분은 RTL 저장소가 닫을 수 없는 물리 / 공정 경계에 놓여 있다.</p>
     <div class="open-grid">
-      <div class="open-item"><div class="h"><i class="led s-open"></i>런타임 전체 GGUF 교차 검증</div><p>~467 GB GLM 파일을 end-to-end로 돌려 llama.cpp의 런타임 argmax와 대조하는 작업. GPU / 대용량 메모리 호스트가 필요하다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>GLM-5.3-Flash 모델 포팅 — KDA 선형 어텐션</div><p>현재 모델 타깃은 45개 레이어 중 34개에서 선형 어텐션을 돌린다. 이 프로젝트가 만들어 본 적 없는 기계다. 포팅의 임계 경로이며, 하드웨어 rung이 아니라 RTL 작업이다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>GLM-5.3-Flash 모델 포팅 — Q5_K + hyper-connection</div><p>Q5_K는 타깃 체크포인트 바이트의 34.9%를 차지하는데 커널이 없고, Sinkhorn hyper-connection 잔차도 RTL이 없다. 둘 다 전체 모델 빌드를 막는다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>런타임 전체 GGUF 교차 검증</div><p>GLM 체크포인트 전체를 end-to-end로 돌려 llama.cpp의 런타임 argmax와 대조하는 작업. GPU / 대용량 메모리 호스트가 필요하다.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>보드 bring-up</div><p>FPGA fit은 저장소 안에서 실측되어 있다. 실물 보드에서 돌리려면 보드와 핀 XDC, MIG 브리지가 필요하다.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>벤더 PHY IP 통합</div><p>DDR5 / NVMe (PCIe) / USB-C PHY는 testbench에서 stub 상태다. 라이선스 PHY IP는 실리콘 단에서 통합·사인오프된다.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>ASIC tapeout</div><p>커스텀 실리콘 tapeout은 ③ 단 양산의 최종 관문이다.</p></div>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WPU — GLM-5.2 Q4_K 로컬 추론 가속기</title>
+<title>WPU — GLM-5.3-Flash Q4_K 로컬 추론 가속기</title>
 <style>
   :root {
     --ground:#0F1216; --panel:#161A20; --panel-2:#1B2027; --sunk:#0B0E12;
@@ -166,6 +166,19 @@
   .ladder .v { font-family:var(--mono); margin-left:auto; color:var(--ink); font-weight:600; }
   .ladder .v em { color:var(--ink-dim); font-style:normal; font-weight:400; font-size:.82em; }
   .note { font-size:.82rem; color:var(--ink-dim); margin-top:14px; }
+  .portbar { background:var(--panel); border:1px solid var(--hairline); border-left:3px solid var(--open);
+             border-radius:10px; padding:16px 18px; margin:0 0 34px; box-shadow:var(--shadow); }
+  .portbar .pb-head { display:flex; align-items:center; gap:9px; flex-wrap:wrap; color:var(--ink); font-weight:600; }
+  .portbar .pb-head .tagline { color:var(--open); font-family:var(--mono); font-size:.7rem;
+                               letter-spacing:.08em; text-transform:uppercase; font-weight:400; }
+  .portbar > p { margin:10px 0 0; color:var(--ink-dim); font-size:.88rem; max-width:80ch; }
+  .pb-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1px;
+             background:var(--hairline); border:1px solid var(--hairline); border-radius:8px;
+             overflow:hidden; margin-top:14px; }
+  .pb-item { background:var(--panel-2); padding:11px 13px; border-top:2px solid var(--open); }
+  .pb-item.ok { border-top-color:var(--ok); }
+  .pb-item b { display:block; font-size:.87rem; color:var(--ink); }
+  .pb-item span { display:block; margin-top:3px; font-size:.77rem; color:var(--ink-dim); }
   .flow {
     font-family:var(--mono); font-size:.84rem; color:var(--ink-2); background:var(--sunk);
     border:1px solid var(--hairline); border-radius:8px; padding:14px 16px; margin-top:16px; line-height:1.9;
@@ -197,7 +210,7 @@
   <div class="wrap">
     <div class="mast-row">
       <span class="brand"><b>W</b>PU</span>
-      <span class="brand-def">Weight Processing Unit · GLM-5.2 · Q4_K · Verilog</span>
+      <span class="brand-def">Weight Processing Unit · GLM-5.3-Flash · Q4_K · Verilog</span>
       <nav class="nav">
         <a href="index.html" class="active">개요</a>
         <a href="board.html">보드</a>
@@ -208,18 +221,31 @@
     </div>
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">합성 가능한 추론 가속기</div>
-      <h1>753B GLM-5.2 전체를, 오프라인으로, 로컬 장비에서.</h1>
-      <p class="lede">공개된 <b>GLM-5.2</b>의 GGUF k-quant(<span class="k">UD-Q4_K_XL</span>, ~467&nbsp;GB, 753B 파라미터 MoE, 토큰당 ~40B 활성)를 Verilog 데이터패스로 흘려보낸다. Q4_K GEMM 코어는 <b>독립 구현된 ggml 레퍼런스에 대해 bit-exact</b>이며, 모델은 제어 평면에 형식증명이 걸린 다채널 DDR5 + NVMe 메모리 시스템으로 감싸인다. 단일 사용자, air-gapped 구성이다. 가중치를 한 번 적재한 뒤에는 안팎 어느 쪽으로도 네트워크 경로 없이 동작한다.</p>
+      <h1>GLM-5.3-Flash 전체를, 오프라인으로, 로컬 장비에서.</h1>
+      <p class="lede">목표는 공개된 <b>GLM-5.3-Flash</b>의 GGUF k-quant(<span class="k">UD-Q4_K_XL</span>, <b>199.7&nbsp;GB</b>, 320.8B 파라미터 하이브리드 MoE, 토큰당 16.7B 활성)를 Verilog 데이터패스로 흘려보내는 것이다. Q4_K GEMM 코어는 <b>독립 구현된 ggml 레퍼런스에 대해 bit-exact</b>이며, 모델은 제어 평면에 형식증명이 걸린 다채널 DDR5 + NVMe 메모리 시스템으로 감싸인다. 단일 사용자, air-gapped 구성이다. 가중치를 한 번 적재한 뒤에는 안팎 어느 쪽으로도 네트워크 경로 없이 동작한다. <b>다만 이 기계는 GLM-5.2 위에서 만들어지고 증명되었다.</b> GLM-5.3-Flash를 위해 아직 만들어야 하는 것은 바로 아래에 적어 둔다. 묻어 두지 않는다.</p>
     </div>
   </div>
 </header>
 
 <div class="wrap">
 
+  <section class="portbar" aria-label="GLM-5.3-Flash 포팅 상태">
+    <div class="pb-head"><i class="led s-open"></i>포팅 상태 — GLM-5.3-Flash <span class="tagline">config 확정 · 데이터패스 미완</span></div>
+    <p>GLM-5.3-Flash는 GLM-5.2의 차원만 바꾼 모델이 <b>아니다</b>. 아키텍처 id가 <span class="k">glm5next</span>이고, <b>45개 레이어 중 34개가 KDA 선형 어텐션</b>이다. 이 프로젝트가 만들어 본 적 없는 기계다. 아래의 모든 치수는 체크포인트 자체의 GGUF 메타데이터에서 읽어 <span class="k">make glm53f-config-guard</span>로 게이팅하며, 빠진 세 조각이 들어오기 전까지 전체 모델 top은 의도적으로 엘라보레이션되지 않는다. 이 페이지에서 <i>증명됨</i> 또는 <i>실측</i>으로 표시된 모든 항목은 <b>GLM-5.2</b> 형상에서 측정된 것이며, GLM-5.3-Flash에 대한 주장이 아니라 기계로서 상속된 것이다.</p>
+    <div class="pb-grid">
+      <div class="pb-item ok"><b>모델 config</b><span>확정 — 모든 치수를 GGUF에서 인용, 시뮬레이터 2종에서 8/8 게이트</span></div>
+      <div class="pb-item ok"><b>MLA + DSA + MTP</b><span>상속 — 45개 블록 중 11개에 대해서는 올바른 기계</span></div>
+      <div class="pb-item ok"><b>MoE · Q4_K/Q6_K/Q8_0 · 메모리 시스템</b><span>상속, GLM-5.2 형상에서 bit-exact</span></div>
+      <div class="pb-item"><b>KDA 선형 어텐션</b><span>RTL 없음 — 45개 중 34개 블록. 일정을 결정하는 항목.</span></div>
+      <div class="pb-item"><b>Q5_K dequant</b><span>커널 없음 — 체크포인트 바이트의 34.9%를 오늘은 읽을 수 없다</span></div>
+      <div class="pb-item"><b>Hyper-connection</b><span>RTL 없음 — Sinkhorn 잔차 경로, 모든 블록</span></div>
+    </div>
+  </section>
+
   <div class="stats" aria-label="근거가 되는 실측 사실">
     <div class="stat">
       <div class="n tnum">376,586,240</div>
-      <div class="l">llama.cpp dequant와 비트 단위로 동일한 가중치, <span class="tag">실제 GGUF 바이트</span> 기준 (Q4_K/Q6_K/Q8_0)</div>
+      <div class="l">llama.cpp dequant와 비트 단위로 동일한 가중치, <span class="tag">실제 GGUF 바이트</span> 기준 — Q4_K/Q6_K/Q8_0 (<b>Q5_K는 아직</b>)</div>
     </div>
     <div class="stat">
       <div class="n tnum">1155<small>/1155</small></div>
@@ -230,8 +256,8 @@
       <div class="l">XCKU3P 실제 Vivado P&amp;R — <span class="tag">87.5%</span>, routed, hold 충족 (<span class="k">실측</span>)</div>
     </div>
     <div class="stat">
-      <div class="n tnum">67<small> gate</small></div>
-      <div class="l">전체 release-gate green, 모든 테스트 개수 <span class="tag">정확히 고정</span></div>
+      <div class="n tnum">199.70 <small>GB</small></div>
+      <div class="l">GLM-5.3-Flash <span class="k">UD-Q4_K_XL</span> 전체 1412개 텐서 집계 — 공개된 샤드 바이트와 <span class="tag">교차 검증</span>, 오차는 GGUF 헤더 9.52 MB 이내</div>
     </div>
   </div>
 
@@ -256,8 +282,8 @@
       <line x1="153" y1="155" x2="153" y2="183" stroke="var(--hairline)" stroke-width="0.6"/>
       <g clip-path="url(#ledwin)">
         <g class="tok-ticker">
-          <text x="168" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; 온디바이스에서 한 번에 토큰 하나씩 디코딩되는 간결한 답변.    </text>
-          <text x="468" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.2 &#9656; 온디바이스에서 한 번에 토큰 하나씩 디코딩되는 간결한 답변.    </text>
+          <text x="168" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.3-Flash &#9656; 온디바이스에서 한 번에 토큰 하나씩 디코딩되는 간결한 답변.    </text>
+          <text x="468" y="173" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--accent)" xml:space="preserve">GLM-5.3-Flash &#9656; 온디바이스에서 한 번에 토큰 하나씩 디코딩되는 간결한 답변.    </text>
         </g>
       </g>
       <text x="207" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-dim)" text-anchor="middle">전면 LED 패널 &#183; 상태 + 실시간 토큰 스트림</text>
@@ -268,7 +294,7 @@
 
   <section>
     <div class="sec-head"><h2>검증 원장</h2></div>
-    <p class="sec-sub">각 주장에는 그 뒤에 있는 증거의 종류가 태그로 붙는다. “Bit-exact”는 ggml-Q4_K 레퍼런스 <span class="k">tools/q4k_ref.py</span>에 대해 bit-exact라는 뜻이며, 이 레퍼런스 자체가 dequant 계층에서 실제 GGUF 바이트와 동일함이 검증되어 있다.</p>
+    <p class="sec-sub">각 주장에는 그 뒤에 있는 증거의 종류가 태그로 붙는다. “Bit-exact”는 ggml-Q4_K 레퍼런스 <span class="k">tools/q4k_ref.py</span>에 대해 bit-exact라는 뜻이며, 이 레퍼런스 자체가 dequant 계층에서 실제 GGUF 바이트와 동일함이 검증되어 있다. <b>여기 초록색 항목은 모두 GLM-5.2 형상에서 측정된 것이다.</b> GLM-5.3-Flash 포팅이 출발하는 지점이지, 그 형상에서의 결과가 아니다. 마지막 세 항목은 아직 존재하지 않는 GLM-5.3-Flash 블록이다.</p>
 
     <div class="legend">
       <span><i class="led s-proven"></i>검증됨 — gate에 묶인 bit-exact / 기능 시뮬레이션</span>
@@ -287,20 +313,29 @@
       <div class="row"><i class="led s-proven"></i><div class="what">실제 GGUF 바이트 대비 dequant <span class="sub">실제 공개된 GGUF 2종에서 q4k_ref 대 llama.cpp 자체 dequantize_row_*</span></div><div class="ev"><span class="st st-proven">검증됨 · 실제 바이트 기준</span>가중치 376,586,240개</div></div>
       <div class="row"><i class="led s-formal"></i><div class="what">메모리 시스템 컨트롤러 <span class="sub">라우팅 / FIFO 오버플로 없음 / 토큰 회계 / ECC 항등 / done-gate</span></div><div class="ev"><span class="st st-formal">형식증명 · BMC + k-induction</span>ctrl 7 + ECC 1 · unbounded 5</div></div>
       <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit <span class="sub">2-clock 제품 top 전체를 Kintex UltraScale+ XCKU3P에서 합성하고 place-and-route까지 완료</span></div><div class="ev"><span class="st st-measured">실측 · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
-      <div class="row"><i class="led s-elab"></i><div class="what">753B UD-Q4_K_XL 전체 형상 <span class="sub">DIM 6144 / L=78 / 256-expert / VOCAB 154880 — 타입/폭 검사만, 자극 입력 없음</span></div><div class="ev"><span class="st st-elab">엘라보레이션(구조 확인) · clean</span>오류 0</div></div>
-      <div class="row"><i class="led s-open"></i><div class="what">llama.cpp 전체 런타임 동등성 <span class="sub">attention / 누산 순서는 설계상 다르다. 467 GB 파일은 아직 end-to-end로 실행하지 않았다</span></div><div class="ev"><span class="st st-open">열린 격차 · 계약 범위 밖</span>GPU 호스트 필요</div></div>
+      <div class="row"><i class="led s-elab"></i><div class="what">753B UD-Q4_K_XL 전체 형상 <span class="sub"><b>GLM-5.2</b>의 프로덕션 형상 — DIM 6144 / L=78 / 256-expert / VOCAB 154880. 타입/폭 검사만, 자극 입력 없음</span></div><div class="ev"><span class="st st-elab">엘라보레이션(구조 확인) · clean</span>오류 0</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">GLM-5.3-Flash config 확정 <span class="sub">모든 모델 치수를 공개된 GGUF에서 인용. KDA + hyper-connection + Q5_K가 들어오기 전까지 전체 모델 top은 엘라보레이션 불가 — 양방향으로, 시뮬레이터 2종에서 검증</span></div><div class="ev"><span class="st st-proven">검증됨 · 가드 양방향</span>make glm53f-config-guard 8/8</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">KDA 선형 어텐션 <span class="sub">GLM-5.3-Flash의 45개 블록 중 34개: q/k/v에 대한 짧은 causal conv(k=4), gated delta-rule 상태, f/g 저랭크 게이트, head별 norm</span></div><div class="ev"><span class="st st-open">열린 격차 · RTL 없음</span>34/45 블록</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">Q5_K dequant <span class="sub">42개 <span class="k">ffn_down_exps</span> 텐서가 전부 Q5_K다. 이 저장소에 커널이 없어 체크포인트의 3분의 1을 아예 읽을 수 없다</span></div><div class="ev"><span class="st st-open">열린 격차 · 커널 없음</span>69.76 GB · 34.9%</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">Hyper-connection 잔차 <span class="sub">폭 4의 연결 행렬에 대한 Sinkhorn 정규화(20회 반복)가 모든 블록에서 단순 잔차 덧셈을 대체한다</span></div><div class="ev"><span class="st st-open">열린 격차 · RTL 없음</span>45/45 블록</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">llama.cpp 전체 런타임 동등성 <span class="sub">attention / 누산 순서는 설계상 다르다. 전체 체크포인트를 end-to-end로 실행한 적은 없다</span></div><div class="ev"><span class="st st-open">열린 격차 · 계약 범위 밖</span>GPU 호스트 필요</div></div>
     </div>
   </section>
 
   <section>
     <div class="sec-head"><h2>처리량</h2></div>
-    <p class="sec-sub">모든 tok/s 수치는 모델링된 <span class="k">[추정]</span>이며 실리콘에서 실측한 값이 아니다. 분할상각 메커니즘은 RTL에서 실측했고(하드웨어 weight-load 카운터), 거기에 들어가는 accept rate는 실측된 모델 특성이다. 절대 tok/s는 이 둘의 곱이다.</p>
+    <p class="sec-sub">모든 tok/s 수치는 모델링된 <span class="k">[추정]</span>이며 실리콘에서 실측한 값이 아니다. 분할상각 메커니즘은 RTL에서 실측했고(하드웨어 weight-load 카운터), 거기에 들어가는 accept rate는 실측된 모델 특성이다. 절대 tok/s는 이 둘의 곱이다. <b>아래 tok/s 수치는 GLM-5.2의 것이다.</b> GLM-5.3-Flash의 원시 분모는 자체 텐서 맵에서 실측했지만, 그것을 나누는 accept rate는 특정 모델의 draft 품질에 딸린 성질이고 GLM-5.3-Flash에서는 미측정이다. 그래서 이 모델의 분할상각 수치는 여기에 싣지 않는다.</p>
 
     <div class="roof">
       <div class="card">
         <h3>이 수치가 만들어지는 과정</h3>
         <div class="flow">
-          <span>25.50 GB/token</span> <span class="arrow">— speculation 없음, PE_M=1 (실측된 메커니즘)</span><br>
+          <span>14.118 GB/token</span> <span class="arrow">— GLM-5.3-Flash, speculation 없음, 자체 GGUF 텐서 맵에서 실측</span><br>
+          <span class="arrow">÷</span> <b>A_eff = ?</b> <span class="arrow">— MTP head는 존재하지만(<span class="k">nextn_predict_layers 1</span>) accept rate는 <b>아직 미측정</b></span><br>
+          <span>= 미공개</span> <span class="arrow">— 수치를 적으려면 입력값을 지어내야 한다</span>
+        </div>
+        <div class="flow" style="margin-top:10px">
+          <span>25.50 GB/token</span> <span class="arrow">— GLM-5.2, speculation 없음, PE_M=1 (실측된 메커니즘)</span><br>
           <span class="arrow">÷</span> <b>A_eff = 1.87</b> <span class="arrow">— 실측 accept rate r₁=0.87</span><br>
           <span>= 13.87 GB/token</span><br>
           <span class="arrow">→ 1.54 TB/s에서 →</span> <b>~111 tok/s [추정]</b>
@@ -315,7 +350,7 @@
           <li><span class="rung">②</span> 자금이 투입된 커스텀 보드 <span class="v">~15–40 <em>tok/s</em></span></li>
           <li><span class="rung">③</span> 512GB 상주 박스 <span class="v">≈80 <em>tok/s</em></span></li>
         </ul>
-        <p class="note">Rung-③ 설계점 ≈80 tok/s <span class="k">[실측 입력 기반 추정]</span> — U(K)와 MTP accept rate r은 둘 다 GLM 계열에서 실측된 값이다. GLM-5.2의 더 깊은 MTP가 공개된 accept depth에 도달하면 ~95.</p>
+        <p class="note">Rung-③ 설계점 ≈80 tok/s <span class="k">[실측 입력 기반 추정]</span> — U(K)와 MTP accept rate r은 둘 다 GLM-5.2에서 실측된 값이다. GLM-5.2의 더 깊은 MTP가 공개된 accept depth에 도달하면 ~95. GLM-5.3-Flash에서는 <b>용량</b> 쪽이 훨씬 여유로워지지만(467 GB 대비 199.7 GB이므로 전체 상주가 rung ③보다 한참 아래에서 이미 제약이 아니게 된다), <b>속도</b> 쪽은 accept rate를 다시 측정하기 전까지 GLM-5.2의 값 그대로다.</p>
       </div>
     </div>
   </section>
@@ -325,7 +360,7 @@
     <p class="sec-sub">비용을 낮추기 위해 설계상 NVMe/PCIe bandwidth에 묶어 두었다. MoE expert를 SSD에서 DDR 작업 캐시를 거쳐 대부분 유휴 상태인 Q4_K die로 스트리밍한다.</p>
     <div class="flow">
       1 TB NVMe <span class="arrow">──►</span> flash_xbar <span class="arrow">──►</span> DDR 작업 세트/캐시 <span class="arrow">──►</span> ddr5_xbar <span class="arrow">──►</span> <b>Q4_K 연산 die</b> <span class="arrow">──►</span> 토큰<br>
-      <span class="arrow">~467 GB 가중치 &nbsp; N-ch + 깊은 큐 &nbsp; LRU+빈도+prefetch &nbsp; N-ch 뱅크 분할 &nbsp; MLA + DSA + MoE · ggml dequant → fp32 MAC → bf16</span>
+      <span class="arrow">~199.7 GB 가중치 &nbsp; N-ch + 깊은 큐 &nbsp; LRU+빈도+prefetch &nbsp; N-ch 뱅크 분할 &nbsp; MLA + DSA + MoE · ggml dequant → fp32 MAC → bf16</span>
     </div>
     <p class="note">메모리 시스템 전체는 <b>byte-agnostic</b>이다. 주소와 슬롯, ID만 옮길 뿐 가중치 바이트 자체는 건드리지 않는다. 검증은 회귀 테스트에서 바이트 단위로 동일함을 확인하며, 컨트롤러에는 bounded model checking이 더해지고 그중 일부는 unbounded k-induction으로 끌어올렸다. 형식증명은 수치 데이터패스에 전혀 닿지 않는다. 그 평면은 bit-exact 시뮬레이션 golden이 담당한다.</p>
   </section>
@@ -334,7 +369,10 @@
     <div class="sec-head"><h2>미완 항목</h2></div>
     <p class="sec-sub">열린 격차 — 대부분은 RTL 저장소가 닫을 수 없는 물리/공정 경계에 놓여 있다.</p>
     <div class="open-grid">
-      <div class="open-item"><div class="h"><i class="led s-open"></i>전체 런타임 GGUF 교차 검증</div><p>467 GB GLM 파일을 end-to-end로 실행해 llama.cpp 런타임 argmax와 대조하는 작업. GPU / 대용량 메모리 호스트가 필요하며, 저장소 안에는 아직 도구가 없다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>KDA 선형 어텐션 — 45개 중 34개 블록</div><p>GLM-5.3-Flash의 하이브리드 스택은 네 레이어 중 셋에서 선형 어텐션을 돌린다. 새 데이터패스, 새 상태 메모리, 새 golden 레퍼런스가 필요하다. 포팅의 임계 경로다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Q5_K dequant — 바이트의 34.9%</div><p>42개 <span class="k">ffn_down_exps</span> 텐서가 전부 Q5_K인데 커널이 없다. 세 격차 중 가장 작다. 이미 검증된 Q4_K/Q6_K 경로의 형제다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Hyper-connection</div><p>Sinkhorn 정규화된 폭 4 연결 행렬이 모든 블록에서 잔차 덧셈을 대체한다. RTL 전에 고정소수점 검토가 필요하다.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>전체 런타임 GGUF 교차 검증</div><p>전체 GGUF를 end-to-end로 실행해 llama.cpp 런타임 argmax와 대조하는 작업. GPU / 대용량 메모리 호스트가 필요하며, 저장소 안에는 아직 도구가 없다.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>벤더 PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHY는 testbench 스텁 상태다. 라이선스된 PHY IP는 실리콘 rung에서 통합·사인오프한다.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>보드 bring-up</div><p>FPGA fit은 저장소 안에서 실측했다. 실제 개발 보드에서 돌리려면 보드와 핀 XDC, MIG 브리지가 필요하다.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>팹 tapeout 및 dual-port BIST collar</div><p>ASIC tapeout은 rung-③ 양산 단계의 종착점이다. on-die 테스트: die에는 이미 인라인 clock gate가 들어 있고, 매크로별 BIST collar는 물리 설계 흐름에서 memory compiler가 생성한다.</p></div>
@@ -346,8 +384,8 @@
 
 <footer>
   <div class="wrap">
-    <p class="disc"><span class="k">main</span>의 Q4_K 트랙 현황. Bit-exact는 독립적으로 재구현한 ggml에 대해 bit-exact라는 뜻이며, dequant 계층에서 실제 GGUF 바이트로 검증됐다. llama.cpp 전체 런타임 동등성은 설계상 계약 범위 밖이다. 처리량과 비용 수치는 모델링된 추정이며 하드웨어 실측이 아니다.</p>
-    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; Verilog로 구현한 GLM-5.2 Q4_K 로컬 추론 가속기</p>
+    <p class="disc"><span class="k">main</span>의 Q4_K 트랙 현황. 현재 모델 타깃은 <span class="k">unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL</span>이며, 검증된 결과는 GLM-5.2에서 측정된 것이고 GLM-5.3-Flash 포팅은 미완이다. 페이지 상단의 포팅 상태 배너를 보라. Bit-exact는 독립적으로 재구현한 ggml에 대해 bit-exact라는 뜻이며, dequant 계층에서 실제 GGUF 바이트로 검증됐다. llama.cpp 전체 런타임 동등성은 설계상 계약 범위 밖이다. 처리량과 비용 수치는 모델링된 추정이며 하드웨어 실측이 아니다.</p>
+    <p style="margin-top:14px"><a href="https://github.com/Wick-Lim/WPU">github.com/Wick-Lim/WPU</a> &nbsp;·&nbsp; Verilog로 구현한 GLM-5.3-Flash Q4_K 로컬 추론 가속기</p>
   </div>
 </footer>
 </body>
