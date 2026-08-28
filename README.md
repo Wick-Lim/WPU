@@ -35,7 +35,7 @@ are shared.
 
 | Model | Checkpoint | Branch | Status |
 |---|---|---|---|
-| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config LOCKED, datapath NOT COMPLETE.** Arch `glm5next` — not a re-dimensioned GLM-5.2: **34 of 45 layers are KDA linear attention** (no RTL here), the residual path is hyper-connections (no RTL), and **34.9% of the bytes are Q5_K** (no kernel). Every dimension is cited from the GGUF and gated; the whole-model top is deliberately un-elaboratable until those land. |
+| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB<br>212 GB resident at 1M context | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config LOCKED, datapath NOT COMPLETE.** Arch `glm5next` — not a re-dimensioned GLM-5.2: **34 of 45 layers are KDA linear attention** (no RTL here), the residual path is hyper-connections (no RTL), and **34.9% of the bytes are Q5_K** (no kernel). Every dimension is cited from the GGUF and gated; the whole-model top is deliberately un-elaboratable until those land. |
 | **GLM-5.2** | [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF)<br>753B MoE (~40B active/token), ~467 GB | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | **The proven build.** Full datapath bit-exact vs an independent ggml reference, memory-system controllers formally verified, whole product top placed & routed on a real FPGA. The paper is about this build, and the GLM-5.3-Flash branch forked from its tip. |
 | **Laguna-S-2.1** | [`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)<br>118B MoE (~8B active/token) | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | **Port in progress.** Dequant inherited unchanged; MoE path bit-exact in RTL at Laguna's config; the (different) GQA attention machine is specified and reference-verified end to end — the bit-exact orchestrator RTL is scoped, not yet written. |
 
@@ -74,7 +74,16 @@ same-family successor was expected to make it the *cheapest* port yet. It is not
   formats already built*; a k-quant mix is a per-checkpoint fact, and it must be read from the GGUF
   rather than assumed.
 
-Details: [`docs/GLM53_FLASH_PORT.md`](https://github.com/Wick-Lim/WPU/blob/glm5.3-flash/UD-Q4_K_XL/docs/GLM53_FLASH_PORT.md) on the port branch.
+It also moves the hardware plan, in the other direction. Only 11 of 45 layers cache KV and NoPE strips
+the rotary tail off the cached latent, so the 1M-context KV falls from ~94 GB to **11.8 GB** and the
+whole resident footprint from ~561 GB to **212 GB**. That re-sizes rung ③ (256 GB — but built as
+16 × 16 GB, because the 1024-bit bus follows package count, not capacity), leaves rung ④'s HBM tier
+~8× oversized, and newly puts an all-HBM residency in reach that GLM-5.2 could not touch. None of it
+changes the tok/s, which still divide by an `A_eff` this model has not been measured for.
+
+Details: [`docs/GLM53_FLASH_PORT.md`](https://github.com/Wick-Lim/WPU/blob/glm5.3-flash/UD-Q4_K_XL/docs/GLM53_FLASH_PORT.md)
+and [`docs/HARDWARE_LADDER.md`](https://github.com/Wick-Lim/WPU/blob/glm5.3-flash/UD-Q4_K_XL/docs/HARDWARE_LADDER.md)
+§"GLM-5.3-Flash re-sizing" on the port branch.
 
 ---
 

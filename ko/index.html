@@ -350,7 +350,7 @@
           <li><span class="rung">②</span> 자금이 투입된 커스텀 보드 <span class="v">~15–40 <em>tok/s</em></span></li>
           <li><span class="rung">③</span> 512GB 상주 박스 <span class="v">≈80 <em>tok/s</em></span></li>
         </ul>
-        <p class="note">Rung-③ 설계점 ≈80 tok/s <span class="k">[실측 입력 기반 추정]</span> — U(K)와 MTP accept rate r은 둘 다 GLM-5.2에서 실측된 값이다. GLM-5.2의 더 깊은 MTP가 공개된 accept depth에 도달하면 ~95. GLM-5.3-Flash에서는 <b>용량</b> 쪽이 훨씬 여유로워지지만(467 GB 대비 199.7 GB이므로 전체 상주가 rung ③보다 한참 아래에서 이미 제약이 아니게 된다), <b>속도</b> 쪽은 accept rate를 다시 측정하기 전까지 GLM-5.2의 값 그대로다.</p>
+        <p class="note">Rung-③ 설계점 ≈80 tok/s <span class="k">[실측 입력 기반 추정]</span> — U(K)와 MTP accept rate r은 둘 다 GLM-5.2에서 실측된 값이다. GLM-5.2의 더 깊은 MTP가 공개된 accept depth에 도달하면 ~95. GLM-5.3-Flash에서는 <b>용량</b> 쪽이 여유로워지지만(1M 문맥에서 <b>212 GB</b>, GLM-5.2의 ~561 GB 대비), 패키지 수까지 같이 줄이면 안 된다. rung ③은 256 GB를 <b>16 × 16 GB</b>로 구성해야 한다. 1024-bit 버스가 용량이 아니라 패키지 수를 따라가기 때문이다. <b>속도</b> 쪽은 accept rate를 다시 측정하기 전까지 GLM-5.2의 값 그대로다. <a href="roadmap.html">로드맵</a> 참고.</p>
       </div>
     </div>
   </section>

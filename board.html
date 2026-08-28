@@ -213,7 +213,7 @@
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">Rung ③ design point · concept · <span class="tag">[EST]</span></div>
       <h1>WPU appliance board</h1>
-      <p class="lede">A concept design point for the rung-③ silicon appliance: a 512&nbsp;GB LPDDR5X full-residency box holding the whole ~467&nbsp;GB Q4_K checkpoint in DRAM. <b>No board has been built.</b> Every throughput, power, and cost figure below is an estimate <span class="k">[EST]</span>; the physical PHYs are vendor IP, TB-stubbed in RTL.</p>
+      <p class="lede">A concept design point for the rung-③ silicon appliance: a 512&nbsp;GB LPDDR5X full-residency box holding the whole ~467&nbsp;GB Q4_K checkpoint in DRAM. <b>Sized for GLM-5.2.</b> The current target, GLM-5.3-Flash, needs <b>212&nbsp;GB</b> resident at the full 1M context, so the same board becomes <b>16&nbsp;×&nbsp;16&nbsp;GB = 256&nbsp;GB</b> — the package count stays at 16, because the 1024-bit bus and the ~1.1&nbsp;TB/s follow the number of packages, not the capacity. Dropping to 8&nbsp;×&nbsp;32&nbsp;GB would hit the same 256&nbsp;GB at half the bandwidth. <b>No board has been built.</b> Every throughput, power, and cost figure below is an estimate <span class="k">[EST]</span>; the physical PHYs are vendor IP, TB-stubbed in RTL.</p>
       <div class="proof">The measured, in-repo result is the <b>FPGA fit</b> (rung ①) shown directly below. The board on this page is the rung-③ endpoint of the hardware ladder — a modeled target, not fabricated hardware.</div>
     </div>
   </div>

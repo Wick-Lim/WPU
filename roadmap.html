@@ -260,7 +260,7 @@
           </tr>
           <tr>
             <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">at scale</span></td>
-            <td>Custom silicon; 512 GB LPDDR5X full residency (16×32 GB)</td>
+            <td>Custom silicon; full residency. 512 GB (16×32 GB) sizes it for GLM-5.2; GLM-5.3-Flash needs <b>212 GB</b>, so <b>256 GB as 16×16 GB</b> — the package count must stay 16, since the 1024-bit bus follows units, not capacity</td>
             <td>1024-bit, ~1.1 TB/s; whole checkpoint resident — ~467 GB sizing it for GLM-5.2, ~199.7 GB for GLM-5.3-Flash; cold store one M.2 NVMe (~70 s boot)</td>
             <td class="toks">≈80 tok/s <span class="tag">[measured-inputs EST]</span></td>
             <td>bit-exact (residency ⇒ h=1)</td>
@@ -269,7 +269,7 @@
           </tr>
           <tr>
             <td class="rungcell">④ HBF + HBM<br><span style="color:var(--ink-dim);font-weight:400">future</span></td>
-            <td>Two-store box: 512 GB HBF (weights, non-volatile, resident) + 96 GB HBM (KV)</td>
+            <td>Two-store box: 512 GB HBF (weights, non-volatile, resident) + 96 GB HBM (KV). Both sized for GLM-5.2 — GLM-5.3-Flash needs 199.7 GB of weights and <b>11.8 GB</b> of KV, so the HBM tier is ~8× oversized; the 2-stack HBF default is unchanged, because the second stack buys bandwidth, not capacity</td>
             <td>HBF ~1.6 TB/s <b>per stack</b>; 2-stack base ~3.2 TB/s against weights (1-stack entry ~100–115)</td>
             <td class="toks">~200+ tok/s <span class="tag">[EST]</span></td>
             <td>bit-exact (same RTL)</td>
@@ -342,8 +342,13 @@
       </div>
       <div class="card">
         <h3>KV → HBM</h3>
-        <p>The MLA latent KV is <b>87.8&nbsp;KB/token</b>, accumulating with context → <b>~90&nbsp;GB at the full 1M context</b>, so a <b>96&nbsp;GB HBM is enough</b> (~6&nbsp;GB headroom — tight for full 1M, less if capped). It's <b>random-access and latency-sensitive</b> — the one pattern flash latency can't serve, so it lives in low-latency HBM. This is about latency/capacity, not raw tok/s; the speed win comes from the <b>weight-stream BW (HBF)</b>: the announced <b>~1.6&nbsp;TB/s is per-stack</b> → one stack ~100–115 tok/s <span class="k">[EST]</span>; HBF stacks like HBM, and rung ④ assumes <b>multi-stack by default: 2 stacks (3.2&nbsp;TB/s) → ~200+ tok/s</b> <span class="k">[EST]</span> (1-stack entry ~100–115) — the cost that comes with the default is the die (~26K MAC lanes, sublinear scaling) and power, which become the binding constraints instead of memory.</p>
+        <p><b>For GLM-5.2</b>, the MLA latent KV is <b>87.8&nbsp;KB/token</b>, accumulating with context → <b>~90&nbsp;GB at the full 1M context</b>, so a <b>96&nbsp;GB HBM is enough</b> (~6&nbsp;GB headroom — tight for full 1M, less if capped). <b>For GLM-5.3-Flash it is 11&nbsp;KiB/token → 11.8&nbsp;GB at 1M</b>, because only <b>11 of 45 layers cache at all</b> (the other 34 are KDA linear-attention blocks with a fixed-size state) and NoPE strips the rotary tail off the cached latent. That makes this tier ~8× oversized — and worth noting as an architectural question rather than a sizing tweak, since <em>KV capacity was the reason to split the stores</em>. The access-pattern argument below survives; the capacity argument largely does not. It's <b>random-access and latency-sensitive</b> — the one pattern flash latency can't serve, so it lives in low-latency HBM. This is about latency/capacity, not raw tok/s; the speed win comes from the <b>weight-stream BW (HBF)</b>: the announced <b>~1.6&nbsp;TB/s is per-stack</b> → one stack ~100–115 tok/s <span class="k">[EST]</span>; HBF stacks like HBM, and rung ④ assumes <b>multi-stack by default: 2 stacks (3.2&nbsp;TB/s) → ~200+ tok/s</b> <span class="k">[EST]</span> (1-stack entry ~100–115) — the cost that comes with the default is the die (~26K MAC lanes, sublinear scaling) and power, which become the binding constraints instead of memory.</p>
       </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>Newly reachable at 212 GB — and why it is not simply an upgrade</h3>
+      <p>GLM-5.3-Flash's whole resident footprint is <b>212&nbsp;GB</b> (199.7 weights + 11.8 KV + 0.4 indexer + 0.15 KDA state), so it fits <b>entirely in HBM</b> — 6× HBM3E (216&nbsp;GB, ~7.2&nbsp;TB/s → ~510 tok/s) or 4× HBM4 (256&nbsp;GB, ~8&nbsp;TB/s → ~567 tok/s) <span class="k">[EST]</span>. GLM-5.2 at ~561&nbsp;GB could not: it would need 16× HBM3E or 9× HBM4 <em>just to fit</em>. But this is a <b>different product bracket, not a faster appliance</b>: 8&nbsp;TB/s at DRAM-class 4–7&nbsp;pJ/bit is <b>256–448&nbsp;W for the memory rail alone</b> <span class="k">[EST]</span> against a ≥50–78&nbsp;W envelope; HBM is volatile, so the boot-load HBF exists to eliminate comes back; and it needs ~9,500 MAC lanes @1&nbsp;GHz on a design whose lane scaling is measured <b>sublinear</b>. For a desktop appliance HBF stays the right answer for the weight tier.</p>
+      <p class="note" style="margin-top:8px"><b>Two reasons these fast rows are optimistic.</b> (1) Every tok/s here divides weight bytes by bandwidth — but the DSA indexer grows with context: <b>2.2% of the weight MACs at 32K, 70.5% at 1M</b> (parity ~1.49M tokens). At full context the weight-bandwidth-bound model these figures come from no longer holds. (2) <b>No speculative amortization is applied</b> — GLM-5.3-Flash's accept rate is unmeasured. For scale, GLM-5.2 needs A_eff=1.87 to reach ~79 tok/s at 1.1&nbsp;TB/s (43 raw); GLM-5.3-Flash reaches <b>78 with no speculation at all</b>. Reproduce: <span class="k">python3 tools/glm53_flash_memory_budget.py</span> on the port branch.</p>
     </div>
     <p class="note"><b>Honest caveats.</b> HBF is emerging tech (unshipped). Capped by the same sublinear lane scaling (4× lanes → ~2.40×) — the die must be provisioned to consume the higher BW or compute bottlenecks. Higher power (HBF + HBM run hotter than LPDDR5X — this pulls <em>against</em> the low-power / fanless direction). The RTL fits (<span class="k">flash_xbar</span> is a medium-agnostic address→bytes crossbar; <span class="k">kv_cache_pager</span>/<span class="k">weight_loader</span> already separate KV from the weight stream), so the two-store split is a re-parameterization — but the DDR-tier removal + re-tiering and the vendor HBF/HBM PHY + controllers are not built. All <span class="k">[EST]</span>.</p>
   </section>

@@ -260,7 +260,7 @@
           </tr>
           <tr>
             <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">양산 규모</span></td>
-            <td>커스텀 실리콘; 512 GB LPDDR5X 전량 상주(16×32 GB)</td>
+            <td>커스텀 실리콘; 전량 상주. 512 GB(16×32 GB)는 GLM-5.2 기준이고, GLM-5.3-Flash는 <b>212 GB</b>면 되므로 <b>256 GB를 16×16 GB로</b> — 1024-bit 버스는 용량이 아니라 패키지 수를 따라가므로 패키지는 16개를 유지해야 한다</td>
             <td>1024-bit, ~1.1 TB/s; 체크포인트 전체 상주 — GLM-5.2 기준 ~467 GB, GLM-5.3-Flash 기준 ~199.7 GB. cold store는 M.2 NVMe 1개(~70 s 부팅)</td>
             <td class="toks">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></td>
             <td>bit-exact (상주 ⇒ h=1)</td>
@@ -269,7 +269,7 @@
           </tr>
           <tr>
             <td class="rungcell">④ HBF + HBM<br><span style="color:var(--ink-dim);font-weight:400">미래</span></td>
-            <td>2중 저장 박스: 512 GB HBF(가중치, 비휘발성, 상주) + 96 GB HBM(KV)</td>
+            <td>2중 저장 박스: 512 GB HBF(가중치, 비휘발성, 상주) + 96 GB HBM(KV). 둘 다 GLM-5.2 기준이다 — GLM-5.3-Flash는 가중치 199.7 GB, KV <b>11.8 GB</b>라 HBM 계층이 ~8배 과대하다. HBF 2-stack 기본값은 그대로다. 두 번째 스택이 사는 것은 용량이 아니라 대역폭이기 때문이다</td>
             <td>HBF <b>스택당</b> ~1.6 TB/s; 2-stack 기준 가중치에 대해 ~3.2 TB/s (1-stack 진입 구성은 ~100–115)</td>
             <td class="toks">~200+ tok/s <span class="tag">[추정]</span></td>
             <td>bit-exact (동일 RTL)</td>
@@ -342,8 +342,13 @@
       </div>
       <div class="card">
         <h3>KV → HBM</h3>
-        <p>MLA latent KV는 <b>87.8&nbsp;KB/token</b>이고 context에 따라 누적되어 <b>1M context를 다 채우면 ~90&nbsp;GB</b>가 되므로 <b>96&nbsp;GB HBM이면 충분하다</b>(여유 ~6&nbsp;GB — 1M을 꽉 채우면 빠듯하고, context를 제한하면 덜 빠듯하다). KV는 <b>random-access이고 latency에 민감하다</b> — flash latency가 감당할 수 없는 유일한 패턴이므로 저지연 HBM에 둔다. 이는 latency/용량의 문제이지 tok/s 자체의 문제가 아니다. 속도 이득은 <b>가중치 스트림 BW(HBF)</b>에서 나온다: 발표된 <b>~1.6&nbsp;TB/s는 스택당</b> 값이므로 1 스택이면 ~100–115 tok/s <span class="k">[추정]</span>. HBF는 HBM처럼 적층되며, ④ 단은 <b>다중 스택을 기본으로 가정한다: 2 스택(3.2&nbsp;TB/s) → ~200+ tok/s</b> <span class="k">[추정]</span>(1-stack 진입 구성은 ~100–115). 그 기본값에 따라붙는 대가는 die(~26K MAC lane, 선형 미만 확장)와 전력이며, 이때는 메모리 대신 이 둘이 구속 조건이 된다.</p>
+        <p><b>GLM-5.2에서는</b> MLA latent KV가 <b>87.8&nbsp;KB/token</b>이고 context에 따라 누적되어 <b>1M context를 다 채우면 ~90&nbsp;GB</b>가 되므로 <b>96&nbsp;GB HBM이면 충분하다</b>(여유 ~6&nbsp;GB — 1M을 꽉 채우면 빠듯하고, context를 제한하면 덜 빠듯하다). <b>GLM-5.3-Flash에서는 11&nbsp;KiB/token, 1M에서 11.8&nbsp;GB다.</b> <b>45개 중 11개 레이어만 캐시하고</b>(나머지 34개는 고정 크기 상태를 갖는 KDA 선형 어텐션 블록이다) NoPE라 캐시되는 latent에 rope 꼬리가 안 붙기 때문이다. 그래서 이 계층은 ~8배 과대하다 — 그리고 이건 사이징 조정이 아니라 구조적 질문으로 봐야 한다. <em>저장소를 둘로 나눈 이유가 바로 KV 용량이었기</em> 때문이다. 아래의 접근 패턴 논거는 그대로 살아있지만, 용량 논거는 대부분 사라진다. KV는 <b>random-access이고 latency에 민감하다</b> — flash latency가 감당할 수 없는 유일한 패턴이므로 저지연 HBM에 둔다. 이는 latency/용량의 문제이지 tok/s 자체의 문제가 아니다. 속도 이득은 <b>가중치 스트림 BW(HBF)</b>에서 나온다: 발표된 <b>~1.6&nbsp;TB/s는 스택당</b> 값이므로 1 스택이면 ~100–115 tok/s <span class="k">[추정]</span>. HBF는 HBM처럼 적층되며, ④ 단은 <b>다중 스택을 기본으로 가정한다: 2 스택(3.2&nbsp;TB/s) → ~200+ tok/s</b> <span class="k">[추정]</span>(1-stack 진입 구성은 ~100–115). 그 기본값에 따라붙는 대가는 die(~26K MAC lane, 선형 미만 확장)와 전력이며, 이때는 메모리 대신 이 둘이 구속 조건이 된다.</p>
       </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h3>212 GB에서 새로 열리는 선택지 — 그리고 그것이 단순한 업그레이드가 아닌 이유</h3>
+      <p>GLM-5.3-Flash의 전체 상주 용량은 <b>212&nbsp;GB</b>다(가중치 199.7 + KV 11.8 + 인덱서 0.4 + KDA 상태 0.15). 즉 <b>전부 HBM에</b> 들어간다 — HBM3E 6스택(216&nbsp;GB, ~7.2&nbsp;TB/s → ~510 tok/s) 또는 HBM4 4스택(256&nbsp;GB, ~8&nbsp;TB/s → ~567 tok/s) <span class="k">[추정]</span>. ~561&nbsp;GB인 GLM-5.2는 불가능했다. 담기만 하려 해도 HBM3E 16스택 또는 HBM4 9스택이 필요하다. 다만 이건 <b>더 빠른 어플라이언스가 아니라 다른 제품군이다</b>: 8&nbsp;TB/s를 DRAM 수준 4–7&nbsp;pJ/bit로 계산하면 <b>메모리 레일만 256–448&nbsp;W</b> <span class="k">[추정]</span>인데 어플라이언스 예산은 ≥50–78&nbsp;W다. HBM은 휘발성이라 HBF가 없애려던 부팅 로드가 되돌아온다. 그리고 lane 확장이 <b>선형 미만</b>으로 측정된 설계에서 1&nbsp;GHz 기준 ~9,500 MAC lane이 필요하다. 데스크톱 어플라이언스라면 가중치 계층은 여전히 HBF가 맞는 답이다.</p>
+      <p class="note" style="margin-top:8px"><b>이 빠른 수치들이 낙관적인 이유 두 가지.</b> (1) 여기의 모든 tok/s는 가중치 바이트를 대역폭으로 나눈 값이지만, DSA 인덱서는 context에 따라 커진다: <b>32K에서 가중치 MAC의 2.2%, 1M에서 70.5%</b>(교차점 ~1.49M 토큰). 문맥을 꽉 채우면 이 수치들이 근거로 삼은 "가중치 대역폭 구속형" 모델 자체가 성립하지 않는다. (2) <b>투기 디코딩 분할상각이 전혀 반영되지 않았다</b> — GLM-5.3-Flash의 accept rate는 미측정이다. 참고로 GLM-5.2는 1.1&nbsp;TB/s에서 ~79 tok/s를 내려면 A_eff=1.87이 필요하고(원시 43), GLM-5.3-Flash는 <b>투기 없이 78</b>이다. 재현: 포팅 브랜치에서 <span class="k">python3 tools/glm53_flash_memory_budget.py</span>.</p>
     </div>
     <p class="note"><b>정직한 단서 조항.</b> HBF는 아직 출하되지 않은 신흥 기술이다. 동일한 선형 미만 lane 확장(4× lane → ~2.40×)에 막힌다 — 늘어난 BW를 소화하도록 die를 갖추지 않으면 연산이 병목이 된다. 전력도 더 든다(HBF + HBM은 LPDDR5X보다 뜨겁게 동작하며, 이는 저전력 / 무팬 방향과 <em>반대로</em> 당긴다). RTL 자체는 들어맞는다(<span class="k">flash_xbar</span>는 매체에 무관한 address→bytes crossbar이고, <span class="k">kv_cache_pager</span>/<span class="k">weight_loader</span>는 이미 KV를 가중치 스트림과 분리한다). 따라서 2중 저장 분리는 재파라미터화에 해당한다 — 다만 DDR 계층 제거와 계층 재구성, 벤더 HBF/HBM PHY와 컨트롤러는 만들어져 있지 않다. 전부 <span class="k">[추정]</span>이다.</p>
   </section>

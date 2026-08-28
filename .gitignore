@@ -29,3 +29,8 @@ clockInfo.txt
 cong/
 iter_*_CongestedCLBsAndNets.txt
 tight_setup_hold_pins.txt
+
+# Generated routing traces (tools/route_trace.py --dump). They belong to the model
+# branches, which ignore them too -- but they survive a `git checkout main`, so
+# without this rule a `git add -A` on the hub silently stages ~54k lines of them.
+tools/*.hex
