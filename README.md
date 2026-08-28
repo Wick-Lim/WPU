@@ -1,17 +1,44 @@
-# WPU — GLM-5.2 · `UD-Q4_K_XL`
+# WPU — GLM-5.3-Flash · `UD-Q4_K_XL`
 
-> **Model branch `glm5.2/UD-Q4_K_XL`** — the RTL, testbenches and `make` gates for the GLM-5.2
-> target. Project overview, site and paper are on the hub:
-> [**`main`**](https://github.com/Wick-Lim/WPU) · sibling target:
+> **Model branch `glm5.3-flash/UD-Q4_K_XL`** — the port to
+> [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF).
+> Project overview, site and paper are on the hub:
+> [**`main`**](https://github.com/Wick-Lim/WPU) · sibling targets:
+> [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) (the proven build) ·
 > [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL).
 >
-> WPU = **W**eight **P**rocessing **U**nit — a GLM-5.2 Q4_K local-inference accelerator in Verilog.
->
+> WPU = **W**eight **P**rocessing **U**nit — a Q4_K local-inference accelerator in Verilog.
+
 > **Everyone else named their chip after the math** — Tensor, Neural, Language *Processing Unit*.
 > **This one is named after the bottleneck: the weights.** Frontier LLM inference is not
-> compute-bound, it is *weight-bandwidth*-bound — `tok/s ≈ memory bandwidth ÷ 13.87 GB of weights
-> per token` — so the die here is sized to *consume a weight stream*, not to maximize FLOPS, and it
-> reads the published weight files (GGUF k-quants) **bit-exactly, with no conversion**.
+> compute-bound, it is *weight-bandwidth*-bound — `tok/s ≈ memory bandwidth ÷ weight bytes per
+> token`, and for this checkpoint that denominator is **14.118 GB/token**, measured from the GGUF
+> tensor map (`tools/glm53_flash_gguf_scan.py`; top-8-of-288 routed experts + every dense weight,
+> `token_embd` counted as the one row a token actually reads, no speculative amortization). So the
+> die here is sized to *consume a weight stream*, not to maximize FLOPS, and it reads the published
+> weight files (GGUF k-quants) **bit-exactly, with no conversion**.
+
+## ⚠️ Port status: config LOCKED, datapath NOT COMPLETE
+
+This branch forked at the `glm5.2/UD-Q4_K_XL` tip and carries every proof that branch
+earned. **Those are GLM-5.2 proofs.** GLM-5.3-Flash is *not* a re-dimensioned GLM-5.2 —
+its arch id is **`glm5next`**, and **34 of its 45 layers are KDA linear attention, a
+machine this repo does not have.** A third of the checkpoint's bytes are **Q5_K**, for
+which there is no kernel here either.
+
+| | status |
+|---|---|
+| model config (all dims, cited from the GGUF) | **LOCKED** — `configs/full_glm53_flash.vh`, gated by `make glm53f-config-guard` |
+| MLA + DSA blocks (11 / 45) + MTP | inherited, proven at GLM-5.2 shapes |
+| MoE, dequant (Q4_K/Q6_K/Q8_0), memory system | inherited, proven at GLM-5.2 shapes |
+| KDA linear attention (34 / 45 blocks) | **no RTL** |
+| hyper-connections (every block's residual) | **no RTL** |
+| Q5_K dequant (34.9 % of bytes) | **no kernel** |
+| clamped SwiGLU, indexer k-pool compressor | **not implemented** |
+
+**No claim is made that this branch runs GLM-5.3-Flash.** The full scope, the measured
+tensor census and the reproduction commands are in
+[`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md).
 
 > **🙏 Looking for an arXiv endorsement (cs.AR).** The preprint of this work —
 > *Bit-Exact by Construction: A Verification-First RTL Accelerator that Inherits the
@@ -29,25 +56,35 @@ rung-③ 512 GB LPDDR5X design point, with the concept floorplan) ·
 [**Roadmap**](https://wick-lim.github.io/WPU/roadmap.html) (the 3-rung hardware ladder + the
 future HBF/HBM tier) — all figures info-only, every projection tagged `[EST]`.
 
-A synthesizable Verilog accelerator that runs one real model on a local, offline box: the
-published GGUF k-quant of GLM-5.2,
-[`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF) — a 753B-param
-MoE (~40B active/token, `GlmMoeDsaForCausalLM`) in ~4-bit **Q4_K**, ~467 GB.
+**The target of this branch** is the published GGUF k-quant of GLM-5.3-Flash,
+[`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF) —
+a **320.8B-param** hybrid MoE (**17.4B active/token**, arch `glm5next`) in **199.70 GB**. Those
+three figures are measured from the checkpoint's own tensor map, not quoted:
+`python3 tools/glm53_flash_gguf_scan.py --fetch /tmp/glm53f && python3 tools/glm53_flash_gguf_scan.py /tmp/glm53f`
+reads ~30 MB of GGUF headers and re-derives all of them, cross-checking the byte total against
+the published shard sizes to within the 9.52 MB the headers themselves occupy.
 
-The Q4_K GEMM core is **bit-exact to an independent ggml-Q4_K reference** (`tools/q4k_ref.py`, itself
-proven bitwise-equal to real GGUF bytes at the dequant layer). The full operator datapath is assembled
-in Q4_K, has an end-to-end numeric golden against a numpy reference, and elaborates clean at the true
-753B shape. It is wrapped by a single-module memory system (multi-channel DDR5 + NVMe expert cache +
+**The machine this branch inherits** was built and proven against GLM-5.2. The Q4_K GEMM core is
+**bit-exact to an independent ggml-Q4_K reference** (`tools/q4k_ref.py`, itself proven bitwise-equal
+to real GGUF bytes at the dequant layer). The full operator datapath is assembled in Q4_K, has an
+end-to-end numeric golden against a numpy reference, and elaborates clean at the true 753B GLM-5.2
+shape. It is wrapped by a single-module memory system (multi-channel DDR5 + NVMe expert cache +
 weight/boot loaders + multi-clock CDC) whose controllers are bounded-model-checked and unbounded-k-
 induction-proven. The whole product top is placed & routed on a real FPGA.
 
-**What is not done is stated up front:** llama.cpp *whole-runtime* numeric equality is out-of-contract by
-design (attention/accumulation orders differ), the 467 GB checkpoint has not been run end-to-end, and every
-throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon). See
+**What is not done is stated up front.** For GLM-5.3-Flash specifically: 34 of 45 layers (KDA linear
+attention), the hyper-connection residual path, and the Q5_K dequant that covers 34.9 % of the
+checkpoint's bytes are **all unimplemented** — see the port-status table above and
+[`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md). Carried over from the GLM-5.2 build:
+llama.cpp *whole-runtime* numeric equality is out-of-contract by design (attention/accumulation
+orders differ), no full checkpoint has been run end-to-end, and every throughput / cost figure is
+`[EST]` (roofline-modeled, not measured on silicon) — and for this model even the speculative-decode
+acceptance input is borrowed from GLM-5.2 until it is re-measured. See
 [*What's proven*](#whats-proven) for the exact status of every claim.
 
-> **The product** is a single-user box that runs with the ethernet unplugged — the full 753B model,
-> fully offline / air-gapped, provisioned once (~467 GB Q4_K weights) then disconnected. No per-token API
+> **The product** is a single-user box that runs with the ethernet unplugged — the full model,
+> fully offline / air-gapped, provisioned once (**~199.7 GB** of UD-Q4_K_XL weights for
+> GLM-5.3-Flash, against ~467 GB for GLM-5.2) then disconnected. No per-token API
 > fees, no vendor that can rate-limit or cut you off. The number that matters is single-user interactive
 > throughput; it is set by the hardware rung (memory bandwidth / IO / PHY budget) — see
 > [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md).
@@ -55,7 +92,9 @@ throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon).
 > **Where things live.** The repo is organised as a hub plus one branch per model target:
 > [**`main`**](https://github.com/Wick-Lim/WPU) is the hub (project README, the
 > [site](https://wick-lim.github.io/WPU/), the [paper](https://github.com/Wick-Lim/WPU/tree/main/paper));
-> **this branch** builds GLM-5.2; and
+> **this branch** ports GLM-5.3-Flash (config locked, datapath incomplete — see the port-status
+> table above); [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) is the
+> proven GLM-5.2 build this one forked from; and
 > [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) ports the
 > same accelerator to a second model (dequant inherited unchanged, MoE bit-exact in RTL, the GQA
 > attention machine reference-verified — orchestrator RTL scoped, not written). Prior work is kept as
@@ -66,6 +105,13 @@ throughput / cost figure is `[EST]` (roofline-modeled, not measured on silicon).
 ---
 
 ## What's proven
+
+> **⚠️ Every row below was measured on GLM-5.2 shapes**, and is inherited by this branch as a
+> *machine*, not as a claim about GLM-5.3-Flash. They are the reason the port starts from a strong
+> base — the dequant core, the MoE, the memory system and the whole verification harness are
+> model-independent — but none of them has been re-run at GLM-5.3-Flash's shape, and the blocks
+> GLM-5.3-Flash needs that do not exist yet (KDA, hyper-connections, Q5_K) have no row here at all.
+> See [`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md) §4.
 
 Each row is tagged for the kind of evidence behind it: **PROVEN** (a gated bit-exact / functional sim),
 **FORMAL** (a solver proof over the memory/control plane only), **MEASURED** (real RTL cycles or a real
@@ -126,24 +172,44 @@ byte) — a test that cannot tell a correct result from a broken one proves noth
 
 ---
 
-## The target: `unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`
+## The target: `unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`
 
-A dynamic k-quant mix: most tensors Q4_K; sensitive ones kept at higher precision. Each type dequantizes
-exactly per ggml, then the same GEMM contract runs (dequant → fp32 MAC → bf16). All four types have RTL
-consumers, bit-exact to the same reimpl golden.
+A dynamic k-quant mix: the routed experts carry the model at 4–6 bits, everything else is kept at Q8_0.
+Each type dequantizes exactly per ggml, then the same GEMM contract runs (dequant → fp32 MAC → bf16).
+The mix below is **measured from all 1412 tensors** of the published build, not assumed — and it is how
+the Q5_K gap was found:
 
-| Type | Dequant | Golden | RTL consumer |
-|---|---|---|---|
-| **Q4_K** | `w = (d·sc)·q − (dmin·m)` | ✅ bit-exact | `q4k.vh` + `glm_matmul_q4k.v` (160/160) |
-| **Q6_K** | `w = (d·sc)·(q−32)` | ✅ bit-exact | `q4k_mixed.vh` + `w_type` arm |
-| **Q8_0** | `w = d·q` | ✅ bit-exact | `q4k_mixed.vh` + `w_type` arm |
-| **F16** | `w = fp16→fp32` | ✅ (exact) | `w_type` passthrough |
+| Type | Tensors | Bytes | Share | Where | Dequant | RTL consumer |
+|---|---|---|---|---|---|---|
+| **Q4_K** | 84 | 114.15 GB | 57.2 % | `ffn_{gate,up}_exps` | `w = (d·sc)·q − (dmin·m)` | ✅ `q4k.vh` + `glm_matmul_q4k.v` (160/160) |
+| **Q5_K** | 42 | 69.76 GB | **34.9 %** | `ffn_down_exps` | — | ❌ **no kernel in this repo** |
+| **Q8_0** | 645 | 9.62 GB | 4.8 % | attention, shared expert, `output` | `w = d·q` | ✅ `q4k_mixed.vh` + `w_type` arm |
+| **Q6_K** | 3 | 5.95 GB | 3.0 % | UD bump on `blk.{11,12,44}.ffn_down_exps` | `w = (d·sc)·(q−32)` | ✅ `q4k_mixed.vh` + `w_type` arm |
+| **F32** | 638 | 0.23 GB | 0.1 % | norms, routing gates, `ssm_a`/`dt`/`conv1d` | — | n/a |
+| **total** | **1412** | **199.70 GB** | | | | |
 
-Architecture (model dims, independent of quant): hidden 6144, 78 layers (`first_k_dense_replace=3`), 64
-heads (`head_dim=192`), MLA (`qk_nope 192 + qk_rope 64`, `v 256`, `kv_lora 512`, `q_lora 2048`), MoE 256
-experts top-8 + 1 shared, dense `intermediate 12288`, DSA sparse attention (`index_topk 2048`), vocab
-154880, 1M context, `rope_theta 8e6`, RMSNorm `eps 1e-5`, MTP (`num_nextn_predict_layers 1`). `q_lora 2048`
-confirmed vs the real safetensors; `kv_lora 512` is `[PENDING safetensors]` (DeepSeek-standard).
+That byte total cross-checks against the published shard sizes (199.71 GB) to within the 9.52 MB of GGUF
+headers — the agreement is what makes the parse trustworthy rather than merely plausible.
+
+The **UD "Dynamic" bumps are per tensor, not per family**: `blk.11`'s gate/up experts are promoted
+Q4_K→Q5_K and `blk.{11,12,44}`'s down experts Q5_K→Q6_K. A loader that assumes one type per tensor family
+will mis-read those blocks; the type must be read from the GGUF per tensor.
+
+**Architecture** (all values cited in `configs/full_glm53_flash.vh`, gated by `make glm53f-config-guard`):
+arch `glm5next`, hidden 4096, **45 layers + 1 MTP block**, split **34 KDA linear-attention + 11 MLA+DSA**
+(full attention at blocks 3, 7, …, 43), `first_k_dense_replace=3`, 64 heads, MLA (`qk_nope 256`,
+**`qk_rope 0` — NoPE, no rotary anywhere**, `v 256`, `kv_lora 512` *confirmed in the GGUF*, `q_lora 1536`),
+DSA indexer (32 heads × 128, `index_topk 2048`, k-pool 4 with compression), MoE **288 experts** top-8 +
+1 shared, `moe_intermediate 2048`, dense `intermediate 12288`, **clamped SwiGLU (limit 10.0)**,
+**hyper-connection residual (mult 4, Sinkhorn 20 iters)**, vocab 154880, 1M context, RMSNorm `eps 1e-5`,
+MTP (`nextn_predict_layers 1`). **320.759 B params total, 16.742 B active/token, 14.118 GB read/token.**
+
+Re-derive every figure in this section from the checkpoint itself (~30 MB of headers, not 199.7 GB):
+
+```sh
+python3 tools/glm53_flash_gguf_scan.py --fetch /tmp/glm53f
+python3 tools/glm53_flash_gguf_scan.py /tmp/glm53f
+```
 
 ---
 
@@ -163,6 +229,14 @@ factor yet; every lever therefore ships default-off.
 
 ## Throughput — `[EST]`, an optimistic ceiling
 
+> **⚠️ Every number in this section is GLM-5.2's and has NOT been re-measured for GLM-5.3-Flash.**
+> The raw denominator for this model *is* known — **14.118 GB/token**, derived from its own tensor
+> map — but the amortized figure below divides that kind of number by `A_eff`, and `A_eff` is a
+> property of a specific model's draft quality. GLM-5.3-Flash does have an MTP head
+> (`nextn_predict_layers = 1`), so the mechanism carries over, but its accept rate is unmeasured.
+> Until it is, no amortized tok/s figure for GLM-5.3-Flash is published here.
+> See [`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md) §4.3.
+
 The design is **bandwidth-bound**, so `tok/s ≈ memory BW ÷ 13.87 GB/token`, where 13.87 GB is `A_eff=1.87`
 (the amortization mechanism now **hardware-measured**) at the **measured** accept rate r₁=0.87 (GLM-4.5-Air).
 The denominator is well-grounded; the numerator is the external hardware's bandwidth.
@@ -176,6 +250,13 @@ The denominator is well-grounded; the numerator is the external hardware's bandw
 
 **Rung ④ (future, memory-tech-dependent).** Once HBF (High Bandwidth Flash — 3D-NAND stacked HBM-style,
 announced 2025) matures, the two jobs the current design splits — persistent store (NVMe) and weight-stream bandwidth (LPDDR5X) —
+> **Sizing note.** The whole ladder below is dimensioned for GLM-5.2's ~467 GB checkpoint. At
+> **199.7 GB**, GLM-5.3-Flash fits the same stores with a lot of room to spare — full residency stops
+> being the binding constraint well below rung ③. The ladder is *not* re-derived for it here, because
+> the tok/s side of every rung depends on the unmeasured acceptance rate (see the banner above);
+> quoting a re-sized rung would mean inventing that input. The capacity headroom is real; the speed
+> numbers stay GLM-5.2's until measured.
+
 collapse into **one non-volatile, high-bandwidth store**: ~512 GB HBF holds the 467 GB weights *resident and
 non-volatile* (no NVMe tier, no ~467 GB DRAM copy, no ~70 s boot-load → instant-on), while a separate ~96 GB HBM
 holds only the KV cache. The announced ~1.6 TB/s is **per stack** and HBF stacks like HBM, so the 2-stack base
@@ -200,6 +281,28 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
 
 ## What's NOT done (open, honest)
 
+**GLM-5.3-Flash port gaps — the ones specific to this branch, in dependency order:**
+
+- **KDA linear attention — 34 of 45 layers have no RTL.** Short causal conv (k=4) on q/k/v, gated
+  delta-rule state update, `f`/`g` low-rank gates, decay from `ssm_a` + `ssm_dt`, per-head norm. This
+  is a new datapath with new state memory and a new golden reference; it is the item that sets the
+  schedule.
+- **Q5_K dequant — no kernel anywhere in this repo**, and Q5_K is 34.9 % of the checkpoint's bytes
+  (all 42 `ffn_down_exps`). Without it the model cannot be read at all. Smallest of the three gaps:
+  it is a sibling of the proven Q4_K/Q6_K path and the existing `gguf_crosscheck` harness extends to it.
+- **Hyper-connections — no RTL.** Sinkhorn normalization (20 iterations) over a width-4 connection
+  matrix replaces the plain residual add on every block; needs a fixed-point study first.
+- **Clamped SwiGLU (limit 10.0) and the indexer k-pool compressor** — not implemented; both small.
+- **Speculative-decode inputs not re-measured.** The MTP head exists here
+  (`nextn_predict_layers = 1`), but GLM-5.2's `A_eff = 1.87` / accept rate 0.87 are properties of a
+  different model and do not transfer, so no amortized tok/s figure is published for GLM-5.3-Flash.
+- **Packer / flash layout not re-targeted** to `glm5next` tensor names and the per-tensor UD mix; and
+  `gguf_crosscheck` has not been re-sealed on GLM-5.3-Flash bytes.
+
+Full scope and reproduction commands: [`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md).
+
+**Carried over from the GLM-5.2 build (unchanged by this branch):**
+
 - **llama.cpp whole-runtime numeric equality** — out-of-contract by design; the 467 GB checkpoint has not
   been consumed end-to-end (needs a GPU / large-memory host).
 - **Board bring-up** — the FPGA P&R is done in-repo, and the whole board-side digital chain now exists and
@@ -212,7 +315,9 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
 - **ASIC scan insertion + compiled SRAM macros + their BIST collars** — tool/vendor steps on the RTL (the
   RTL is scan-ready and carries verified BIST *references*), not hand-RTL.
 - **Full-scale functional sim** — infeasible (LM-head GEMV ~2.4e8 K-beat/token); the model is verified at a
-  small-but-faithful slice and elaboration-clean at the real 753B shape. HBM-scale lane consumption
+  small-but-faithful slice and elaboration-clean at the real 753B GLM-5.2 shape (a GLM-5.3-Flash
+  full-shape elaboration waits on the KDA block — `make glm53f-config-guard` keeps any whole-model
+  top from elaborating until it exists). HBM-scale lane consumption
   (~12,732 lanes) is parameterized + sublinear-measured but functionally verified only at modest lane counts.
 - **Economics** (BOM / TCO / LOI) — planning-doc `[EST]`, not evidence; no signed LOI exists.
 
@@ -224,6 +329,7 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
 brew install icarus-verilog verilator yosys     # iverilog 13.0, verilator 5.048, yosys 0.66
 python3 -m pip install numpy                    # required by the golden-reference generators (make all / q4k / model-q4k)
 
+make glm53f-config-guard # GLM-5.3-Flash config gate: dims usable, whole-model top poisoned (8/8, both tools)
 make all                 # the rung-① FPGA prove-it gate: unittests + synth-glm + formal + more
 make release-gate-strict # the full release gate + exact per-gate test-count manifest check
 make q4k                 # the Q4_K sub-gate (q4k_prim / glm_matmul_q4k / swiglu_expert_q4k / moe_router_q4k)
@@ -235,6 +341,14 @@ make l3-e2e              # the L3 board top end to end: SPI boot image -> tokens
 make formal / formal-ind # BMC / unbounded k-induction of the memory controllers
 make synth-glm           # yosys whole-chip structural gate on glm_q4k_system_cdc
 make host-test           # host OpenAI-server + device-protocol + tokenizer scaffold (32 tests)
+```
+
+Re-derive the GLM-5.3-Flash target figures straight from the published checkpoint (reads ~30 MB of
+GGUF headers, not the 199.7 GB of weights):
+
+```sh
+python3 tools/glm53_flash_gguf_scan.py --fetch /tmp/glm53f
+python3 tools/glm53_flash_gguf_scan.py /tmp/glm53f
 ```
 
 The one true bit-exact datapath result, standalone (zsh does not word-split — list sources explicitly):
@@ -258,6 +372,10 @@ model adds the memory/streaming system + array scaling.
   [Overview](https://wick-lim.github.io/WPU/), the
   [Board](https://wick-lim.github.io/WPU/board.html) design point, and the
   [Roadmap](https://wick-lim.github.io/WPU/roadmap.html) ladder.
+- **[`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md)** — **this branch's port ledger**: what
+  GLM-5.3-Flash actually is, the measured tensor census and quant mix, what is inherited from the
+  GLM-5.2 build, and the ordered list of what is missing. Start here for "what does this branch
+  actually run."
 - **[`docs/Q4K_RETARGET.md`](docs/Q4K_RETARGET.md)** — the Q4_K dequant math, GEMM contract, per-type status.
   Start here for "what is Q4_K-exact and what isn't."
 - **[`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)** — the hardware plan: rungs ①–③ (prove-it FPGA →
