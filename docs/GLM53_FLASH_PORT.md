@@ -95,7 +95,7 @@ Sources: `[gguf]` GGUF metadata KV, `[cfg]` `config.json` `text_config`,
 | hyper-connections | none | **mult 4, Sinkhorn 20** | new |
 | MTP head | yes | **yes** (`nextn_predict_layers = 1`) | |
 | total params | 753 B | **320.759 B** | `[scan]` |
-| active / token | ~40 B | **17.377 B** | `[scan]`, top-8/288 + dense |
+| active / token | ~40 B | **16.742 B** | `[scan]`, top-8/288 + dense; `token_embd` is a row lookup, not a per-token GEMV |
 | checkpoint size | ~467 GB | **199.70 GB** | `[scan]`, UD-Q4_K_XL |
 
 **A GLM-5.2 debt this retires:** `configs/full_glm52.vh` carried `kv_lora_rank =
@@ -182,8 +182,31 @@ fixed-size recurrent state instead — it does not grow with context length. A
 would be badly wrong for this model, in the favourable direction.
 
 That also softens the S_MAX / SWIN caveat (task B7): the attention-scratch
-constraint now binds on 11 blocks, not 78. Quantifying the real budget is a
-follow-up, and no number for it is published yet.
+constraint now binds on 11 blocks, not 78.
+
+**The budget is now quantified** (`tools/glm53_flash_memory_budget.py`, which
+parses its model constants out of `configs/full_glm53_flash.vh` so it cannot
+drift from the locked config):
+
+| | GLM-5.2 | GLM-5.3-Flash |
+|---|---|---|
+| weights | 467 GB | 199.7 GB `[measured]` |
+| KV @ 1M context | ~94 GB | **11.8 GB** `[derived]` |
+| DSA indexer keys @ 1M | — | 0.37 GB `[derived]` |
+| KDA recurrent state | — | 0.148 GB, **constant in context** |
+| total resident @ 1M | ~561 GB | **212 GB** |
+
+Per token the cached latent is `11 x 512 x 2 B = 11 KiB`, against GLM-5.2's
+`78 x 576 x 2 B = 87.8 KiB` -- 11 of 45 layers rather than 78 of 78, and no
+rotary tail because of NoPE (`attention.key_length` equals `kv_lora_rank`
+exactly). A 1M-context budget carried over from GLM-5.2 is wrong for this model
+by ~2.6x, in the favourable direction -- which is worth saying that way round,
+because an error in the favourable direction still mis-sizes a board.
+
+What that does to the hardware ladder -- including the trap that capacity fell
+but the package/stack count must not, the ~8x-oversized rung-4 HBM tier, and the
+all-HBM residency this newly makes reachable -- is in
+[`HARDWARE_LADDER.md`](HARDWARE_LADDER.md) §"GLM-5.3-Flash re-sizing".
 
 ## 6. Reproducing every number here
 

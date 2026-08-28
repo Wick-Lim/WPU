@@ -1,6 +1,13 @@
 # Hardware performance ladder — prove cheap, scale on funding
 
-*The honest hardware plan for the local single-user GLM-5.2 box (753B-param MoE, ~40B active/token).
+*The honest hardware plan for the local single-user box. **Every rung below was sized against GLM-5.2**
+(753B-param MoE, ~40B active/token, 467 GB weights + ~94 GB KV at 1M context). This branch's target,
+GLM-5.3-Flash, changes both of those terms — and not by the same factor — so read the
+[GLM-5.3-Flash re-sizing](#glm-53-flash-re-sizing-what-changes-and-what-does-not) section before quoting
+any capacity here for it. The tok/s figures are a separate matter and do **not** carry over at all: they
+divide by a speculative `A_eff` that is unmeasured for GLM-5.3-Flash.*
+
+*Original framing:
 It replaces the earlier flat "64 GB DDR5 / ~100 GB/s / 25–40 tok/s" assumption with a **staged ladder**:
 the performance you get is set by **memory bandwidth** — specifically the **NVMe/PCIe bandwidth that
 streams the routed experts** — memory bandwidth is set by the **FPGA/silicon's IO + PHY**, and that is
@@ -234,6 +241,119 @@ The rung-③ SoC's memory system is **decided**: **LPDDR5X 256 GB (8×32 GB pack
   Only the tok/s the silicon can feed goes up. The [`ICP.md`](ICP.md) buyer (offline is *mandatory*) values
   *"it runs at all, provably local"* on rung ①, and pays more for rung ②'s speed.
 
+## GLM-5.3-Flash re-sizing: what changes, and what does not
+
+Reproduce every number in this section:
+
+```sh
+python3 tools/glm53_flash_memory_budget.py
+```
+
+It parses the model constants straight out of `configs/full_glm53_flash.vh`, so it cannot drift from
+the locked config, and it keeps the three evidence classes apart: `[measured]` weight bytes from the
+GGUF census, `[derived]` KV/state arithmetic under stated precision assumptions, `[EST]` everything
+vendor-side.
+
+### The two terms move by different factors
+
+| | GLM-5.2 (what the rungs were sized for) | GLM-5.3-Flash | ratio |
+|---|---|---|---|
+| weights | 467 GB | **199.7 GB** `[measured]` | 2.3× |
+| KV @ 1M context | ~94 GB | **11.8 GB** `[derived]` | **7.6×** |
+| DSA indexer keys @ 1M | — | 0.37 GB `[derived]` | |
+| KDA recurrent state | — | 0.148 GB, **constant in context** | |
+| **total resident @ 1M** | **~561 GB** | **212 GB** | 2.6× |
+
+The KV term collapses for two independent reasons, and both are structural rather than a tuning
+choice: **only 11 of 45 layers cache at all** (the other 34 are KDA linear-attention blocks carrying a
+fixed-size recurrent state), and **NoPE removes the rotary tail** — `attention.key_length` equals
+`kv_lora_rank` exactly, where GLM-5.2's cached key was `kv_lora 512 + rope 64`. Per token that is
+`11 × 512 × 2 B = 11 KiB`, against GLM-5.2's `78 × 576 × 2 B = 87.8 KiB`.
+
+**A 1M-context memory budget carried over from GLM-5.2 is wrong for this model by about 2.6×, in the
+favourable direction.** Stating it that way round matters: the error is not conservative, it is just
+wrong, and it would mis-size a board.
+
+### The trap: capacity fell, unit count must not
+
+Bus width and aggregate bandwidth follow the **number of packages or stacks**, not the total capacity.
+Fitting the model into fewer units is the obvious move once capacity drops 2.6×, and it is the wrong
+one — units are carried for bandwidth.
+
+| tier | units | capacity | bandwidth | tok/s `[EST]` | |
+|---|---|---|---|---|---|
+| LPDDR5X | 16 × 16 GB | 256 GB | 1.10 TB/s | **78** | rung-③ speed at half the capacity |
+| LPDDR5X | 8 × 32 GB | 256 GB | 0.55 TB/s | 39 | same capacity, **half the throughput** |
+| LPDDR5X | 16 × 32 GB | 512 GB | 1.10 TB/s | 78 | rung-③ as originally specced |
+| HBF | 1 × 256 GB | 256 GB | 1.60 TB/s | 113 | model fits one stack — but one stack is one stack's bandwidth |
+| HBF | 2 × 256 GB | 512 GB | 3.20 TB/s | **227** | rung-④ design point, re-derived |
+| HBM3E | 6 × 36 GB | 216 GB | 7.20 TB/s | 510 | newly reachable — see below |
+| HBM4 | 4 × 64 GB | 256 GB | 8.00 TB/s | 567 | newly reachable — see below |
+
+So the rung-③ answer for GLM-5.3-Flash is **256 GB built as 16 packages, not 8** — capacity halves,
+the 1024-bit bus and the throughput do not. And the rung-④ answer is still **2 HBF stacks**: 199.7 GB
+fits a single stack by capacity, but the second stack is what buys the bandwidth, exactly as it was
+for GLM-5.2. The capacity headroom is real; it is not a licence to remove units.
+
+### What the collapsed KV does to the two-store split
+
+Rung ④ specs a **~96 GB HBM** tier because GLM-5.2's KV reaches ~94 GB at 1M context. GLM-5.3-Flash
+needs **11.8 GB** — that tier is oversized by ~8×.
+
+This is worth flagging as an architectural question rather than a sizing tweak, because **the size of
+the KV was the motivation for splitting the stores in the first place.** The split is justified in this
+document by KV being "random-access and latency-sensitive — the one pattern flash latency cannot
+serve". That argument is about *access pattern* and it still holds at 11.8 GB. But the *capacity*
+argument for a dedicated HBM stack largely evaporates, and 11.8 GB is small enough that other
+placements become worth pricing. This document does not resolve that; it records that the premise moved.
+
+### Newly reachable: all-HBM residency
+
+At 212 GB resident, the whole model fits in HBM — 6 HBM3E stacks (216 GB) or 4 HBM4 stacks (256 GB).
+GLM-5.2 at ~561 GB could not: it would need 16 HBM3E or 9 HBM4 stacks *just to fit*. This is a genuinely
+new option that GLM-5.3-Flash opens.
+
+It is **not** a faster version of the appliance, and should not be quoted as one:
+
+- **Power.** 8 TB/s at DRAM-class 4–7 pJ/bit is **256–448 W for the memory rail alone** `[EST]`. The
+  appliance envelope in this document is ≥50–78 W *total*. This is a workstation/server bracket.
+- **Volatility.** HBM is volatile, so the boot-load and the persistent store come back — which is
+  precisely what HBF was chosen to eliminate ("no ~70 s boot-load → instant-on").
+- **Die.** 567 tok/s is 9.5 T MAC/s — ~9,500 lanes at 1 GHz, ~4,700 at 2 GHz. Fewer than GLM-5.2 needs
+  for the same rate (16.7B active vs ~40B), but measured lane scaling here is **sublinear** (4× lanes →
+  ~2.40×), so that is a floor on the silicon, not a bill of materials.
+
+For a desktop appliance HBF remains the right answer for the weight tier. All-HBM is a different product.
+
+### Two reasons the high-bandwidth rows are optimistic
+
+**The DSA indexer stops being free at long context.** Every tok/s in this document divides weight bytes
+by bandwidth — a model that assumes the weight stream is the whole story. Modelling the indexer as
+scoring each pooled position once per token:
+
+| context | indexer MAC/token | vs the weight MACs |
+|---|---|---|
+| 32K | 0.37 G | 2.2 % |
+| 128K | 1.48 G | 8.8 % |
+| 256K | 2.95 G | 17.6 % |
+| **1M** | **11.81 G** | **70.5 %** |
+
+Parity lands at ~1.49 M tokens. Below ~128K this is noise. At the full 1M context the machine is no
+longer purely weight-bandwidth-bound, and every tok/s figure here is derived from exactly the model
+that stops applying there. (GLM-5.2 had an `index_topk_freq` to amortize this; GLM-5.3-Flash's config
+publishes no such field, so no amortization is assumed and these are an upper bound.)
+
+**No speculative amortization is included.** Every GLM-5.3-Flash tok/s above is the *unamortized*
+figure. The MTP head exists (`nextn_predict_layers = 1`), so the mechanism carries over and the real
+numbers should be better — but `A_eff` and the accept rate are GLM-5.2 properties that do not transfer,
+and quoting a divisor this model has not been measured for would be inventing the input. See
+[`GLM53_FLASH_PORT.md`](GLM53_FLASH_PORT.md) §4.3.
+
+For scale: GLM-5.2 needs `A_eff = 1.87` to reach ~79 tok/s at 1.1 TB/s (43 tok/s raw). GLM-5.3-Flash
+reaches **78 tok/s at the same bandwidth with no speculation at all**.
+
+---
+
 ## Rung ④ (future, memory-tech-dependent): HBF weights + HBM KV — a two-store box
 
 **Status: forward-looking architecture note `[EST]`, NOT designed or verified. Contingent on an
@@ -261,6 +381,13 @@ the two access patterns cleanly:
   KV is small relative to the weight stream but **random-access and latency-sensitive** — the one pattern
   flash latency cannot serve, so it lives in low-latency HBM. Moving KV to HBM is about latency/capacity,
   not raw tok/s; the tok/s win comes from the **weight-stream BW (HBF)**.
+
+> **GLM-5.3-Flash note.** Everything in this rung-④ section is sized against GLM-5.2. For this
+> branch's target the weight tier falls to 199.7 GB and the KV tier to 11.8 GB — the ~96 GB HBM below
+> is oversized by ~8×, and the *capacity* argument for a dedicated KV stack largely goes with it (the
+> *access-pattern* argument survives). The 2-stack HBF default is unchanged, because the second stack
+> buys bandwidth, not capacity. See
+> [GLM-5.3-Flash re-sizing](#glm-53-flash-re-sizing-what-changes-and-what-does-not) above.
 
 **Two independent stores, both feeding the die directly** — HBF streams weights straight to the compute
 die (no staging copy through HBM), and HBM holds only the KV. There is no HBF→HBM path; the asymmetry is

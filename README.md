@@ -58,7 +58,7 @@ future HBF/HBM tier) — all figures info-only, every projection tagged `[EST]`.
 
 **The target of this branch** is the published GGUF k-quant of GLM-5.3-Flash,
 [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF) —
-a **320.8B-param** hybrid MoE (**17.4B active/token**, arch `glm5next`) in **199.70 GB**. Those
+a **320.8B-param** hybrid MoE (**16.7B active/token**, arch `glm5next`) in **199.70 GB**. Those
 three figures are measured from the checkpoint's own tensor map, not quoted:
 `python3 tools/glm53_flash_gguf_scan.py --fetch /tmp/glm53f && python3 tools/glm53_flash_gguf_scan.py /tmp/glm53f`
 reads ~30 MB of GGUF headers and re-derives all of them, cross-checking the byte total against
@@ -250,12 +250,14 @@ The denominator is well-grounded; the numerator is the external hardware's bandw
 
 **Rung ④ (future, memory-tech-dependent).** Once HBF (High Bandwidth Flash — 3D-NAND stacked HBM-style,
 announced 2025) matures, the two jobs the current design splits — persistent store (NVMe) and weight-stream bandwidth (LPDDR5X) —
-> **Sizing note.** The whole ladder below is dimensioned for GLM-5.2's ~467 GB checkpoint. At
-> **199.7 GB**, GLM-5.3-Flash fits the same stores with a lot of room to spare — full residency stops
-> being the binding constraint well below rung ③. The ladder is *not* re-derived for it here, because
-> the tok/s side of every rung depends on the unmeasured acceptance rate (see the banner above);
-> quoting a re-sized rung would mean inventing that input. The capacity headroom is real; the speed
-> numbers stay GLM-5.2's until measured.
+> **Sizing note.** The ladder below is dimensioned for GLM-5.2's ~467 GB checkpoint plus ~94 GB of KV.
+> GLM-5.3-Flash needs **199.7 GB + 11.8 GB = 212 GB** at the full 1M context — 2.6× less — because only
+> 11 of its 45 layers cache at all and NoPE strips the rotary tail off the cached latent. The
+> **capacity** side is re-derived in [`docs/HARDWARE_LADDER.md`](docs/HARDWARE_LADDER.md)
+> §"GLM-5.3-Flash re-sizing" (`python3 tools/glm53_flash_memory_budget.py`), including the trap that
+> the package/stack count must *not* fall with the capacity, since bandwidth follows units, and the
+> all-HBM residency that 212 GB newly makes reachable. The **speed** side stays GLM-5.2's: every
+> rung's tok/s divides by an `A_eff` this model has not been measured for.
 
 collapse into **one non-volatile, high-bandwidth store**: ~512 GB HBF holds the 467 GB weights *resident and
 non-volatile* (no NVMe tier, no ~467 GB DRAM copy, no ~70 s boot-load → instant-on), while a separate ~96 GB HBM
@@ -349,6 +351,7 @@ GGUF headers, not the 199.7 GB of weights):
 ```sh
 python3 tools/glm53_flash_gguf_scan.py --fetch /tmp/glm53f
 python3 tools/glm53_flash_gguf_scan.py /tmp/glm53f
+python3 tools/glm53_flash_memory_budget.py        # 212 GB resident @1M + what it does to the ladder
 ```
 
 The one true bit-exact datapath result, standalone (zsh does not word-split — list sources explicitly):
