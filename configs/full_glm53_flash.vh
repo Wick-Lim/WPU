@@ -31,7 +31,17 @@
 //   UNDEFINED identifier until all three missing machines are declared present:
 //       GLM53F_KDA_RTL_PRESENT   34/45 layers   (KDA linear attention)
 //       GLM53F_HC_RTL_PRESENT    residual path  (hyper-connections, Sinkhorn)
-//       GLM53F_Q5K_RTL_PRESENT   34.9% of bytes (Q5_K dequant)
+//       GLM53F_Q5K_RTL_PRESENT   34.9% of bytes (the whole Q5_K READ PATH)
+//
+//   Q5_K STATUS -- read this before assuming the third one is satisfied.  The
+//   GEMM arm exists and is gated bit-exact (`WT_Q5K` in glm_matmul_q4k, `make
+//   mixedtype` with a must-fail injection).  What does NOT exist is the rest of
+//   the read path: weight_loader_q4k cannot lay out a Q5_K tile, because that
+//   needs the packer to emit pre-assembled 5-bit codes and a 176 B/super-block
+//   geometry (docs/GLM53_FLASH_PORT.md 4.2 item 6).  A whole-model top has to
+//   STREAM Q5_K tiles, not just multiply them, so this define stays undefined
+//   until the loader path lands -- and the loader $fatal's on a Q5_K descriptor
+//   in the meantime rather than silently streaming Q4_K geometry.
 //   Defining any of those without landing the RTL is falsifying the ledger.
 //   Partial-model studies (the 11 MLA+DSA layers, the MoE, the memory system)
 //   do NOT need the gate and keep working -- that is the inherited, proven part.

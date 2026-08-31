@@ -947,7 +947,7 @@ glm53f-config-guard:
 	must_pass $(IVERILOG) -g2012 -I configs -tnull $(GLM53F_DEFS_IV) test/glm53f_fulltop_wrap.v; \
 	must_pass $(VERILATOR) --lint-only -Iconfigs $(GLM53F_DEFS_VL) --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	[ $$fail -eq 0 ] \
-	    && echo "ALL 8 TESTS PASSED (4 cases x 2 tools: dims usable; whole-model top poisoned until KDA+HC+Q5_K land)" \
+	    && echo "ALL 8 TESTS PASSED (4 cases x 2 tools: dims usable; whole-model top poisoned until KDA + hyper-connections + the Q5_K loader path land -- the Q5_K GEMM arm is done, the tile geometry is not)" \
 	    || { echo "FAILED: glm53f-config-guard"; exit 1; }
 
 # ---------------------------------------------------------------------------
