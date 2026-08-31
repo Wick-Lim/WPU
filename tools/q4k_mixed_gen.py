@@ -39,8 +39,8 @@ import q4k_ref as ref
 
 QK_K = 256
 
-# w_type enum (matches the RTL w_type[1:0] selector / weight_loader descriptor).
-WT_Q4K, WT_Q6K, WT_Q80, WT_F16 = 0, 1, 2, 3
+# w_type enum (matches the RTL w_type[2:0] selector / weight_loader descriptor).
+WT_Q4K, WT_Q6K, WT_Q80, WT_F16, WT_Q5K = 0, 1, 2, 3, 4
 
 # ---------------------------------------------------------------- bit helpers
 def f32bits(x):  return int(np.frombuffer(np.float32(x).tobytes(), np.uint32)[0])
@@ -123,6 +123,48 @@ def q4k_codes(qs):
         qi += 32
     return codes
 
+def rand_q5k_block(rng):
+    """A random Q5_K super-block: same fields as Q4_K plus the 32-byte qh."""
+    scs    = [int(v) for v in rng.integers(0, 64, 8)]
+    mns    = [int(v) for v in rng.integers(0, 64, 8)]
+    scales = ref._pack_6bit_scales(scs, mns)                 # 12 bytes
+    qh     = [int(v) for v in rng.integers(0, 256, 32)]      # 32 bytes, 8 bits each
+    qs     = [int(v) for v in rng.integers(0, 256, 128)]     # 128 bytes
+    d_h    = ref._f32_to_f16bits(rng.uniform(0.003, 0.05))
+    dm_h   = ref._f32_to_f16bits(rng.uniform(0.0,  0.02))
+    return d_h, dm_h, scales, qh, qs
+
+def q5k_codes(qh, qs):
+    """(qh[32], qs[128]) -> 256 weight-position 5-bit codes, ggml order.
+
+    This is what the PACKER pre-assembles so the RTL never touches qh: the 5-bit
+    code is (nibble | 16*qh_bit), and the qh bit for weight-position p is
+    bit (2*group + half) of qh[lane], with u1/u2 walking as ggml does.
+    """
+    codes, qi = [], 0
+    for grp in range(4):
+        for l in range(32):                     # low nibbles  + bit (2*grp+0)
+            codes.append((qs[qi + l] & 0xF) | (16 if (qh[l] >> (2*grp + 0)) & 1 else 0))
+        for l in range(32):                     # high nibbles + bit (2*grp+1)
+            codes.append((qs[qi + l] >> 4)  | (16 if (qh[l] >> (2*grp + 1)) & 1 else 0))
+        qi += 32
+    return codes
+
+def q5k_dequant_from_codes(d_h, dmin_h, scales, codes):
+    """Independent decomposition: dequant a Q5_K block from PRE-ASSEMBLED 5-bit
+    codes, i.e. exactly what the RTL does. Cross-checked against q4k_ref's
+    ggml-verbatim path in the self-test -- if the packer's code assembly and the
+    reference's mask walk ever disagree, that assert is what catches it."""
+    d  = np.float32(np.frombuffer(np.uint16(d_h).tobytes(),    np.float16)[0])
+    mn = np.float32(np.frombuffer(np.uint16(dmin_h).tobytes(), np.float16)[0])
+    y = np.empty(QK_K, np.float32)
+    for sub in range(8):
+        sc, m = ref.get_scale_min_k4(sub, scales)
+        d1 = d * np.float32(sc); m1 = mn * np.float32(m)
+        for l in range(32):
+            y[sub*32 + l] = d1 * np.float32(codes[sub*32 + l]) - m1
+    return y
+
 # ----------------------------------------------------------- per-column build
 # Each returns a dict with the K-long fp32 weights (cross-checked ref vs code
 # decomposition) + the exact per-beat codes and per-(col,block) latched headers
@@ -170,8 +212,25 @@ def build_col_f16(rng, K):
     wdeq = np.array([f16_val(b) for b in bits], np.float32)
     return dict(type=WT_F16, code=bits, wdeq=wdeq)
 
+def build_col_q5k(rng, K):
+    NSB = K // 256
+    d_h, dm_h, sc96, codes, wdeq = [], [], [], [], []
+    for _ in range(NSB):
+        dh, dmh, scales, qh, qs = rand_q5k_block(rng)
+        yref  = ref.dequantize_block_q5_K(dh, dmh, scales, qh, qs)
+        cc    = q5k_codes(qh, qs)
+        ymine = q5k_dequant_from_codes(dh, dmh, scales, cc)
+        assert u32list(yref) == u32list(ymine), "Q5_K code decomposition != q4k_ref"
+        assert max(cc) < 32 and min(cc) >= 0, "Q5_K code out of 5-bit range"
+        d_h.append(dh); dm_h.append(dmh)
+        sc96.append(sum(b << (8 * i) for i, b in enumerate(scales)))
+        codes.extend(cc); wdeq.extend(list(yref))
+    return dict(type=WT_Q5K, d_h=d_h, dm_h=dm_h, sc96=sc96,
+                code=codes, wdeq=np.array(wdeq, np.float32))
+
 BUILDERS = {WT_Q4K: build_col_q4k, WT_Q6K: build_col_q6k,
-            WT_Q80: build_col_q80, WT_F16: build_col_f16}
+            WT_Q80: build_col_q80, WT_F16: build_col_f16,
+            WT_Q5K: build_col_q5k}
 
 # ================================================================ self-test
 def _selftest(verbose=True):
@@ -295,8 +354,8 @@ def emit_mixed_gemm(path, PE_M=2, PE_N=4, seed=11):
     for K in KS:
         NSB, NB8 = K // 256, K // 32
         # rotate which type leads so every column position sees every type
-        rot   = rng.integers(0, 4)
-        types = [int((pj + rot) % 4) for pj in range(PE_N)]
+        rot   = rng.integers(0, 5)
+        types = [int((pj + rot) % 5) for pj in range(PE_N)]
         cols  = [BUILDERS[types[pj]](rng, K) for pj in range(PE_N)]
         A     = [[bf16bits(v) for v in rng.uniform(-1.5, 1.5, K)] for _ in range(PE_M)]
         Af    = [np.array([bf16_val(A[pi][k]) for k in range(K)], np.float32) for pi in range(PE_M)]
@@ -312,21 +371,21 @@ def emit_mixed_gemm(path, PE_M=2, PE_N=4, seed=11):
         for pj in range(PE_N):
             for sb in range(NSB):
                 c = cols[pj]
-                wd.append(c["d_h"][sb] if c["type"] in (WT_Q4K, WT_Q6K) else 0)
+                wd.append(c["d_h"][sb] if c["type"] in (WT_Q4K, WT_Q6K, WT_Q5K) else 0)
         lines.append(" ".join("%04x" % v for v in wd))
         # w_dmin (Q4_K only)
         wdm = []
         for pj in range(PE_N):
             for sb in range(NSB):
                 c = cols[pj]
-                wdm.append(c["dm_h"][sb] if c["type"] == WT_Q4K else 0)
+                wdm.append(c["dm_h"][sb] if c["type"] in (WT_Q4K, WT_Q5K) else 0)
         lines.append(" ".join("%04x" % v for v in wdm))
         # w_scales (Q4_K only)
         wsc = []
         for pj in range(PE_N):
             for sb in range(NSB):
                 c = cols[pj]
-                wsc.append(c["sc96"][sb] if c["type"] == WT_Q4K else 0)
+                wsc.append(c["sc96"][sb] if c["type"] in (WT_Q4K, WT_Q5K) else 0)
         lines.append(" ".join("%024x" % v for v in wsc))
         # w_q6_sc (Q6_K 16 int8/(col,sb))
         q6 = []

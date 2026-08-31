@@ -325,6 +325,49 @@ It is **not** a faster version of the appliance, and should not be quoted as one
 
 For a desktop appliance HBF remains the right answer for the weight tier. All-HBM is a different product.
 
+### The tok/s estimate, with the full denominator
+
+The roofline in this document divides **weight** bytes by bandwidth. On
+GLM-5.3-Flash that under-counts: two terms are read every token that GLM-5.2 does
+not have, and one of them grows with context.
+
+| context | weights | KDA state | DSA KV | indexer | **total** |
+|---|---|---|---|---|---|
+| 32 K | 14.118 | 0.285 | 0.023 | 0.012 | **14.438 GB/tok** |
+| 256 K | 14.118 | 0.285 | 0.023 | 0.092 | **14.519 GB/tok** |
+| 1 M | 14.118 | 0.285 | 0.023 | 0.369 | **14.795 GB/tok** |
+
+- **KDA state** — the 34 linear-attention layers read *and write* their
+  `[64, 128, 128]` fp32 recurrent state once per token: `2 × 142.6 MB`. It does
+  not grow with context, but it is not free.
+- **DSA KV** — only the top-2048 selected latents, so this term is *flat* past
+  2048 tokens. That is the sparse-attention win.
+- **indexer** — the pooled key cache must be *read* to be scored, so this one
+  grows linearly and is the largest context-dependent term at 1 M.
+
+Weights still dominate at every context, so the bandwidth-bound model holds — but
+the honest denominator is 2–5 % above the weights-only figure.
+
+**Resulting tok/s `[EST]`, UNAMORTIZED** (no speculative decode — this model's
+accept rate is unmeasured):
+
+| rung | bandwidth | 32 K | 256 K | 1 M |
+|---|---|---|---|---|
+| ① prove-it FPGA (KU3P + NVMe) | ~4 GB/s | 0.3 | 0.3 | 0.3 |
+| ② custom board (DDR5/HBM) | ~0.6 TB/s | 41.6 | 41.3 | 40.6 |
+| ③ SoC, 256 GB LPDDR5X as 16 × 16 GB | 1.1 TB/s | **76.2** | **75.8** | **74.3** |
+| ④ HBF 2-stack | 3.2 TB/s | 221.6 | 220.4 | 216.3 |
+| ④′ all-HBM (HBM4 4-stack) | 8.0 TB/s | 554.1 | 551.0 | 540.7 |
+
+For scale: GLM-5.2 needs `A_eff = 1.87` to reach ~79 tok/s at 1.1 TB/s (43 raw).
+GLM-5.3-Flash reaches **74–76 with no speculation at all**. If its MTP head turns
+out to amortize like GLM-5.2's — **not measured, and not a number this document
+adopts** — rung ③ would land near 139 and rung ④ near 404. Those two are shown
+only to size the prize, and must not be quoted as this design's figures until the
+accept rate is measured on this model.
+
+Reproduce the whole table: `python3 tools/glm53_flash_memory_budget.py`.
+
 ### Two reasons the high-bandwidth rows are optimistic
 
 **The DSA indexer stops being free at long context.** Every tok/s in this document divides weight bytes

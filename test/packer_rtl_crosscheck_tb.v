@@ -53,7 +53,7 @@ module packer_rtl_crosscheck_tb;
     weight_loader_q4k #(.PE_N(PE_N), .KMAX(KMAX), .ADDR_W(ADDR_W), .DATA_W(DATA_W))
     dut (.clk(clk), .rst(rst), .load(load),
          .desc_base(desc_base), .desc_klen(desc_klen), .desc_nsblk(desc_nsblk),
-         .desc_wtype(2'd0),
+         .desc_wtype(3'd0),
          .mem_en(mem_en), .mem_addr(mem_addr), .mem_data(mem_data),
          .mm_start(mm_start), .mm_k_len(mm_k_len), .mm_w_q(mm_w_q),
          .mm_w_d(mm_w_d), .mm_w_dmin(mm_w_dmin), .mm_w_scales(mm_w_scales),

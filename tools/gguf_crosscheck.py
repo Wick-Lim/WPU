@@ -28,7 +28,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "tools"))
 import q4k_ref  # noqa: E402
 
-Q4K_BS, Q6K_BS = 144, 210  # bytes per 256-weight super-block
+Q4K_BS, Q5K_BS, Q6K_BS = 144, 176, 210  # bytes per 256-weight super-block
 Q80_BS = 34                # bytes per 32-weight Q8_0 block (fp16 d + 32 int8)
 
 
@@ -41,6 +41,19 @@ def ref_dequant_q4k(raw: bytes) -> np.ndarray:
         scales = b[4:16]
         qs = b[16:144]
         out.append(q4k_ref.dequantize_block_q4_K(d_h, dmin_h, scales, qs))
+    return np.concatenate(out).astype(np.float32)
+
+
+def ref_dequant_q5k(raw: bytes) -> np.ndarray:
+    out = []
+    for off in range(0, len(raw), Q5K_BS):
+        b = raw[off:off + Q5K_BS]
+        d_h    = int.from_bytes(b[0:2], "little")
+        dmin_h = int.from_bytes(b[2:4], "little")
+        scales = b[4:16]
+        qh     = b[16:48]          # 32 B: the 5th bit, one per weight
+        qs     = b[48:176]         # 128 B: the low 4 bits
+        out.append(q4k_ref.dequantize_block_q5_K(d_h, dmin_h, scales, qh, qs))
     return np.concatenate(out).astype(np.float32)
 
 
@@ -75,6 +88,7 @@ def main():
     rd = GGUFReader(gguf_path)
 
     refs = {"Q4_K": ("q4_k", ref_dequant_q4k),
+            "Q5_K": ("q5_k", ref_dequant_q5k),
             "Q6_K": ("q6_k", ref_dequant_q6k),
             "Q8_0": ("q8_0", ref_dequant_q8_0)}
     totals = {k: [0, 0] for k in refs}          # tensors, weights

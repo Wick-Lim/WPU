@@ -99,7 +99,7 @@ module weight_ecc_tb;
     ) u_off (
         .clk(clk), .rst(rst), .load(load),
         .desc_base(desc_base), .desc_klen(desc_klen), .desc_nsblk(desc_nsblk),
-        .desc_wtype(2'd0),
+        .desc_wtype(3'd0),
         .mem_en(en0), .mem_addr(ad0), .mem_data(mdat),
         .mm_start(), .mm_k_len(), .mm_w_q(wq0),
         .mm_w_d(), .mm_w_dmin(), .mm_w_scales(), .mm_in_valid(iv0),
@@ -114,7 +114,7 @@ module weight_ecc_tb;
     ) u_on (
         .clk(clk), .rst(rst), .load(load),
         .desc_base(desc_base), .desc_klen(desc_klen), .desc_nsblk(desc_nsblk),
-        .desc_wtype(2'd0),
+        .desc_wtype(3'd0),
         .mem_en(en1), .mem_addr(ad1), .mem_data(mdat),
         .mm_start(), .mm_k_len(), .mm_w_q(wq1),
         .mm_w_d(), .mm_w_dmin(), .mm_w_scales(), .mm_in_valid(iv1),

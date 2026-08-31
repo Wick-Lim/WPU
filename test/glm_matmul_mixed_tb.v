@@ -40,7 +40,7 @@ module glm_matmul_mixed_tb;
     reg  [16*PE_N*NSB-1:0]     w_d = 0, w_dmin = 0;
     reg  [96*PE_N*NSB-1:0]     w_scales = 0;
     // ADDED mixed-type buses
-    reg  [ 2*PE_N-1:0]         w_type  = 0;         // per-column type (latched)
+    reg  [ 3*PE_N-1:0]         w_type  = 0;         // per-column type (latched)
     reg  [16*PE_N-1:0]         w_hp    = 0;         // per-beat Q6_K/Q8_0/F16 code lane
     reg  [128*PE_N*NSB-1:0]    w_q6_sc = 0;         // Q6_K 16xint8 scales / (col,sb)
     reg  [16*PE_N*NB8-1:0]     w_q8_d  = 0;         // Q8_0 fp16 d / (col,32blk)
@@ -62,7 +62,7 @@ module glm_matmul_mixed_tb;
 
     integer fd, ntest, pm, pn, t, k, K, pi, pj, code, errors, checks;
     integer nsb_t, nb8_t, sb, b, i, tyv, tycol;
-    integer n_q4k, n_q6k, n_q8, n_f16, seen;
+    integer n_q4k, n_q6k, n_q8, n_f16, n_q5k, seen;
     reg [15:0] a_beat  [0:PE_M-1];
     reg [3:0]  q_beat  [0:PE_N-1];
     reg [15:0] hp_beat [0:PE_N-1];
@@ -73,7 +73,7 @@ module glm_matmul_mixed_tb;
 
     initial begin
         errors = 0; checks = 0;
-        n_q4k = 0; n_q6k = 0; n_q8 = 0; n_f16 = 0; seen = 0;
+        n_q4k = 0; n_q6k = 0; n_q8 = 0; n_f16 = 0; n_q5k = 0; seen = 0;
         fd = $fopen("build/q4k_mixed_vec.txt", "r");
         if (fd == 0) begin $display("[glm_matmul_mixed] FAIL: cannot open build/q4k_mixed_vec.txt"); $finish; end
         code = $fscanf(fd, "%d %d %d", ntest, pm, pn);
@@ -90,7 +90,7 @@ module glm_matmul_mixed_tb;
             w_type = 0;
             for (pj = 0; pj < PE_N; pj = pj + 1) begin
                 code = $fscanf(fd, "%d", tyv);
-                w_type[2*pj +: 2] = tyv[1:0];
+                w_type[3*pj +: 3] = tyv[2:0];
                 seen = seen | (1 << tyv);            // coverage: which types appeared
             end
 
@@ -144,13 +144,14 @@ module glm_matmul_mixed_tb;
             for (pi = 0; pi < PE_M; pi = pi + 1)
                 for (pj = 0; pj < PE_N; pj = pj + 1) begin
                     got    = c_out[16*(pi*PE_N + pj) +: 16];
-                    tycol  = w_type[2*pj +: 2];
+                    tycol  = w_type[3*pj +: 3];
                     checks = checks + 1;
                     case (tycol)
                         0: n_q4k = n_q4k + 1;
                         1: n_q6k = n_q6k + 1;
                         2: n_q8  = n_q8  + 1;
                         3: n_f16 = n_f16 + 1;
+                        4: n_q5k = n_q5k + 1;
                     endcase
                     if (^got === 1'bx) begin
                         $display("FAIL tile %0d [%0d,%0d] type=%0d: X in output", t, pi, pj, tycol);
@@ -165,16 +166,19 @@ module glm_matmul_mixed_tb;
         end
         $fclose(fd);
 
-        // every one of the four types must have been exercised (guards against a
-        // trivially-passing all-Q4_K file / a mis-parsed w_type column).
-        if (seen !== 4'b1111) begin
-            $display("[glm_matmul_mixed] FAIL: not all 4 w_types exercised (seen mask %04b)", seen[3:0]);
+        // every one of the FIVE types must have been exercised (guards against a
+        // trivially-passing all-Q4_K file / a mis-parsed w_type column).  With
+        // PE_N=4 no single tile can show all five, so this is a cross-tile
+        // coverage assertion -- and it is what proves the Q5_K column is really
+        // reaching the DUT rather than being silently dropped by the emitter.
+        if (seen !== 5'b11111) begin
+            $display("[glm_matmul_mixed] FAIL: not all 5 w_types exercised (seen mask %05b)", seen[4:0]);
             errors = errors + 1;
         end
 
         if (errors == 0)
-            $display("[glm_matmul_mixed] ALL %0d TESTS PASSED (%0d tiles, mixed cols Q4_K=%0d Q6_K=%0d Q8_0=%0d F16=%0d, bit-exact vs q4k_ref matmul)",
-                     checks, ntest, n_q4k, n_q6k, n_q8, n_f16);
+            $display("[glm_matmul_mixed] ALL %0d TESTS PASSED (%0d tiles, mixed cols Q4_K=%0d Q5_K=%0d Q6_K=%0d Q8_0=%0d F16=%0d, bit-exact vs q4k_ref matmul)",
+                     checks, ntest, n_q4k, n_q5k, n_q6k, n_q8, n_f16);
         else
             $display("[glm_matmul_mixed] %0d/%0d FAILURES", errors, checks);
         $finish;

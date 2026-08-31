@@ -75,7 +75,7 @@ module weight_loader_q4k_mixed_tb;
     reg  [ADDR_W-1:0]         desc_base;
     reg  [KW-1:0]             desc_klen;
     reg  [SBW-1:0]            desc_nsblk;
-    reg  [1:0]                desc_wtype;
+    reg  [2:0]                desc_wtype;
 
     wire                      mem_en;
     wire [ADDR_W-1:0]         mem_addr;
@@ -88,7 +88,7 @@ module weight_loader_q4k_mixed_tb;
     wire [16*PE_N*NSB-1:0]    mm_w_dmin;
     wire [96*PE_N*NSB-1:0]    mm_w_scales;
     wire                      mm_in_valid;
-    wire [ 2*PE_N-1:0]        mm_w_type;
+    wire [ 3*PE_N-1:0]        mm_w_type;
     wire [16*PE_N-1:0]        mm_w_hp;
     wire [128*PE_N*NSB-1:0]   mm_w_q6_sc;
     wire [16*PE_N*NB8-1:0]    mm_w_q8_d;

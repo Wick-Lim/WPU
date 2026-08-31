@@ -123,6 +123,51 @@ def dequantize_block_q6_K(d_h, ql, qh, sc):
         yb += 128; qlb += 64; qhb += 32; scb += 8
     return y
 
+def dequantize_block_q5_K(d_h, dmin_h, scales, qh, qs):
+    """One Q5_K super-block (256 weights, 176 B) -> 256 fp32, exactly as ggml
+    dequantize_row_q5_K (ggml/src/ggml-quants.c).
+
+    Q5_K is Q4_K plus a fifth bit: the same fp16 d/dmin, the same 12-byte packed
+    6-bit block scales/mins read by get_scale_min_k4, the same 128-byte nibble
+    array -- and a 32-byte `qh` supplying one extra high bit per weight, which
+    lifts q from [0,15] to [0,31].
+      d_h, dmin_h : uint16 fp16 bit-patterns (super-block scale / min)
+      scales      : 12 uint8   (shared unpack with Q4_K)
+      qh          : 32 uint8   (bit l of the group's mask selects +16)
+      qs          : 128 uint8  (low nibble, then high nibble, per 32-lane half)
+    Dequant per weight:  w = (d*sc) * (q4 + 16*qh_bit) - (dmin*m)
+
+    NOTE on the masks: ggml walks qh with u1=1,u2=2 shifted left by 2 per
+    64-group, and does NOT advance the qh pointer -- so each of the 32 qh bytes
+    supplies 8 bits, two per 64-group across the 4 groups. Reproduced verbatim;
+    "simplifying" the mask walk is how this gets silently wrong for groups 1-3.
+    """
+    d  = np.float32(np.frombuffer(np.uint16(d_h).tobytes(),    dtype=np.float16)[0])
+    mn = np.float32(np.frombuffer(np.uint16(dmin_h).tobytes(), dtype=np.float16)[0])
+    y = np.empty(QK_K, dtype=np.float32)
+    yi = 0
+    qi = 0
+    is_ = 0
+    u1, u2 = 1, 2
+    for _ in range(0, QK_K, 64):
+        sc, m = get_scale_min_k4(is_ + 0, scales)
+        d1 = d * np.float32(sc); m1 = mn * np.float32(m)
+        sc, m = get_scale_min_k4(is_ + 1, scales)
+        d2 = d * np.float32(sc); m2 = mn * np.float32(m)
+        for l in range(32):                       # low nibbles  + bit u1
+            hi = np.float32(16.0) if (qh[l] & u1) else np.float32(0.0)
+            y[yi] = d1 * (np.float32(qs[qi + l] & 0xF) + hi) - m1; yi += 1
+        for l in range(32):                       # high nibbles + bit u2
+            hi = np.float32(16.0) if (qh[l] & u2) else np.float32(0.0)
+            y[yi] = d2 * (np.float32(qs[qi + l] >> 4) + hi) - m2; yi += 1
+        qi += 32; is_ += 2
+        u1 <<= 2; u2 <<= 2
+    return y
+
+def dequantize_row_q5_K(blocks):
+    """blocks: iterable of (d_h, dmin_h, scales, qh, qs). -> concatenated fp32 row."""
+    return np.concatenate([dequantize_block_q5_K(*b) for b in blocks])
+
 def dequantize_block_q8_0(d_h, qs):
     """One Q8_0 block (32 weights: fp16 d + 32 int8) -> 32 fp32. w = d * qs."""
     d = np.float32(np.frombuffer(np.uint16(d_h).tobytes(), dtype=np.float16)[0])

@@ -239,7 +239,11 @@ def scan(workdir):
     print(f"  1 token incl. MTP        : {(act_b + mtp_act_b) / 1e9:8.3f} GB")
 
     print("\n--- RTL coverage gap on this branch ---")
-    have = {'Q4_K', 'Q6_K', 'Q8_0', 'F32', 'F16'}     # what src/ + tools/q4k_ref.py implement
+    # what src/ + tools/q4k_ref.py implement. Q5_K landed on this branch:
+    # reference (q4k_ref.dequantize_block_q5_K, ggml-verbatim), RTL (WT_Q5K in
+    # glm_matmul_q4k, 5-bit code off the existing w_hp bus), and a gate with a
+    # must-fail injection (`make mixedtype`).
+    have = {'Q4_K', 'Q5_K', 'Q6_K', 'Q8_0', 'F32', 'F16'}
     missing = {ty for ty in per if ty not in have}
     for ty in sorted(missing):
         n, p, b = per[ty]

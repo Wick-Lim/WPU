@@ -166,7 +166,35 @@ def main():
     print(f"  reachable here ({need/GB:.0f} GB) -- a genuinely new option, at a cost")
     print(f"  priced in section 4.")
 
-    print("\n=== 3. where the binding constraint leaves memory: the die ===")
+    # ---- bytes actually READ per token, not just weights --------------------
+    # The roofline in HARDWARE_LADDER divides weight bytes by bandwidth. On this
+    # model that under-counts, because two NEW terms are read every token:
+    #   * the KDA recurrent state -- read AND written once per layer per token.
+    #     It does not grow with context, but it is not free either.
+    #   * the DSA indexer's pooled key cache -- the indexer scores every pooled
+    #     position, so this term grows with context and, at 1M, is larger than
+    #     the KV the attention itself reads.
+    print("\n=== 3. bytes READ per token (the honest roofline denominator) ===")
+    print(f"{'context':>10} {'weights':>10} {'KDA state':>10} {'DSA KV':>9} "
+          f"{'indexer':>9} {'TOTAL':>10} {'tok/s @1.1TB/s':>15}")
+    print("-" * 78)
+    topk_attn = c.get("TOPK_ATTN", 2048)   # [gguf] attention.indexer.top_k, via the config header
+    for ctx in (32768, 131072, 262144, c["CTX"]):
+        w_b = a.raw_gb_per_tok * GB
+        # state: read + write, every KDA layer, every token
+        st_b = 2 * (c["N_KDA"] * c["KDA_HEADS"] * c["KDA_DIM"] * c["KDA_DIM"] * STATE_BYTES)
+        # DSA reads only the top-k selected positions' latents
+        kv_b = c["N_MLA"] * min(topk_attn, ctx) * (c["KV_LORA"] + c["ROPE"]) * KV_BYTES
+        # the indexer must READ every pooled key to score it
+        ix_b = c["N_MLA"] * (ctx // c["IDX_KPOOL"]) * c["IDX_DIM"] * IDX_BYTES
+        tot = w_b + st_b + kv_b + ix_b
+        print(f"{ctx:>10,} {w_b/GB:>9.3f} {st_b/GB:>9.3f} {kv_b/GB:>8.3f} "
+              f"{ix_b/GB:>8.3f} {tot/GB:>9.3f} {1100*GB/tot:>14.1f}")
+    print("  Weights dominate at every context, so the bandwidth-bound model holds --")
+    print("  but the total is 2-5% above the weights-only figure, and the indexer term")
+    print("  is what grows. These tok/s are UNAMORTIZED (no speculative decode).")
+
+    print("\n=== 4. where the binding constraint leaves memory: the die ===")
     print(f"{'tok/s':>8} {'MAC/s':>10} {'lanes @1GHz':>13} {'lanes @2GHz':>13}")
     print("-" * 48)
     for t in (78, 227, 453, 510, 567):
@@ -175,7 +203,7 @@ def main():
     print("  Measured lane scaling on this RTL is SUBLINEAR (4x lanes -> ~2.40x),")
     print("  so these are lower bounds on the silicon, not a shopping list.")
 
-    print("\n=== 4. two things that make the high-bandwidth rows optimistic ===")
+    print("\n=== 5. two things that make the high-bandwidth rows optimistic ===")
     print("  (a) the DSA indexer stops being free at long context:")
     wm = a.active_params
     for ctx in (32768, 131072, 262144, c["CTX"]):

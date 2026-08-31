@@ -24,7 +24,8 @@ This branch forked at the `glm5.2/UD-Q4_K_XL` tip and carries every proof that b
 earned. **Those are GLM-5.2 proofs.** GLM-5.3-Flash is *not* a re-dimensioned GLM-5.2 —
 its arch id is **`glm5next`**, and **34 of its 45 layers are KDA linear attention, a
 machine this repo does not have.** A third of the checkpoint's bytes are **Q5_K**, for
-which there is no kernel here either.
+which there was no kernel either — **Q5_K has since landed**, so the checkpoint is now
+fully readable; the two attention/residual gaps remain.
 
 | | status |
 |---|---|
@@ -33,7 +34,7 @@ which there is no kernel here either.
 | MoE, dequant (Q4_K/Q6_K/Q8_0), memory system | inherited, proven at GLM-5.2 shapes |
 | KDA linear attention (34 / 45 blocks) | **no RTL** |
 | hyper-connections (every block's residual) | **no RTL** |
-| Q5_K dequant (34.9 % of bytes) | **no kernel** |
+| Q5_K dequant (34.9 % of bytes) | **DONE** — reference + RTL + `make mixedtype` w/ must-fail injection |
 | clamped SwiGLU, indexer k-pool compressor | **not implemented** |
 
 **No claim is made that this branch runs GLM-5.3-Flash.** The full scope, the measured
@@ -73,8 +74,8 @@ weight/boot loaders + multi-clock CDC) whose controllers are bounded-model-check
 induction-proven. The whole product top is placed & routed on a real FPGA.
 
 **What is not done is stated up front.** For GLM-5.3-Flash specifically: 34 of 45 layers (KDA linear
-attention), the hyper-connection residual path, and the Q5_K dequant that covers 34.9 % of the
-checkpoint's bytes are **all unimplemented** — see the port-status table above and
+attention) and the hyper-connection residual path are **still unimplemented** (Q5_K, the third gap,
+has landed) — see the port-status table above and
 [`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md). Carried over from the GLM-5.2 build:
 llama.cpp *whole-runtime* numeric equality is out-of-contract by design (attention/accumulation
 orders differ), no full checkpoint has been run end-to-end, and every throughput / cost figure is
@@ -110,7 +111,8 @@ acceptance input is borrowed from GLM-5.2 until it is re-measured. See
 > *machine*, not as a claim about GLM-5.3-Flash. They are the reason the port starts from a strong
 > base — the dequant core, the MoE, the memory system and the whole verification harness are
 > model-independent — but none of them has been re-run at GLM-5.3-Flash's shape, and the blocks
-> GLM-5.3-Flash needs that do not exist yet (KDA, hyper-connections, Q5_K) have no row here at all.
+> GLM-5.3-Flash needs that do not exist yet (KDA, hyper-connections) have no row here at all. Q5_K
+> was the third such gap and now does have one, measured on this branch.
 > See [`docs/GLM53_FLASH_PORT.md`](docs/GLM53_FLASH_PORT.md) §4.
 
 Each row is tagged for the kind of evidence behind it: **PROVEN** (a gated bit-exact / functional sim),
@@ -182,7 +184,7 @@ the Q5_K gap was found:
 | Type | Tensors | Bytes | Share | Where | Dequant | RTL consumer |
 |---|---|---|---|---|---|---|
 | **Q4_K** | 84 | 114.15 GB | 57.2 % | `ffn_{gate,up}_exps` | `w = (d·sc)·q − (dmin·m)` | ✅ `q4k.vh` + `glm_matmul_q4k.v` (160/160) |
-| **Q5_K** | 42 | 69.76 GB | **34.9 %** | `ffn_down_exps` | — | ❌ **no kernel in this repo** |
+| **Q5_K** | 42 | 69.76 GB | **34.9 %** | `ffn_down_exps` | `w = (d·sc)·(q4+16h) − (dmin·m)` | ✅ `WT_Q5K` in `glm_matmul_q4k` (5-bit code on `w_hp`) |
 | **Q8_0** | 645 | 9.62 GB | 4.8 % | attention, shared expert, `output` | `w = d·q` | ✅ `q4k_mixed.vh` + `w_type` arm |
 | **Q6_K** | 3 | 5.95 GB | 3.0 % | UD bump on `blk.{11,12,44}.ffn_down_exps` | `w = (d·sc)·(q−32)` | ✅ `q4k_mixed.vh` + `w_type` arm |
 | **F32** | 638 | 0.23 GB | 0.1 % | norms, routing gates, `ssm_a`/`dt`/`conv1d` | — | n/a |
@@ -289,9 +291,14 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   delta-rule state update, `f`/`g` low-rank gates, decay from `ssm_a` + `ssm_dt`, per-head norm. This
   is a new datapath with new state memory and a new golden reference; it is the item that sets the
   schedule.
-- **Q5_K dequant — no kernel anywhere in this repo**, and Q5_K is 34.9 % of the checkpoint's bytes
-  (all 42 `ffn_down_exps`). Without it the model cannot be read at all. Smallest of the three gaps:
-  it is a sibling of the proven Q4_K/Q6_K path and the existing `gguf_crosscheck` harness extends to it.
+- ~~**Q5_K dequant**~~ — **DONE.** Reference (`q4k_ref.dequantize_block_q5_K`, ggml-verbatim), RTL
+  (`WT_Q5K`, a 5-bit code on the existing `w_hp` bus — Q5_K is arithmetically Q4_K with a wider code,
+  so it reuses the header multiplies and the min subtract verbatim), and a gate with a must-fail
+  injection (`make mixedtype`). Checked on real published GLM-5.3-Flash Q5_K bytes and cross-validated
+  against the proven Q6_K kernel on the same tensor role (std ratio 0.9966). **Still open on it:** the
+  llama.cpp seal has not been run (no checkout available; the `q5_k` arm is wired into
+  `gguf_crosscheck`/`dequant_dump` and ready), and `weight_loader_q4k` cannot lay out a Q5_K tile yet
+  (packer item below) — it `$fatal`s on a Q5_K descriptor rather than streaming Q4_K geometry.
 - **Hyper-connections — no RTL.** Sinkhorn normalization (20 iterations) over a width-4 connection
   matrix replaces the plain residual add on every block; needs a fixed-point study first.
 - **Clamped SwiGLU (limit 10.0) and the indexer k-pool compressor** — not implemented; both small.

@@ -108,19 +108,34 @@ module glm_matmul_q4k #(
     //   All four are OPTIONAL: a Q4_K-only caller may leave them unconnected.  The
     //   per-column w_type is LATCHED at start (off the per-beat MAC critical path);
     //   a tile is one type so the loader broadcasts one type to all columns.  The
-    //   decode `case` below routes Q6_K/Q8_0/F16 to their primitive but keeps Q4_K
-    //   as the DEFAULT branch -- which matches w_type==2'b00 AND any undriven (x/z)
-    //   w_type -- so an unconnected w_type reads ONLY the pre-existing Q4_K buses
-    //   above and yields the byte-identical proven Q4_K result (zero regression).
-    input  wire [ 2*PE_N-1:0]                   w_type,  // per col: 0=Q4_K 1=Q6_K 2=Q8_0 3=F16
-    input  wire [16*PE_N-1:0]                   w_hp,    // per beat: Q6_K[5:0]/Q8_0[7:0]/F16[15:0]
+    //   decode `case` below routes Q5_K/Q6_K/Q8_0/F16 to their primitive but keeps
+    //   Q4_K as the DEFAULT branch -- which matches w_type==3'b000 AND any undriven
+    //   (x/z) w_type -- so an unconnected w_type reads ONLY the pre-existing Q4_K
+    //   buses above and yields the byte-identical proven Q4_K result (zero regression).
+    //
+    //   Q5_K NOTE (why it costs one type code and NO new bus).  ggml's Q5_K is
+    //   arithmetically Q4_K with a wider code:
+    //       Q4_K   w = (d*sc) *  q4          - (dmin*m),  q4 in [0,15]
+    //       Q5_K   w = (d*sc) * (q4 + 16*h)  - (dmin*m),  q5 in [0,31]
+    //   Same header multiplies, same min subtract -- only the code range differs.
+    //   ggml forms the code as an fp32 add, `(float)(ql&0xF) + (qh_bit ? 16.f:0)`;
+    //   both terms are exactly-representable small integers and so is their sum,
+    //   so building the 5-bit integer FIRST and converting once is bit-identical.
+    //   The 5-bit code therefore rides the EXISTING w_hp bus (as Q6_K's 6-bit code
+    //   already does) and reuses the Q4_K header + min-subtract arms verbatim.
+    //   w_type widened 2 -> 3 bits/lane because all four 2-bit codes were taken;
+    //   the four existing values are UNCHANGED so a widened driver is a no-op for
+    //   them, and Q4_K stays 0 so the x/z-safety property above still holds.
+    input  wire [ 3*PE_N-1:0]                   w_type,  // per col: 0=Q4_K 1=Q6_K 2=Q8_0 3=F16 4=Q5_K
+    input  wire [16*PE_N-1:0]                   w_hp,    // per beat: Q5_K[4:0]/Q6_K[5:0]/Q8_0[7:0]/F16[15:0]
     input  wire [128*PE_N*((KMAX+255)/256)-1:0] w_q6_sc, // Q6_K 16xint8 scales / (col, super-block)
     input  wire [16*PE_N*((KMAX+31)/32)-1:0]    w_q8_d   // Q8_0 fp16 d / (col, 32-weight block)
 );
     localparam integer KW  = $clog2(KMAX+1);
     localparam integer NSB = (KMAX + 255) / 256;   // super-blocks along K
     localparam integer NB8 = (KMAX + 31)  / 32;    // Q8_0 32-weight blocks along K (== 8*NSB)
-    localparam [1:0] WT_Q4K = 2'd0, WT_Q6K = 2'd1, WT_Q80 = 2'd2, WT_F16 = 2'd3;
+    localparam [2:0] WT_Q4K = 3'd0, WT_Q6K = 3'd1, WT_Q80 = 3'd2, WT_F16 = 3'd3,
+                     WT_Q5K = 3'd4;
 
     // ---- latched tile params ----
     reg [KW-1:0]              k_cnt;      // beats consumed
@@ -144,7 +159,7 @@ module glm_matmul_q4k #(
         assign hdr_scales = w_scales;
     end
     endgenerate
-    reg [2*PE_N-1:0]          wtype_r;    // per-column weight type (latched at start)
+    reg [3*PE_N-1:0]          wtype_r;    // per-column weight type (latched at start)
     reg [128*PE_N*NSB-1:0]    q6sc_r;     // Q6_K 16xint8 scales / (col, super-block)
     reg [16*PE_N*NB8-1:0]     q8d_r;      // Q8_0 fp16 d / (col, 32-weight block)
 
@@ -243,7 +258,7 @@ module glm_matmul_q4k #(
                     sub = k_cnt >> 5;                      // (k%256) / 32
                     for (pj = 0; pj < PE_N; pj = pj + 1) begin
                         col = pj*NSB + sb;
-                        case (wtype_r[2*pj +: 2])
+                        case (wtype_r[3*pj +: 3])
                             WT_Q6K: begin
                                 sidx = k_cnt >> 4;         // (k%256)/16
                                 p1_d1[pj] <= fp32_mul(fp16_to_fp32(hdr_d[16*col +: 16]),
@@ -260,7 +275,13 @@ module glm_matmul_q4k #(
                                 p1_d1[pj] <= 32'd0;
                                 p1_m1[pj] <= 32'd0;
                             end
-                            default: begin                 // Q4_K (and undriven)
+                            // NOTE: WT_Q5K deliberately has NO arm here -- it
+                            // shares the Q4_K header path EXACTLY (same 6-bit
+                            // sub-block scale/min unpack, same d*sc and dmin*m),
+                            // so it takes this default. It cannot be listed as a
+                            // case label alongside `default` (illegal Verilog),
+                            // hence this comment instead of a label.
+                            default: begin                 // Q4_K, Q5_K (and undriven)
                                 sm = q4k_scale_min({1'b0, sub}, hdr_scales[96*col +: 96]);
                                 p1_d1[pj] <= fp32_mul(fp16_to_fp32(hdr_d[16*col +: 16]),
                                                       u7_to_fp32({1'b0, sm[5:0]}));
@@ -278,12 +299,17 @@ module glm_matmul_q4k #(
                 // ---- P2: the code multiply ----
                 if (vp[0]) begin
                     for (pj = 0; pj < PE_N; pj = pj + 1) begin
-                        case (wtype_r[2*pj +: 2])
+                        case (wtype_r[3*pj +: 3])
                             WT_Q6K: p2_t[pj] <= fp32_mul(p1_d1[pj],
                                         s8_to_fp32({2'b00, p1_h16[pj][5:0]} - 8'd32));
                             WT_Q80: p2_t[pj] <= fp32_mul(fp16_to_fp32(p1_q8d[pj]),
                                         s8_to_fp32(p1_h16[pj][7:0]));
                             WT_F16: p2_t[pj] <= fp16_to_fp32(p1_h16[pj]);
+                            // Q5_K: 5-bit code (q4 + 16*qh_bit, pre-assembled by
+                            // the packer) off the existing w_hp bus.  u7_to_fp32
+                            // already covers 0..127, so 0..31 needs no new prim.
+                            WT_Q5K: p2_t[pj] <= fp32_mul(p1_d1[pj],
+                                        u7_to_fp32({2'd0, p1_h16[pj][4:0]}));
                             default: p2_t[pj] <= fp32_mul(p1_d1[pj],
                                         u7_to_fp32({3'd0, p1_q4[pj]}));
                         endcase
@@ -298,7 +324,17 @@ module glm_matmul_q4k #(
                         // takes the Q4_K arm -- the original decode's exact
                         // semantics (an `if (== WT_Q4K)` would evaluate x as
                         // false and silently skip the min subtract).
-                        case (wtype_r[2*pj +: 2])
+                        case (wtype_r[3*pj +: 3])
+                            // Q5_K is absent here ON PURPOSE: it takes the Q4_K
+                            // default arm and DOES subtract dmin*m.  Adding it to
+                            // this pass-through list is the one-line way to make
+                            // Q5_K silently wrong by exactly the min term -- so
+                            // that exact edit IS the injection, and
+                            // `make mixedtype` must FAIL with it defined.
+                            // (-DINJ_Q5K_NOMIN, never a normal build.)
+`ifdef INJ_Q5K_NOMIN
+                            WT_Q5K,
+`endif
                             WT_Q6K, WT_Q80, WT_F16: p3_w[pj] <= p2_t[pj];
                             default: p3_w[pj] <= fp32_add(p2_t[pj],
                                          {~p2_m1[pj][31], p2_m1[pj][30:0]});

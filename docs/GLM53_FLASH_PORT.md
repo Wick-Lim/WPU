@@ -50,10 +50,15 @@ Three further changes are not dimensions either:
   path. `src/rope_interleave_unit.v` has no consumer in this model. A direct
   consequence, asserted in the gate: `attention.key_length == kv_lora_rank`
   (both 512) — on GLM-5.2 the key was the latent *plus* a 64-wide rotary tail.
-- **Hyper-connections.** Every block carries `hc_attn_{base,fn,scale}` and
+- **Hyper-connections (mHC).** Every block carries `hc_attn_{base,fn,scale}` and
   `hc_ffn_{base,fn,scale}` (`hyper_connection.count = 4`,
-  `sinkhorn_iterations = 20`). This replaces the plain residual add — a change to
-  the block's structure, not a coefficient.
+  `sinkhorn_iterations = 20`). Reading the reference implementation showed this is
+  larger than "the residual add changed": **the block carries `hc_mult = 4`
+  parallel residual streams**, and the mHC map produces three things per site —
+  `pre` (collapse the 4 streams into the sublayer input), `post` (place the
+  sublayer output, range `[0,2]` because it is `2·sigmoid`), and `comb`, a 4×4
+  matrix Sinkhorn-projected onto the doubly-stochastic manifold to re-mix the
+  streams. The block interface itself is `[4, D]`, not `[D]`.
 - **Clamped SwiGLU.** `swiglu_clamp_exp` / `swiglu_clamp_shexp` = 10.0 on every
   block. GLM-5.2 has no clamp. An unclamped SwiGLU here is numerically wrong,
   not merely approximate.
@@ -111,7 +116,7 @@ assumption for GLM-5.2 itself, which is a different checkpoint.
 | ggml type | tensors | bytes | share | where | kernel here? |
 |---|---|---|---|---|---|
 | Q4_K | 84 | 114.15 GB | 57.2 % | `ffn_{gate,up}_exps` | yes, bit-exact |
-| **Q5_K** | **42** | **69.76 GB** | **34.9 %** | `ffn_down_exps` | **no — none in this repo** |
+| **Q5_K** | **42** | **69.76 GB** | **34.9 %** | `ffn_down_exps` | **yes, bit-exact** — landed on this branch |
 | Q8_0 | 645 | 9.62 GB | 4.8 % | attention, shared expert, embed, lm_head | yes, bit-exact |
 | Q6_K | 3 | 5.95 GB | 3.0 % | UD bump on `blk.{11,12,44}.ffn_down_exps` | yes, bit-exact |
 | F32 | 638 | 0.23 GB | 0.1 % | norms, routing gates, `ssm_a`/`dt`/`conv1d` | n/a |
@@ -122,11 +127,46 @@ the 9.52 MB of GGUF headers. The agreement is the evidence that the tensor parse
 and the k-quant block arithmetic are right — an unverified parse would not land
 on the file sizes.
 
-**Q5_K is a hard blocker, and it is new.** This repo implements Q4_K, Q6_K and
-Q8_0 (`tools/q4k_ref.py` + the RTL dequant), all proven bit-exact against real
-ggml on real GGUF bytes. Q5_K appears nowhere in `src/`, `tools/`, `test/` or the
-`Makefile`. It covers **a third of this checkpoint's bytes**, so without it the
-model cannot be read at all, let alone run.
+**Q5_K was the hard blocker. It is now CLOSED.** Q5_K covers a third of this
+checkpoint's bytes (all 42 `ffn_down_exps`) and nothing in this repo implemented
+it, so the model could not be read at all. It now can be:
+
+- **Reference** — `q4k_ref.dequantize_block_q5_K`, a verbatim reimplementation of
+  ggml's `dequantize_row_q5_K`, including the `u1`/`u2` mask walk (where a
+  "simplified" version silently goes wrong for 64-groups 1–3).
+- **RTL** — `WT_Q5K` in `glm_matmul_q4k`. Q5_K costs **one type code and no new
+  bus**: arithmetically it is Q4_K with a wider code,
+  `w = (d·sc)·(q4 + 16·h) − (dmin·m)`, so it reuses the Q4_K header multiplies and
+  the min subtract verbatim and rides the existing `w_hp` bus that already carries
+  Q6_K's 6-bit code. `w_type` widened 2 → 3 bits/lane; the four existing encodings
+  are unchanged and Q4_K stays 0, so the "undriven `w_type` reads Q4_K" safety
+  property still holds.
+- **Gate** — `make mixedtype`. The Q5_K columns are bit-exact vs the golden, a
+  cross-tile coverage assertion requires all five types to appear, and a
+  **must-fail injection** (`-DINJ_Q5K_NOMIN`) lets `WT_Q5K` join the P3
+  pass-through list and skip the `dmin·m` subtract. Widths still match and no
+  error is raised — the weights are just wrong — and the gate fails, which is what
+  makes the Q5_K columns evidence rather than passengers.
+- **Real published bytes** — the reference was run on actual GLM-5.3-Flash Q5_K
+  bytes (range-fetched from shard 3) and cross-validated against the
+  already-proven Q6_K kernel on the *same tensor role in adjacent layers*:
+  std 0.01844 (Q5_K `blk.13`) vs 0.01850 (Q6_K `blk.11`), ratio **0.9966**. A
+  wrong field layout does not land there. `qh`'s high bit is set on 49.5 % of
+  weights, as a symmetric 5-bit code requires.
+
+**Two things Q5_K does NOT yet include, stated plainly:**
+
+1. **The llama.cpp seal has NOT been run.** `tools/gguf_crosscheck.py` and
+   `tools/dequant_dump.c` now carry a `q5_k` arm, so the gold-standard comparison
+   against ggml's own `dequantize_row_q5_K` runs as soon as a llama.cpp build is
+   available — but no checkout was present here. So Q5_K's status is *bit-exact to
+   our ggml reimplementation, and consistent with real published bytes*, not yet
+   *bitwise-equal to llama.cpp on real bytes* the way Q4_K / Q6_K / Q8_0 are.
+2. **`weight_loader_q4k` cannot lay out a Q5_K tile.** That needs the packer to
+   emit pre-assembled 5-bit codes plus a 176 B/super-block geometry (§4.2 item 6).
+   A Q5_K descriptor would otherwise take the Q4_K geometry — same widths, wrong
+   bytes, no error — so the loader now `$fatal`s on it in simulation rather than
+   streaming garbage.
 
 The **UD "Dynamic" bumps** matter for the packer: `blk.11` has its
 `ffn_{gate,up}_exps` promoted Q4_K → Q5_K, and `blk.{11,12,44}.ffn_down_exps` are
@@ -153,10 +193,10 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 
 | # | item | why it blocks | rough shape |
 |---|---|---|---|
-| 1 | **Q5_K dequant** — reference + RTL + bit-exact gate | 34.9 % of bytes unreadable | smallest item; a sibling of the proven Q4_K/Q6_K path, same super-block structure, and the existing `gguf_crosscheck` harness extends to it directly |
-| 2 | **KDA linear-attention block** | 34 / 45 layers | the real work: short causal conv (k=4) on q/k/v, gated delta-rule state update, `f`/`g` low-rank gates, decay from `ssm_a` + `ssm_dt`, per-head norm. New datapath, new state memory, new golden reference |
-| 3 | **Hyper-connections** | every block's residual path | Sinkhorn normalization (20 iters) over a width-4 connection matrix; needs a numerically-careful fixed-point study before RTL |
-| 4 | **Clamped SwiGLU** | every FFN | small: a clamp on the existing unit, plus a golden re-run |
+| 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
+| 2 | **KDA linear-attention block** — spec DONE, RTL open | 34 / 45 layers | the real work. The **executable reference now exists** (`tools/glm53_flash_ref.py`: `kda_step`, `causal_conv_step`, `forget_gate`, `rmsnorm_gated`), transcribed from the reference implementation and gated by `make glm53f-ref`. What remains is RTL: a `[64, 128, 128]` fp32 state memory per layer (4.19 MB), the fp32 recurrence, and a bit-exact gate against that reference |
+| 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
+| 4 | **Clamped SwiGLU** — spec DONE, RTL open | every FFN | `tools/glm53_flash_ref.py: clamped_swiglu`, gated. Small — but the clamp is **asymmetric** (gate upper-bound only, `up` both ways), which a symmetric guess gets wrong; the gate pins that |
 | 5 | **Indexer compressor** | the 11 DSA blocks | k-pool 4 with compression and always-select-tail; `indexer_compressor_{ape,gate}` have no GLM-5.2 counterpart |
 | 6 | **Re-target packer / flash layout** | boot path | `tools/ckpt_pack_q4k.py`, `tools/flash_layout.py` against `glm5next` tensor names and the per-tensor UD mix |
 | 7 | **Re-seal `gguf_crosscheck`** | the dequant trust row | run against real GLM-5.3-Flash GGUF bytes, including Q5_K |
@@ -172,6 +212,33 @@ Item 2 is the one that decides the schedule. Items 1, 4 and 6 are mechanical.
 a specific model's draft quality and must be re-measured on GLM-5.3-Flash before
 any roofline number is quoted. Until then, every throughput figure for this model
 is `[EST]` with a borrowed acceptance input, and is labelled as such.
+
+## 4.4 The executable specification (what `make glm53f-ref` pins)
+
+Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
+guessing: the config publishes `hc_sinkhorn_iters` and `swiglu_limit`, not the
+**order of operations**. `tools/glm53_flash_ref.py` is that order, transcribed
+from the reference implementation that `config.json`'s `transformers_version`
+pins, with each trap named where a plausible guess diverges:
+
+| trap | the wrong-but-plausible version |
+|---|---|
+| SwiGLU clamp is **asymmetric** | clamping both tensors symmetrically |
+| FLA `l2norm` puts eps **inside** the sqrt | `x / max(norm, eps)`, or `F.normalize` |
+| only `q` gets the `1/sqrt(Dk)` scale, **after** the l2norm | scaling `k` too, or scaling before normalising |
+| KDA decays the state **before** reading `kv` | reading `kv` from the undecayed state |
+| the delta rule writes `(v − kv)·beta`, not `v` | a plain outer-product write |
+| forget gate uses the `lower_bound·sigmoid` branch | implementing the softplus branch, which is dead code at `lower_bound = −5.0` |
+| mHC Sinkhorn is one column pass **then** `iters−1` (row, col) pairs | `iters` symmetric passes |
+| mHC `post` is `2·sigmoid` (range `[0,2]`) | a plain sigmoid, halving the sublayer |
+| `forget_gate` can emit **−0.0** (fp32 sigmoid saturates to 0.0) | emitting `+0.0`, which a bitwise gate catches |
+
+**What this is not.** It is a faithful transcription whose self-test checks
+internal consistency and the invariants the math must satisfy (delta rule
+returns `v` at `beta=1`, decay shrinks the state, `comb` comes out doubly
+stochastic, `post ∈ [0,2]`). **It has not been run against the real
+checkpoint's activations**, so it is a specification, not a proof — the same
+status the Laguna port's attention machine has.
 
 ## 5. Why the memory profile is not GLM-5.2's
 

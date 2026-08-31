@@ -31,6 +31,7 @@
 #   and host-test had banner formats the parser could not see, and ran count-unchecked;
 #   their banners are normalized and pinned below).
 
+glm53f-ref 15
 glm53f-config-guard 8
 axi_boot_writer 403
 axi_master_dma 7

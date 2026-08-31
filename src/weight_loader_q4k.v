@@ -108,7 +108,7 @@ module weight_loader_q4k #(
     input  wire [ADDR_W-1:0]          desc_base,  // tile base address in weight mem
     input  wire [KW-1:0]              desc_klen,  // K length (#weight beats)
     input  wire [SBW-1:0]             desc_nsblk, // #super-blocks for this tile (<= NSB)
-    input  wire [1:0]                 desc_wtype, // 0=Q4_K 1=Q6_K 2=Q8_0 3=F16 (undriven->Q4_K)
+    input  wire [2:0]                 desc_wtype, // 0=Q4_K 1=Q6_K 2=Q8_0 3=F16 4=Q5_K (undriven->Q4_K)
 
     // ---- read-memory interface (TB models DDR5/Flash; mem_data valid t+1) ----
     output reg                        mem_en,     // combinational request strobe
@@ -124,7 +124,7 @@ module weight_loader_q4k #(
     output wire [96*PE_N*NSB-1:0]     mm_w_scales,  // 96b scales per (col, super-block)
     output wire                       mm_in_valid,
     // ---- ADDED: mixed-type (Q6_K/Q8_0/F16) type broadcast + high-precision buses ----
-    output wire [ 2*PE_N-1:0]         mm_w_type,    // per-column type (tile is one type)
+    output wire [ 3*PE_N-1:0]         mm_w_type,    // per-column type (tile is one type)
     output wire [16*PE_N-1:0]         mm_w_hp,      // per beat: Q6_K/Q8_0/F16 code lane / col
     output wire [128*PE_N*NSB-1:0]    mm_w_q6_sc,   // Q6_K 16xint8 scales per (col, super-block)
     output wire [16*PE_N*NB8-1:0]     mm_w_q8_d,    // Q8_0 fp16 d per (col, 32-weight block)
@@ -156,7 +156,8 @@ module weight_loader_q4k #(
                      S_DONE   = 3'd4;   // signal completion
 
     // weight-type enum (matches glm_matmul_q4k / the desc_wtype field)
-    localparam [1:0] WT_Q4K = 2'd0, WT_Q6K = 2'd1, WT_Q80 = 2'd2, WT_F16 = 2'd3;
+    localparam [2:0] WT_Q4K = 3'd0, WT_Q6K = 3'd1, WT_Q80 = 3'd2, WT_F16 = 3'd3,
+                     WT_Q5K = 3'd4;
 
     // -----------------------------------------------------------------------
     // GENERATE-TIME PRECONDITION (Q8_0 header-pack): the Q8_0 path co-packs the 8
@@ -189,7 +190,7 @@ module weight_loader_q4k #(
     reg [ADDR_W-1:0]         base_q;
     reg [KW-1:0]             klen_q;
     reg [SBW-1:0]            nsblk_q;
-    reg [1:0]                wtype_q;   // latched tile type (Q4_K default on reset/undriven)
+    reg [2:0]                wtype_q;   // latched tile type (Q4_K default on reset/undriven)
 
     // assembled weight header buses (zero-filled for unused super-block banks)
     reg [16*PE_N*NSB-1:0]    d_q;
@@ -223,6 +224,24 @@ module weight_loader_q4k #(
             default: ns = NSW'(nsblk_q) * NSW'(PE_N);
         endcase
     end
+    // ---- Q5_K guard -------------------------------------------------------
+    //   glm_matmul_q4k CAN consume Q5_K (it rides w_hp), but THIS loader cannot
+    //   yet lay out a Q5_K tile: that needs the packer to emit pre-assembled
+    //   5-bit codes and a Q5_K header geometry (176 B/super-block: d, dmin,
+    //   scales[12], qh[32], qs[128]) -- docs/GLM53_FLASH_PORT.md 4.2 item 6.
+    //   Without this guard a Q5_K descriptor takes the `default` above and
+    //   streams Q4_K geometry: same widths, wrong bytes, no error -- the exact
+    //   silent-wrongness this repo builds must-fail pairs to prevent.
+    //   Simulation-only: a per-cycle $fatal is not synthesizable.  `ifndef YOSYS,
+    //   NOT `synthesis translate_off (a legacy hot comment yosys warns about) and
+    //   NOT `ifndef SYNTHESIS -- nothing in this repo defines SYNTHESIS, so that
+    //   guard would exclude nothing.  Same convention as src/mla_attn_q4k.v and
+    //   src/swiglu_expert_q4k.v.  yosys predefines YOSYS.
+`ifndef YOSYS
+    always @(posedge clk)
+        if (!rst && (state == S_STREAM) && (wtype_q == WT_Q5K))
+            $fatal(1, "weight_loader_q4k: desc_wtype==WT_Q5K but this loader has no Q5_K tile geometry (packer item, docs/GLM53_FLASH_PORT.md 4.2) -- it would stream Q4_K geometry: same widths, wrong bytes, no error. Drive glm_matmul_q4k directly for Q5_K.");
+`endif
     wire [ADDR_W-1:0]        ns_ext    = {{(ADDR_W-NSW){1'b0}}, ns};
     wire [ADDR_W-1:0]        code_base = base_q + ns_ext;
     // bus slot (col-outer, super-block-inner, compile-time NSB stride) of the
