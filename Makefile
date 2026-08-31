@@ -1495,7 +1495,27 @@ l3-hash-mirror:
 #   feeder is a function of {sel,grp}, so all satisfy it).
 #   Four legs; (d) is the paired must-fail that keeps (c) from being vacuous.
 # ============================================================================
-HDR_LATE_BASE ?= 602d876
+# RE-PINNED 2026-09-01 from 602d876 to 9f14c7a (the Q5_K commit).
+#   WHY, and why this is not a rubber stamp.  This check asserts that HDR_LATE=0
+#   costs ZERO logic -- it is a guard on the HDR_LATE feature, not a claim that
+#   glm_matmul_q4k never changes.  The Q5_K commit is the first change to touch
+#   this module since 602d876, and it legitimately adds a case arm, so the pin
+#   had to move.  Before moving it, the netlist delta was DECOMPOSED by ablation
+#   (602d876 -> w_type widened to 3 bits only -> + the Q5_K P2 arm), at
+#   PE_M=2 PE_N=2 KMAX=256:
+#       cell            602d876   +3b w_type   +Q5_K arm
+#       $mux                943          943         975
+#       $add                349          349         359
+#       $eq                 217          217         221
+#       $logic_and          243          243         247
+#       $reduce_bool         78           78          84
+#       $sub                 75           75          79
+#       TOTAL              2555         2555        2639
+#   The w_type widening is +0 cells (yosys constant-folds the unused encoding),
+#   and every one of the +84 cells is attributable to the single new case arm.
+#   Nothing else moved.  If a future re-pin cannot show a decomposition like
+#   this, it is hiding a regression -- do the ablation, do not just bump the SHA.
+HDR_LATE_BASE ?= 9f14c7a
 hdr-late:
 	@mkdir -p $(BUILD_DIR)
 	@python3 tools/q4k_matmul_gen.py >/dev/null
