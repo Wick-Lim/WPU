@@ -114,6 +114,7 @@ spec_depth_adapt 31522 31522
 spi_boot 51
 swiglu_expert 20
 swiglu_expert_q4k 240 240
+swiglu_expert_q4k(CLAMP) 240 240
 swiglu_expert_q4k(INTER=2048) 256
 topk_select 442
 uart_host_bridge 15

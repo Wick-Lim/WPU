@@ -66,11 +66,21 @@ def emit_w(lines, cols):
         hdr = " ".join(f"{d[sb]:04x} {dm[sb]:04x} {s96[sb]:024x}" for sb in range(len(d)))
         lines.append(hdr + " " + " ".join(f"{qq:01x}" for qq in q))
 
-def gen(ntest, HIDDEN, INTER, TN, PE_M=1, seed=0):
+def gen(ntest, HIDDEN, INTER, TN, PE_M=1, seed=0, clamp_lim=None, xscale=1.0):
+    """clamp_lim: None = the committed GLM-5.2 SwiGLU (no clamp). A float turns on
+    GLM-5.3-Flash's clamp, which is ASYMMETRIC -- gate upper-bounded only, up
+    bounded both ways (tools/glm53_flash_ref.py: clamped_swiglu).
+
+    xscale exists because a clamp gate is VACUOUS unless the operands actually
+    cross the limit: at the default input scale the GEMM outputs stay well inside
+    +/-10, every clamp is a no-op, and the test would pass against an
+    unclamped DUT. The emitter asserts the crossing really happened."""
     rng = np.random.default_rng(seed)
+    tot_hi = tot_lo = 0
     lines = [f"{ntest} {HIDDEN} {INTER} {TN}"]
     for t in range(ntest):
-        x = [[bf16bits(v) for v in rng.uniform(-1.2, 1.2, HIDDEN)] for _ in range(PE_M)]
+        x = [[bf16bits(v) for v in rng.uniform(-1.2 * xscale, 1.2 * xscale, HIDDEN)]
+             for _ in range(PE_M)]
         Wg = mk_weight(rng, INTER,  HIDDEN)
         Wu = mk_weight(rng, INTER,  HIDDEN)
         Wd = mk_weight(rng, HIDDEN, INTER)
@@ -78,12 +88,18 @@ def gen(ntest, HIDDEN, INTER, TN, PE_M=1, seed=0):
         wu = [dequant_col(c) for c in Wu]
         wd = [dequant_col(c) for c in Wd]
         Y, TOL = [], []
+        n_hi = n_lo = 0                      # clamp-activity counters (see xscale)
         for r in range(PE_M):
             xf = np.array([bf16_val(x[r][k]) for k in range(HIDDEN)], dtype=np.float32)
             h  = np.empty(INTER, dtype=np.float32)
             for n in range(INTER):
                 g = matmul_q4k_col(xf, wg[n])   # bf16-valued float32
                 u = matmul_q4k_col(xf, wu[n])
+                if clamp_lim is not None:
+                    L = np.float32(clamp_lim)
+                    if g > L:            g = L; n_hi += 1
+                    if u >  L:           u = L; n_hi += 1
+                    elif u < -L:         u = -L; n_lo += 1
                 h[n] = bf16_mul(silu(g), u)      # bf16-valued float32
             for o in range(HIDDEN):
                 yv = matmul_q4k_col(h, wd[o])
@@ -97,14 +113,33 @@ def gen(ntest, HIDDEN, INTER, TN, PE_M=1, seed=0):
         emit_w(lines, Wg); emit_w(lines, Wu); emit_w(lines, Wd)
         lines.append(" ".join(f"{y:04x}" for y in Y))
         lines.append(" ".join(f"{tt:.6f}" for tt in TOL))
+        if clamp_lim is not None:
+            tot_hi += n_hi; tot_lo += n_lo
+    if clamp_lim is not None:
+        # A clamp gate that never clamps proves nothing. Both directions must fire:
+        # the upper bound (gate AND up) and the lower bound (up only).
+        assert tot_hi > 0 and tot_lo > 0, (
+            f"clamp vectors are VACUOUS: upper fired {tot_hi}x, lower {tot_lo}x -- "
+            f"raise xscale until both are nonzero, or the gate passes against an "
+            f"unclamped DUT")
+        print(f"clamp activity: upper {tot_hi}, lower {tot_lo} (both nonzero -> gate is live)",
+              file=sys.stderr)
     return "\n".join(lines) + "\n"
 
 if __name__ == "__main__":
-    ntest  = int(sys.argv[1]) if len(sys.argv) > 1 else 30
-    HIDDEN = int(sys.argv[2]) if len(sys.argv) > 2 else 8
-    INTER  = int(sys.argv[3]) if len(sys.argv) > 3 else 8
-    TN     = int(sys.argv[4]) if len(sys.argv) > 4 else 4
-    out    = sys.argv[5] if len(sys.argv) > 5 else "build/swiglu_q4k_vec.txt"
-    open(out, "w").write(gen(ntest, HIDDEN, INTER, TN))
+    # --clamp[=LIMIT] turns on the GLM-5.3-Flash asymmetric SwiGLU clamp golden.
+    # Flags are stripped before the positional parse so `--clamp` may appear
+    # anywhere (int("--clamp") would otherwise abort the run).
+    clamp = None
+    for a in sys.argv[1:]:
+        if a.startswith("--clamp"):
+            clamp = float(a.split("=", 1)[1]) if "=" in a else 10.0
+    argv   = [a for a in sys.argv[1:] if not a.startswith("--")]
+    ntest  = int(argv[0]) if len(argv) > 0 else 30
+    HIDDEN = int(argv[1]) if len(argv) > 1 else 8
+    INTER  = int(argv[2]) if len(argv) > 2 else 8
+    TN     = int(argv[3]) if len(argv) > 3 else 4
+    out    = argv[4] if len(argv) > 4 else "build/swiglu_q4k_vec.txt"
+    open(out, "w").write(gen(ntest, HIDDEN, INTER, TN, clamp_lim=clamp))
     print(f"wrote {out}: {ntest} tests HIDDEN={HIDDEN} INTER={INTER} TN={TN} "
           f"(NSB gate/up={(HIDDEN+255)//256} down={(INTER+255)//256})")

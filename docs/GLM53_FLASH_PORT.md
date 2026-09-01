@@ -196,7 +196,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
 | 2 | **KDA linear-attention block** — spec DONE, RTL open | 34 / 45 layers | the real work. The **executable reference now exists** (`tools/glm53_flash_ref.py`: `kda_step`, `causal_conv_step`, `forget_gate`, `rmsnorm_gated`), transcribed from the reference implementation and gated by `make glm53f-ref`. What remains is RTL: a `[64, 128, 128]` fp32 state memory per layer (4.19 MB), the fp32 recurrence, and a bit-exact gate against that reference |
 | 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
-| 4 | **Clamped SwiGLU** — spec DONE, RTL open | every FFN | `tools/glm53_flash_ref.py: clamped_swiglu`, gated. Small — but the clamp is **asymmetric** (gate upper-bound only, `up` both ways), which a symmetric guess gets wrong; the gate pins that |
+| 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **Indexer compressor** | the 11 DSA blocks | k-pool 4 with compression and always-select-tail; `indexer_compressor_{ape,gate}` have no GLM-5.2 counterpart |
 | 6 | **Re-target packer / flash layout** | boot path | `tools/ckpt_pack_q4k.py`, `tools/flash_layout.py` against `glm5next` tensor names and the per-tensor UD mix |
 | 7 | **Re-seal `gguf_crosscheck`** | the dequant trust row | run against real GLM-5.3-Flash GGUF bytes, including Q5_K |
@@ -212,6 +212,41 @@ Item 2 is the one that decides the schedule. Items 1, 4 and 6 are mechanical.
 a specific model's draft quality and must be re-measured on GLM-5.3-Flash before
 any roofline number is quoted. Until then, every throughput figure for this model
 is `[EST]` with a borrowed acceptance input, and is labelled as such.
+
+### 4.3b Clamped SwiGLU — DONE
+
+`SWIGLU_CLAMP` (default **0**) in `src/swiglu_expert_q4k.v`. Off, the committed
+GLM-5.2 datapath is byte-identical — the clamp lives on *wires* at the two
+consumption points and is never folded into the FSM, because this module's own
+`GU_CONC` note records that folding a parameter term into the FSM has broken
+default netlist identity three times in this repo.
+
+On, it implements the asymmetry exactly:
+
+```
+gate = min(gate, +10.0)          // upper bound ONLY
+up   = clip(up, -10.0, +10.0)    // both bounds
+h    = silu(gate) * up
+```
+
+Four legs in `make q4k`, because a clamp gate is unusually easy to write
+vacuously:
+
+| leg | what it rules out |
+|---|---|
+| `swiglu_expert_q4k(CLAMP)` vs a `--clamp` golden | the feature simply not working |
+| the **same golden** vs `SWIGLU_CLAMP=0` must **FAIL** | a golden that passes against *any* DUT — i.e. operands that never actually cross ±10 |
+| `-DINJ_SWIGLU_SYMCLAMP` (gate clamped symmetrically) must **FAIL** | the asymmetry going unchecked. This is the plausible wrong reading, and a *small* error — `silu` is near zero for large negative gates — so it is exactly the kind that survives a loose tolerance |
+| the generator asserts both clamp directions fired | vectors where the lower bound is never exercised |
+
+Measured clamp activity in the committed vectors: upper bound fired 100×, lower
+45×.
+
+**bf16 NaN caveat**, recorded rather than papered over: the clamp compares
+magnitudes as unsigned 15-bit integers (exact for finite bf16), so NaN/Inf
+saturate to ±limit where `torch.clamp` propagates NaN. Real activations are never
+NaN, and handling it would cost gates on the merge path. Same policy as the
+`f16_deq` NaN note in `src/q4k_mixed.vh`.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 

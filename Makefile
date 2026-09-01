@@ -346,6 +346,40 @@ q4k:
 	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v
 	@printf '[%s] ' "swiglu_expert_q4k"; $(VVP) $(BUILD_DIR)/swiglu_expert_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: swiglu_expert_q4k"; exit 1; }
+	@# ---- GLM-5.3-Flash asymmetric SwiGLU clamp (SWIGLU_CLAMP=1) --------------
+	@# GLM-5.2 has no clamp; GLM-5.3-Flash clamps EVERY block at 10.0, asymmetrically:
+	@#   gate.clamp(max=+lim) only  /  up.clamp(min=-lim, max=+lim)
+	@# Three legs, because a clamp gate is easy to write vacuously:
+	@#  (a) SWIGLU_CLAMP=1 vs a --clamp golden -- the feature works;
+	@#  (b) the SAME golden vs SWIGLU_CLAMP=0 must FAIL -- proves the golden really
+	@#      encodes the clamp instead of passing against any DUT;
+	@#  (c) -DINJ_SWIGLU_SYMCLAMP clamps the GATE symmetrically too (the plausible
+	@#      wrong reading, and a small error since silu is near zero for large
+	@#      negative gates) and must FAIL -- proves the ASYMMETRY is what is checked.
+	@# The generator itself asserts both clamp directions actually fired.
+	@python3 tools/swiglu_q4k_gen.py 30 8 8 4 $(BUILD_DIR)/swiglu_q4k_clamp_vec.txt --clamp >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_SWIGLU_CLAMP=1 -DTB_VEC='"$(BUILD_DIR)/swiglu_q4k_clamp_vec.txt"' \
+	    -o $(BUILD_DIR)/swiglu_clamp_sim test/swiglu_expert_q4k_tb.v \
+	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null \
+	    || { echo "FAILED: swiglu clamp compile"; exit 1; }
+	@printf '[%s] ' "swiglu_expert_q4k(CLAMP)"; $(VVP) $(BUILD_DIR)/swiglu_clamp_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: swiglu_expert_q4k(CLAMP)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DTB_SWIGLU_CLAMP=0 -DTB_VEC='"$(BUILD_DIR)/swiglu_q4k_clamp_vec.txt"' \
+	    -o $(BUILD_DIR)/swiglu_clamp_vac test/swiglu_expert_q4k_tb.v \
+	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null
+	@if $(VVP) $(BUILD_DIR)/swiglu_clamp_vac 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: swiglu clamp golden is VACUOUS -- an UNCLAMPED dut passes it, so the clamp leg proves nothing"; exit 1; \
+	  else \
+	    echo "[swiglu_clamp_VAC_unclamped] correctly FAILED (the golden really encodes the clamp)"; \
+	  fi
+	@$(IVERILOG) $(IFLAGS) -DTB_SWIGLU_CLAMP=1 -DINJ_SWIGLU_SYMCLAMP -DTB_VEC='"$(BUILD_DIR)/swiglu_q4k_clamp_vec.txt"' \
+	    -o $(BUILD_DIR)/swiglu_clamp_inj test/swiglu_expert_q4k_tb.v \
+	    src/swiglu_expert_q4k.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null
+	@if $(VVP) $(BUILD_DIR)/swiglu_clamp_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: swiglu symmetric-clamp injection PASSED -- the gate/up asymmetry is not actually checked"; exit 1; \
+	  else \
+	    echo "[swiglu_clamp_INJECT_symclamp] injection correctly FAILED (the asymmetry is load-bearing)"; \
+	  fi
 	@# moe_router_q4k: gating GEMV -> sigmoid -> top-K -> renorm on the Q4_K core.
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/moe_router_q4k_sim test/moe_router_q4k_tb.v \
 	    src/moe_router_q4k.v src/glm_matmul_q4k.v src/glm_act.v src/topk_select.v src/glm_fp_pipe.v

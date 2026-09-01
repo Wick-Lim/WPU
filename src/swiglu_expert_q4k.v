@@ -35,6 +35,23 @@ module swiglu_expert_q4k #(
     //   folding a `GU_CONC ?` term into the FSM is the shape that has broken
     //   default netlist identity three times in this repo.
     parameter integer GU_CONC = 0,
+    // ---- SWIGLU_CLAMP : GLM-5.3-Flash clamps the SwiGLU operands ------------
+    //   GLM-5.2 has no clamp; GLM-5.3-Flash sets swiglu_limit = 10.0 on EVERY
+    //   block, and an unclamped SwiGLU there is numerically wrong, not merely
+    //   approximate.  The clamp is ASYMMETRIC (tools/glm53_flash_ref.py:
+    //   clamped_swiglu, transcribed from Glm5NextTextMLP.forward):
+    //       gate.clamp(min=None, max=+limit)     upper bound ONLY
+    //       up  .clamp(min=-limit, max=+limit)   both bounds
+    //   A symmetric clamp on both operands is the plausible wrong version.
+    //   Default 0 keeps the committed GLM-5.2 datapath byte-identical -- the
+    //   clamp is applied on WIRES at the two consumption points, never folded
+    //   into the FSM (this module's own GU_CONC note records that folding a
+    //   parameter term into the FSM has broken default netlist identity three
+    //   times in this repo).
+    parameter integer SWIGLU_CLAMP = 0,
+    // bf16 bit pattern of the limit.  16'h4120 == 10.0 (fp32 0x41200000 >> 16),
+    // which is GLM-5.3-Flash's swiglu_limit / the GGUF swiglu_clamp_exp value.
+    parameter [15:0]  SWIGLU_CLAMP_LIM = 16'h4120,
     // ---- HDR_LATE : L3 header path -- both engines consume stub-fed fw headers
     parameter integer HDR_LATE = 0
 )(
@@ -156,14 +173,60 @@ module swiglu_expert_q4k #(
     reg [16*MTN-1:0] gate_hold, up_hold;
     reg [GW-1:0]     grp_hold;
 
+    // ---- bf16 saturating clamps (SWIGLU_CLAMP) ----------------------------
+    //   bf16 is fp32's top 16 bits, so for FINITE values an unsigned compare of
+    //   the low 15 bits orders magnitudes exactly -- the standard IEEE property.
+    //   NaN/Inf NOTE: their magnitude exceeds any finite limit, so they saturate
+    //   to +/-limit here, whereas torch.clamp propagates NaN.  Real activations
+    //   are never NaN, and handling it would cost gates on the merge path; the
+    //   divergence is recorded rather than papered over (same policy as the
+    //   f16_deq NaN note in src/q4k_mixed.vh).
+    function automatic [15:0] bf16_clamp_hi(input [15:0] x, input [15:0] lim);
+        bf16_clamp_hi = (!x[15] && (x[14:0] > lim[14:0])) ? {1'b0, lim[14:0]} : x;
+    endfunction
+    function automatic [15:0] bf16_clamp_sym(input [15:0] x, input [15:0] lim);
+        bf16_clamp_sym = (x[14:0] > lim[14:0]) ? {x[15], lim[14:0]} : x;
+    endfunction
+
     // silu(gate)
     reg               act_in_valid;
     reg  [16*MTN-1:0] act_x_in;
     wire              act_ov;
     wire [16*MTN-1:0] act_y;
+
+    //   The clamp lives on WIRES feeding the two consumers, so SWIGLU_CLAMP==0
+    //   is a pure pass-through that yosys folds away -- default netlist identity
+    //   is structural, not a promise.
+    wire [16*MTN-1:0] act_x_eff, up_eff;
+    genvar cl;
+    generate
+        if (SWIGLU_CLAMP == 0) begin : gen_swiglu_noclamp
+            assign act_x_eff = act_x_in;
+            assign up_eff    = up_hold;
+        end else begin : gen_swiglu_clamp
+            for (cl = 0; cl < MTN; cl = cl + 1) begin : gen_cl_lane
+                // INJECTION (never a normal build): clamp the GATE symmetrically
+                // too. That is the plausible wrong reading -- both operands look
+                // like they should get the same treatment -- and it changes only
+                // large-negative gates, where silu is near zero, so the error is
+                // small and easy to miss. -DINJ_SWIGLU_SYMCLAMP; the clamp gate
+                // MUST fail with it.
+`ifdef INJ_SWIGLU_SYMCLAMP
+                assign act_x_eff[16*cl +: 16] =
+                    bf16_clamp_sym(act_x_in[16*cl +: 16], SWIGLU_CLAMP_LIM);
+`else
+                assign act_x_eff[16*cl +: 16] =
+                    bf16_clamp_hi (act_x_in[16*cl +: 16], SWIGLU_CLAMP_LIM);
+`endif
+                assign up_eff[16*cl +: 16] =
+                    bf16_clamp_sym(up_hold [16*cl +: 16], SWIGLU_CLAMP_LIM);
+            end
+        end
+    endgenerate
+
     glm_act #(.MODE(1), .LANES(MTN), .HW_LANES(ACT_HW)) u_silu (
         .clk(clk), .rst(rst),
-        .in_valid(act_in_valid), .x_in(act_x_in),
+        .in_valid(act_in_valid), .x_in(act_x_eff),
         .out_valid(act_ov), .y_out(act_y)
     );
 
@@ -328,7 +391,7 @@ module swiglu_expert_q4k #(
         for (mr = 0; mr < PE_M; mr = mr + 1)
             for (mc = 0; mc < TN; mc = mc + 1)
                 n_hval[mr*TN + mc] = bf16_mul(act_y[16*(mr*TN+mc) +: 16],
-                                              up_hold[16*(mr*TN+mc) +: 16]);
+                                              up_eff[16*(mr*TN+mc) +: 16]);
     end
     always @(posedge clk)
         if (act_ov)

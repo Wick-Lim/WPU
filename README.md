@@ -35,7 +35,8 @@ fully readable; the two attention/residual gaps remain.
 | KDA linear attention (34 / 45 blocks) | **no RTL** |
 | hyper-connections (every block's residual) | **no RTL** |
 | Q5_K dequant (34.9 % of bytes) | **DONE** — reference + RTL + `make mixedtype` w/ must-fail injection |
-| clamped SwiGLU, indexer k-pool compressor | **not implemented** |
+| clamped SwiGLU | **DONE** — `SWIGLU_CLAMP` in `swiglu_expert_q4k`, 4-leg gate incl. vacuity + asymmetry injection |
+| indexer k-pool compressor | **not implemented** |
 
 **No claim is made that this branch runs GLM-5.3-Flash.** The full scope, the measured
 tensor census and the reproduction commands are in
@@ -301,7 +302,11 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   (packer item below) — it `$fatal`s on a Q5_K descriptor rather than streaming Q4_K geometry.
 - **Hyper-connections — no RTL.** Sinkhorn normalization (20 iterations) over a width-4 connection
   matrix replaces the plain residual add on every block; needs a fixed-point study first.
-- **Clamped SwiGLU (limit 10.0) and the indexer k-pool compressor** — not implemented; both small.
+- ~~**Clamped SwiGLU (limit 10.0)**~~ — **DONE.** `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the
+  GLM-5.2 path stays byte-identical. Four legs in `make q4k`: the feature, a vacuity leg (the clamp golden
+  must fail against an unclamped DUT), a must-fail injection that clamps the gate symmetrically (the
+  plausible wrong reading), and a generator assertion that both clamp directions actually fired.
+- **The indexer k-pool compressor** — not implemented; small.
 - **Speculative-decode inputs not re-measured.** The MTP head exists here
   (`nextn_predict_layers = 1`), but GLM-5.2's `A_eff = 1.87` / accept rate 0.87 are properties of a
   different model and do not transfer, so no amortized tok/s figure is published for GLM-5.3-Flash.
