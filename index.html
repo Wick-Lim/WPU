@@ -236,16 +236,17 @@
       <div class="pb-item ok"><b>Model config</b><span>LOCKED — every dim cited from the GGUF, 8/8 gate in two simulators</span></div>
       <div class="pb-item ok"><b>MLA + DSA + MTP</b><span>inherited — the right machine for 11 of 45 blocks</span></div>
       <div class="pb-item ok"><b>MoE · Q4_K/Q6_K/Q8_0 · memory system</b><span>inherited, bit-exact at GLM-5.2 shapes</span></div>
-      <div class="pb-item"><b>KDA linear attention</b><span>NO RTL — 34 of 45 blocks. The item that sets the schedule.</span></div>
-      <div class="pb-item"><b>Q5_K dequant</b><span>NO KERNEL — 34.9% of the checkpoint's bytes are unreadable today</span></div>
-      <div class="pb-item"><b>Hyper-connections</b><span>NO RTL — Sinkhorn residual path, every block</span></div>
+      <div class="pb-item ok"><b>Q5_K dequant</b><span>DONE — reference + RTL + gate w/ must-fail injection, checked on real published bytes. Loader tile geometry still open</span></div>
+      <div class="pb-item ok"><b>Clamped SwiGLU</b><span>DONE — asymmetric clamp, 4-leg gate incl. vacuity + symmetric-clamp injection</span></div>
+      <div class="pb-item"><b>KDA linear attention</b><span>Recurrence core DONE (<span class="k">make kda</span>). Layer wrapper + BRAM state open — 34 of 45 blocks</span></div>
+      <div class="pb-item"><b>Hyper-connections</b><span>Executable spec only (<span class="k">make glm53f-ref</span>) — 4 parallel residual streams, Sinkhorn mix. NO RTL</span></div>
     </div>
   </section>
 
   <div class="stats" aria-label="load-bearing measured facts">
     <div class="stat">
       <div class="n tnum">376,586,240</div>
-      <div class="l">weights bitwise-equal to llama.cpp dequant, on <span class="tag">real GGUF bytes</span> — Q4_K/Q6_K/Q8_0 (<b>Q5_K not yet</b>)</div>
+      <div class="l">weights bitwise-equal to llama.cpp dequant, on <span class="tag">real GGUF bytes</span> — Q4_K/Q6_K/Q8_0 (Q5_K: bit-exact to our ggml reimpl + consistent with real bytes; llama.cpp seal <b>not yet run</b>)</div>
     </div>
     <div class="stat">
       <div class="n tnum">1155<small>/1155</small></div>
@@ -294,7 +295,7 @@
 
   <section>
     <div class="sec-head"><h2>Verification ledger</h2></div>
-    <p class="sec-sub">Each claim is tagged for the kind of evidence behind it. “Bit-exact” means bit-exact to the ggml-Q4_K reference <span class="k">tools/q4k_ref.py</span>, which is itself proven equal to real GGUF bytes at the dequant layer. <b>Every green row here was measured at GLM-5.2 shapes</b> — they are what the GLM-5.3-Flash port starts from, not results at its shape. The last three rows are the GLM-5.3-Flash blocks that do not exist yet.</p>
+    <p class="sec-sub">Each claim is tagged for the kind of evidence behind it. “Bit-exact” means bit-exact to the ggml-Q4_K reference <span class="k">tools/q4k_ref.py</span>, which is itself proven equal to real GGUF bytes at the dequant layer. <b>Every green row measured at GLM-5.2 shapes</b> is what the GLM-5.3-Flash port starts from, not a result at its shape. The GLM-5.3-Flash rows below are labelled by what they actually are: Q5_K and the clamped SwiGLU are proven on this branch; the KDA recurrence core is proven with its accuracy contract stated; hyper-connections have an executable spec and no RTL.</p>
 
     <div class="legend">
       <span><i class="led s-proven"></i>PROVEN — gated bit-exact / functional sim</span>
@@ -315,9 +316,12 @@
       <div class="row"><i class="led s-measured"></i><div class="what">FPGA fit <span class="sub">whole 2-clock product top synthesized AND placed-and-routed on Kintex UltraScale+ XCKU3P</span></div><div class="ev"><span class="st st-measured">Measured · Vivado P&amp;R</span>87.5% LUT · Fmax 46.5 MHz</div></div>
       <div class="row"><i class="led s-elab"></i><div class="what">Full 753B UD-Q4_K_XL shape <span class="sub">the <b>GLM-5.2</b> production shape — DIM 6144 / L=78 / 256-expert / VOCAB 154880; type/width check, no stimulus</span></div><div class="ev"><span class="st st-elab">Elaborated · clean</span>0 errors</div></div>
       <div class="row"><i class="led s-proven"></i><div class="what">GLM-5.3-Flash config lock <span class="sub">every model dim cited from the published GGUF; the whole-model top stays un-elaboratable until KDA + hyper-connections + Q5_K land — verified in both directions, in two simulators</span></div><div class="ev"><span class="st st-proven">Proven · guard both ways</span>make glm53f-config-guard 8/8</div></div>
-      <div class="row"><i class="led s-open"></i><div class="what">KDA linear attention <span class="sub">34 of GLM-5.3-Flash's 45 blocks: short causal conv (k=4) on q/k/v, gated delta-rule state, f/g low-rank gates, per-head norm</span></div><div class="ev"><span class="st st-open">Open · no RTL</span>34/45 blocks</div></div>
-      <div class="row"><i class="led s-open"></i><div class="what">Q5_K dequant <span class="sub">all 42 <span class="k">ffn_down_exps</span> tensors are Q5_K; no kernel exists in this repo, so a third of the checkpoint cannot be read at all</span></div><div class="ev"><span class="st st-open">Open · no kernel</span>69.76 GB · 34.9%</div></div>
-      <div class="row"><i class="led s-open"></i><div class="what">Hyper-connection residual <span class="sub">Sinkhorn normalization (20 iterations) over a width-4 connection matrix replaces the plain residual add on every block</span></div><div class="ev"><span class="st st-open">Open · no RTL</span>45/45 blocks</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Q5_K dequant <span class="sub">all 42 <span class="k">ffn_down_exps</span> (34.9% of bytes). One type code, no new bus: Q5_K is Q4_K with a 5-bit code on the existing <span class="k">w_hp</span> lane. Must-fail injection drops the min subtract; checked on real published bytes vs the proven Q6_K kernel (std ratio 0.9966)</span></div><div class="ev"><span class="st st-proven">Proven · bit-exact vs ggml reimpl</span>make mixedtype · Q5_K cols 6/6</div></div>
+      <div class="row"><i class="led s-proven"></i><div class="what">Clamped SwiGLU <span class="sub">GLM-5.3-Flash clamps every block at 10.0, asymmetrically — gate upper-only, up both ways. Default-off, netlist-identical to the GLM-5.2 path; vacuity leg + symmetric-clamp injection both fail as required</span></div><div class="ev"><span class="st st-proven">Proven · 4 legs</span>make q4k · 240/240</div></div>
+      <div class="row"><i class="led s-measured"></i><div class="what">KDA recurrence core <span class="sub">decay → kv → delta-rule → outer-product update → out, in the golden's exact sequential order. Exact leg (fp32 mul/add only) bounded at 64 ULP — the amplified footprint of <span class="k">fp32_add</span>'s measured 1-ULP gap, not a datapath error; tolerance leg runs its own l2norm through the Quake rsqrt</span></div><div class="ev"><span class="st st-measured">Proven · accuracy contract stated</span>make kda · 5184 + 5184</div></div>
+      <div class="row"><i class="led s-measured"></i><div class="what"><span class="k">fp32_add</span> IEEE conformance <span class="sub">found building KDA: 0.04% of adds land 1 ULP low. Invisible on every bf16-output path (masked in 99.999%), so the Q4_K bit-exactness holds; visible the moment an output is fp32. Now a pinned ceiling, not a latent surprise</span></div><div class="ev"><span class="st st-measured">Measured · ceiling pinned</span>make fp-ieee · 4/10000</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">KDA layer wrapper + state memory <span class="sub">q/k/v projections, k=4 causal conv, forget/beta gates, <span class="k">o_norm</span>/<span class="k">o_proj</span> not yet wired around the core; the 4.19 MB/layer state still lives in the slice's register array, not BRAM/DDR</span></div><div class="ev"><span class="st st-open">Open</span>34/45 blocks</div></div>
+      <div class="row"><i class="led s-open"></i><div class="what">Hyper-connection residual <span class="sub">the block carries <b>4 parallel residual streams</b>; a Sinkhorn-projected 4×4 doubly-stochastic matrix re-mixes them every block. Executable spec transcribed from the reference (<span class="k">make glm53f-ref</span>); interface is [4,D], not [D]</span></div><div class="ev"><span class="st st-open">Open · spec only, no RTL</span>45/45 blocks</div></div>
       <div class="row"><i class="led s-open"></i><div class="what">llama.cpp whole-runtime equality <span class="sub">attention / accumulation orders differ by design; no full checkpoint has been run end-to-end</span></div><div class="ev"><span class="st st-open">Open · out-of-contract</span>needs a GPU host</div></div>
     </div>
   </section>
@@ -369,9 +373,10 @@
     <div class="sec-head"><h2>Not yet done</h2></div>
     <p class="sec-sub">Open gaps — most sit at the physical/process boundary that an RTL repo cannot close.</p>
     <div class="open-grid">
-      <div class="open-item"><div class="h"><i class="led s-open"></i>KDA linear attention — 34 of 45 blocks</div><p>GLM-5.3-Flash's hybrid stack runs linear attention on three of every four layers. New datapath, new state memory, new golden reference. This is the port's critical path.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Q5_K dequant — 34.9% of the bytes</div><p>All 42 <span class="k">ffn_down_exps</span> tensors are Q5_K and no kernel exists here. Smallest of the three gaps: it is a sibling of the proven Q4_K/Q6_K path.</p></div>
-      <div class="open-item"><div class="h"><i class="led s-open"></i>Hyper-connections</div><p>A Sinkhorn-normalized width-4 connection matrix replaces the residual add on every block. Needs a fixed-point study before RTL.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>KDA layer wrapper + BRAM state</div><p>The recurrence core is proven; the layer around it is not wired. Projections, the k=4 causal conv, the forget/beta gates and <span class="k">o_norm</span>/<span class="k">o_proj</span> are existing units. The state must move from registers to BRAM/DDR at the real 4.19 MB/layer shape.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Hyper-connections — 4 residual streams</div><p>Bigger than first scoped: the block interface is [4,D], not [D]. Spec exists and is gated; needs a fixed-point study before RTL.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i>Q5_K loader path + llama.cpp seal</div><p>The GEMM arm is done; <span class="k">weight_loader_q4k</span> cannot lay out a Q5_K tile yet (packer item) and <span class="k">$fatal</span>s rather than streaming Q4_K geometry. The gold-standard <span class="k">gguf_crosscheck</span> against llama.cpp's own dequant is wired but unrun — no checkout available.</p></div>
+      <div class="open-item"><div class="h"><i class="led s-open"></i><span class="k">fp32_add</span> — fix, or track?</div><p>An exactly-rounded adder would make the KDA exact leg bitwise. It also perturbs every pinned netlist baseline in the repo, so it is a decision, not a drive-by. Until made, <span class="k">make fp-ieee</span> tracks the gap.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Whole-runtime GGUF cross-check</div><p>The full GGUF run end-to-end and compared against llama.cpp’s runtime argmax. Needs a GPU / large-memory host; no in-repo tool yet.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Vendor PHY IP</div><p>DDR5 / NVMe (PCIe) / USB-C PHYs are TB-stubbed. Licensed PHY IP is integrated + signed off at the silicon rung.</p></div>
       <div class="open-item"><div class="h"><i class="led s-open"></i>Board bring-up</div><p>The FPGA fit is measured in-repo; running on a physical dev board needs the board + pin XDC + a MIG bridge.</p></div>

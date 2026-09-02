@@ -35,7 +35,7 @@ are shared.
 
 | Model | Checkpoint | Branch | Status |
 |---|---|---|---|
-| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB<br>212 GB resident at 1M context | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config LOCKED, datapath NOT COMPLETE.** Arch `glm5next` — not a re-dimensioned GLM-5.2: **34 of 45 layers are KDA linear attention** (no RTL here), the residual path is hyper-connections (no RTL), and **34.9% of the bytes are Q5_K** (no kernel). Every dimension is cited from the GGUF and gated; the whole-model top is deliberately un-elaboratable until those land. |
+| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB<br>212 GB resident at 1M context | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config LOCKED, datapath in progress.** Arch `glm5next` — not a re-dimensioned GLM-5.2. **Landed:** Q5_K dequant (34.9 % of bytes — reference + RTL + must-fail gate, checked on real published bytes), the asymmetric clamped SwiGLU, and the **KDA recurrence core** (`make kda`, accuracy contract stated). **Open:** the KDA layer wrapper + BRAM state (34 of 45 layers), hyper-connections (4 parallel residual streams — executable spec, no RTL), the Q5_K loader tile geometry, and the llama.cpp seal. Every dimension is cited from the GGUF and gated; the whole-model top stays un-elaboratable until the rest lands. |
 | **GLM-5.2** | [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF)<br>753B MoE (~40B active/token), ~467 GB | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | **The proven build.** Full datapath bit-exact vs an independent ggml reference, memory-system controllers formally verified, whole product top placed & routed on a real FPGA. The paper is about this build, and the GLM-5.3-Flash branch forked from its tip. |
 | **Laguna-S-2.1** | [`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)<br>118B MoE (~8B active/token) | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | **Port in progress.** Dequant inherited unchanged; MoE path bit-exact in RTL at Laguna's config; the (different) GQA attention machine is specified and reference-verified end to end — the bit-exact orchestrator RTL is scoped, not yet written. |
 
@@ -69,8 +69,10 @@ same-family successor was expected to make it the *cheapest* port yet. It is not
 - The residual path changed — hyper-connections with Sinkhorn normalization on every block. Nothing
   in the "attention is the only per-model part" split anticipated that.
 - **The dequant contract was the one thing assumed to be free**, because it is format-level rather
-  than model-level. GLM-5.3-Flash's UD-Q4_K_XL mix uses **Q5_K**, which this repo has never
-  implemented, for 34.9% of its bytes. Format-level portability holds only across the *set of
+  than model-level. GLM-5.3-Flash's UD-Q4_K_XL mix uses **Q5_K**, which this repo had never
+  implemented, for 34.9% of its bytes (it has since landed on the port branch — as
+  Q4_K with a wider code on an existing bus, which is the cheap case; it still
+  had to be *built*, and its gate still had to be made non-vacuous). Format-level portability holds only across the *set of
   formats already built*; a k-quant mix is a per-checkpoint fact, and it must be read from the GGUF
   rather than assumed.
 
@@ -112,7 +114,7 @@ The per-claim ledger lives in each model branch's README.
 | Branch | Contents |
 |---|---|
 | `main` (this) | Project hub: this README, the [project site](https://wick-lim.github.io/WPU/), and the [paper](paper/). |
-| [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | The GLM-5.3-Flash port: locked config + its two-sided guard, the GGUF census tool, the port ledger. Forked at the GLM-5.2 tip, so it carries every gate that branch has. |
+| [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | The GLM-5.3-Flash port: locked config + its two-sided guard, Q5_K dequant, clamped SwiGLU, the KDA recurrence core, the executable spec for KDA/mHC, the GGUF census + memory-budget tools, `make fp-ieee`, the port ledger. Forked at the GLM-5.2 tip, so it carries every gate that branch has. |
 | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | The GLM-5.2 accelerator: RTL, testbenches, `make` gates, docs, host runtime, FPGA flow. |
 | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | The Laguna-S-2.1 port: locked config, executable references, gates. |
 
