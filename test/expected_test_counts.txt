@@ -31,6 +31,10 @@
 #   and host-test had banner formats the parser could not see, and ran count-unchecked;
 #   their banners are normalized and pinned below).
 
+fp32_ieee 10000
+kda_recur(RSQRT) 5184
+kda_recur(EXACT) 5184
+kda_gen 80
 glm53f-ref 15
 glm53f-config-guard 8
 axi_boot_writer 403

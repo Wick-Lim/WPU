@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee kda all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee kda unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -966,6 +966,59 @@ GLM53F_DEFS_VL := +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_HC_RTL_PRESENT +
 glm53f-ref:
 	@printf '[%s] ' "glm53f-ref"; python3 tools/glm53_flash_ref.py \
 	    || { echo "FAILED: glm53f-ref"; exit 1; }
+
+# ---- fp-ieee : how far the fp32 primitives are from IEEE, MEASURED and PINNED
+# src/glm_fp.vh fp32_add is not exactly round-to-nearest-even: ~0.04% of pairs
+# come out 1 ULP low, at exponent gaps 4-5.  That has been harmless and invisible
+# because every proven path in this repo ends in bf16, where a 1-ULP fp32
+# difference survives rounding in only ~0.001% of cases -- so the Q4_K core's
+# bit-exactness is unaffected.  src/kda_recur.v is the first consumer whose
+# OUTPUT is fp32, which is why it surfaced there.  This gate pins a CEILING so a
+# future change to the adder moves a number instead of producing a mystery ULP.
+fp-ieee:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/fp32_ieee_gen.py $(BUILD_DIR)/fp32_ieee_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/fp32_ieee_sim test/fp32_ieee_tb.v 2>/dev/null \
+	    || { echo "FAILED: fp-ieee compile"; exit 1; }
+	@printf '[%s] ' "fp32_ieee"; $(VVP) $(BUILD_DIR)/fp32_ieee_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: fp-ieee -- a primitive regressed past its pinned IEEE-conformance ceiling"; exit 1; }
+
+# ---- kda : the KDA recurrent state update (34 of GLM-5.3-Flash's 45 layers) ---
+# Golden: tools/glm53_flash_ref.py kda_step, via tools/kda_gen.py.
+# THREE legs plus an injection, because the two approximation sources have to be
+# kept apart or neither claim means anything:
+#   (a) generator self-test: the pre-normed operands reproduce the in-kernel-norm
+#       recurrence BITWISE, so both DUT legs are checking the same math;
+#   (b) EXACT=1: pre-normed q/k + pre-exp g, so the DUT does only fp32 mul/add.
+#       Bounded at 64 ULP (worst observed 32) -- NOT bitwise, and the reason is
+#       fp32_add's measured gap amplified by the cancellation in (v - kv)*beta.
+#       Replaying the RTL's operation order in numpy reproduces the golden bit for
+#       bit, so this ceiling tracks a fixable defect, not an inherent limit;
+#   (c) EXACT=0: the DUT runs its own l2norm through the Quake fp32_rsqrt, so this
+#       leg is a TOLERANCE check -- the same status swiglu_expert_q4k has;
+#   (d) -DINJ_KDA_NODECAY drops the pass-B decay (the state must be decayed before
+#       BOTH the kv read and the update). Small and compounding -- exactly what a
+#       loose tolerance swallows -- and the gate must fail with it.
+kda:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "kda_gen"; python3 tools/kda_gen.py --selftest \
+	    || { echo "FAILED: kda_gen self-test"; exit 1; }
+	@python3 tools/kda_gen.py 24 3 8 8 $(BUILD_DIR)/kda_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/kda_vec.txt"' -o $(BUILD_DIR)/kda_exact_sim \
+	    test/kda_recur_tb.v src/kda_recur.v 2>/dev/null || { echo "FAILED: kda exact compile"; exit 1; }
+	@printf '[%s] ' "kda_recur(EXACT)"; $(VVP) $(BUILD_DIR)/kda_exact_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kda_recur(EXACT)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DTB_EXACT=0 -DTB_VEC='"$(BUILD_DIR)/kda_vec.txt"' -o $(BUILD_DIR)/kda_tol_sim \
+	    test/kda_recur_tb.v src/kda_recur.v 2>/dev/null || { echo "FAILED: kda tol compile"; exit 1; }
+	@printf '[%s] ' "kda_recur(RSQRT)"; $(VVP) $(BUILD_DIR)/kda_tol_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kda_recur(RSQRT)"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_KDA_NODECAY -DTB_VEC='"$(BUILD_DIR)/kda_vec.txt"' -o $(BUILD_DIR)/kda_inj_sim \
+	    test/kda_recur_tb.v src/kda_recur.v 2>/dev/null
+	@if $(VVP) $(BUILD_DIR)/kda_inj_sim 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: kda no-decay injection PASSED -- the pass-B decay is not actually checked"; exit 1; \
+	  else \
+	    echo "[kda_recur_INJECT_nodecay] injection correctly FAILED (the pass-B decay is load-bearing)"; \
+	  fi
 
 glm53f-config-guard:
 	@printf '[%s] ' "glm53f-config-guard"; \

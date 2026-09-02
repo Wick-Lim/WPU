@@ -194,7 +194,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 | # | item | why it blocks | rough shape |
 |---|---|---|---|
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
-| 2 | **KDA linear-attention block** — spec DONE, RTL open | 34 / 45 layers | the real work. The **executable reference now exists** (`tools/glm53_flash_ref.py`: `kda_step`, `causal_conv_step`, `forget_gate`, `rmsnorm_gated`), transcribed from the reference implementation and gated by `make glm53f-ref`. What remains is RTL: a `[64, 128, 128]` fp32 state memory per layer (4.19 MB), the fp32 recurrence, and a bit-exact gate against that reference |
+| 2 | **KDA linear-attention block** — recurrence core DONE, layer wrapper open | 34 / 45 layers | `src/kda_recur.v`: the recurrent state update (decay → kv → delta → outer-product update → out), parameterized `H/DK/DV`, gated by `make kda` against `kda_step` (§4.3c). Still open: the layer wrapper — q/k/v projections + short conv + forget/beta gates + `o_norm`/`o_proj` are ordinary GEMVs and existing units, but they are not wired around the core yet; and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer), not in the slice's register array |
 | 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **Indexer compressor** | the 11 DSA blocks | k-pool 4 with compression and always-select-tail; `indexer_compressor_{ape,gate}` have no GLM-5.2 counterpart |
@@ -247,6 +247,65 @@ magnitudes as unsigned 15-bit integers (exact for finite bf16), so NaN/Inf
 saturate to ±limit where `torch.clamp` propagates NaN. Real activations are never
 NaN, and handling it would cost gates on the merge path. Same policy as the
 `f16_deq` NaN note in `src/q4k_mixed.vh`.
+
+### 4.3c KDA recurrence core — DONE, and what it surfaced
+
+`src/kda_recur.v` implements one decode token of Kimi Delta Attention for `H`
+heads over a `[DK, DV]` state, in the golden's exact operation order:
+
+```
+S[d][e] *= exp(g[d])                 -- decay BEFORE the kv read
+kv[e]    = Σ_d S[d][e]·kn[d]          -- ascending d, sequential
+delta[e] = (v[e] − kv[e])·beta
+S[d][e] += kn[d]·delta[e]            -- delta rule, not a plain write
+out[e]   = Σ_d S[d][e]·qn[d]          -- ascending d, sequential
+```
+
+`RECOMPUTE=1` (default) re-applies the decay in the second pass instead of
+storing the decayed state: 2 reads + **1 write** of `S` per token rather than
+2 + 2. At the real shape the state is 4.19 MB/layer and 285 MB/token of traffic
+across 34 layers, so the write is the half worth saving.
+
+**Gate (`make kda`) — three legs and an injection, kept apart on purpose:**
+
+| leg | claim | why it is shaped that way |
+|---|---|---|
+| generator self-test (80) | the pre-normed operands reproduce the in-kernel-norm recurrence **bitwise** | so the two DUT legs provably check the *same* math |
+| `kda_recur(EXACT)` (5184) | fp32 mul/add only; **bounded at 64 ULP**, worst observed 32 | see the `fp32_add` finding below — this is *not* an inherent limit |
+| `kda_recur(RSQRT)` (5184) | DUT runs its own l2norm through the Quake `fp32_rsqrt` | a **tolerance** check — the same status `swiglu_expert_q4k` has |
+| `-DINJ_KDA_NODECAY` | drops the pass-B decay; **must fail** | a small, compounding error — exactly what a loose tolerance swallows |
+
+**Three things building this surfaced, each now pinned rather than latent:**
+
+1. **`src/glm_fp.vh fp32_add` is not exactly IEEE round-to-nearest-even.**
+   Measured: 4/10,000 random pairs land 1 ULP low, concentrated at exponent gaps
+   4–5; `fp32_mul` is exactly conformant (0/10,000). This had been invisible
+   because **every proven path in this repo ends in bf16**, and a 1-ULP fp32
+   difference survives `bf16_round` in only 2/200,000 cases — so the Q4_K core's
+   bit-exactness claim is intact and unaffected. `kda_recur` is the first
+   consumer whose *output* is fp32, which is why it showed here. `make fp-ieee`
+   now measures both primitives over exponent gaps 0–24 and pins a **ceiling**
+   (10 ppt10k for add, 0 for mul); an exactly-rounded adder would score 0 and
+   still pass. **Fixing the adder is a repo-wide change** (it perturbs every
+   pinned netlist) and was deliberately not done here.
+2. **Why the EXACT leg is 64 ULP and not 1.** The recurrence *amplifies* the
+   adder's gap through cancellation: in `delta = (v − kv)·beta`, when `v ≈ kv`
+   a 1-ULP error in `kv` becomes a large *relative* error in `delta`, which the
+   update and the output reduction carry forward. Replaying the RTL's exact
+   operation order in numpy reproduces the golden **bit for bit**, so the ceiling
+   tracks a known, measured, fixable defect — and should drop to 0 if the adder
+   is fixed.
+3. **numpy `.sum()` is pairwise, not sequential.** Measured: for length-8 fp32
+   vectors it differs from a sequential accumulate in **159/300** cases. A
+   streaming datapath cannot match a pairwise reference bitwise, so the golden's
+   reduction order is pinned sequential (`_seq_sum`) and that order is this
+   repo's contract. torch/FLA reduce in their own blocked order; whole-runtime
+   equality with them is out of contract — the stance this repo already takes for
+   llama.cpp.
+
+Also: `INV_SQRT_DK` is a **parameter**, not computed from `fp32_rsqrt` — deriving
+the q scale from the Quake approximation would put an approximation inside the
+leg that claims to be exact.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 

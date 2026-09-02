@@ -32,7 +32,7 @@ fully readable; the two attention/residual gaps remain.
 | model config (all dims, cited from the GGUF) | **LOCKED** — `configs/full_glm53_flash.vh`, gated by `make glm53f-config-guard` |
 | MLA + DSA blocks (11 / 45) + MTP | inherited, proven at GLM-5.2 shapes |
 | MoE, dequant (Q4_K/Q6_K/Q8_0), memory system | inherited, proven at GLM-5.2 shapes |
-| KDA linear attention (34 / 45 blocks) | **no RTL** |
+| KDA linear attention (34 / 45 blocks) | **recurrence core DONE** (`kda_recur`, `make kda`); layer wrapper + BRAM state open |
 | hyper-connections (every block's residual) | **no RTL** |
 | Q5_K dequant (34.9 % of bytes) | **DONE** — reference + RTL + `make mixedtype` w/ must-fail injection |
 | clamped SwiGLU | **DONE** — `SWIGLU_CLAMP` in `swiglu_expert_q4k`, 4-leg gate incl. vacuity + asymmetry injection |
@@ -288,10 +288,18 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
 
 **GLM-5.3-Flash port gaps — the ones specific to this branch, in dependency order:**
 
-- **KDA linear attention — 34 of 45 layers have no RTL.** Short causal conv (k=4) on q/k/v, gated
-  delta-rule state update, `f`/`g` low-rank gates, decay from `ssm_a` + `ssm_dt`, per-head norm. This
-  is a new datapath with new state memory and a new golden reference; it is the item that sets the
-  schedule.
+- **KDA linear attention — the recurrence core is DONE, the layer is not.** `src/kda_recur.v` does the
+  state update (decay → kv → delta-rule → out) in the golden's exact order, gated by `make kda` with an
+  exact leg (fp32 mul/add only, 64-ULP bound), a tolerance leg (own l2norm via the Quake rsqrt), a
+  generator self-test proving both legs check the same math, and a must-fail injection that drops the
+  pass-B decay. Still open: the layer wrapper (q/k/v projections, k=4 causal conv, forget/beta gates,
+  `o_norm`/`o_proj` — ordinary GEMVs and existing units, not yet wired around the core) and moving the
+  state from the slice's register array into BRAM/DDR at the real 4.19 MB/layer shape.
+- **Found while building it: `src/glm_fp.vh fp32_add` is not exactly IEEE** — 0.04 % of pairs land 1 ULP
+  low. Harmless and invisible on every existing proven path (all end in bf16, which masks it in
+  99.999 % of cases), so the Q4_K bit-exactness claim is unaffected; visible in `kda_recur` because
+  its output is fp32. `make fp-ieee` now pins the rate. Fixing the adder is repo-wide and was
+  deliberately left as a decision, not made unilaterally.
 - ~~**Q5_K dequant**~~ — **DONE.** Reference (`q4k_ref.dequantize_block_q5_K`, ggml-verbatim), RTL
   (`WT_Q5K`, a 5-bit code on the existing `w_hp` bus — Q5_K is arithmetically Q4_K with a wider code,
   so it reuses the header multiplies and the min subtract verbatim), and a gate with a must-fail

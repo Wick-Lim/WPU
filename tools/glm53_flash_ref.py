@@ -61,15 +61,40 @@ def clamped_swiglu(gate, up, limit=10.0):
 
 
 # ---------------------------------------------------------------- KDA pieces
+def _seq_sum(a, axis):
+    """fp32 reduction in EXPLICIT SEQUENTIAL index order.
+
+    WHY THIS EXISTS AND WHY numpy's .sum() IS NOT USED.  numpy reduces with
+    PAIRWISE summation, which is a different association than the sequential
+    accumulate a streaming datapath performs.  Measured on this machine: for
+    length-8 fp32 vectors, np.sum differs from sequential in 159/300 random
+    cases -- more than half, at the smallest size KDA uses.  A reference that
+    reduces pairwise can never be matched bitwise by RTL that streams, so the
+    reduction order is pinned HERE, sequentially, and that order is this repo's
+    contract.
+
+    Consequence, stated rather than discovered: torch/FLA reduce in their own
+    blocked order, so whole-runtime numeric equality with them is OUT OF
+    CONTRACT -- the same stance this repo already takes for llama.cpp.
+    """
+    a = np.asarray(a, F32)
+    a = np.moveaxis(a, axis, -1)
+    out = np.zeros(a.shape[:-1], F32)
+    for i in range(a.shape[-1]):
+        out = (out + a[..., i]).astype(F32)
+    return out
+
+
 def l2norm(x, eps=1e-6, axis=-1):
     """FLA-compatible L2 norm.
 
     TRAP: this is `x / sqrt(sum(x*x) + eps)`, NOT `x / max(norm, eps)` and NOT
     `F.normalize`.  The reference comments that it intentionally uses sqrt-then-
     divide to match the original triton kernel; the eps is INSIDE the sqrt.
+    The sum is sequential -- see _seq_sum.
     """
     x = np.asarray(x, F32)
-    inv = np.sqrt((x * x).sum(axis=axis, keepdims=True) + F32(eps))
+    inv = np.sqrt(_seq_sum(x * x, axis)[..., None] + F32(eps))
     return (x / inv).astype(F32)
 
 
@@ -120,6 +145,8 @@ def kda_step(state, q, k, v, g, beta, use_qk_l2norm=True):
       out   = (state * q[:, :, None]).sum(axis=-2)        # [H, Dv]
 
     TRAPS:
+      * both reductions are SEQUENTIAL in the Dk index (see _seq_sum) -- numpy's
+        pairwise .sum() cannot be matched bitwise by a streaming datapath;
       * the l2norm happens AFTER the fp32 cast and BEFORE the 1/sqrt(Dk) scale;
       * the scale divides by q's LAST dim, and only q is scaled, never k;
       * `state *= exp(g)` decays the state BEFORE kv is read, so kv sees the
@@ -135,10 +162,10 @@ def kda_step(state, q, k, v, g, beta, use_qk_l2norm=True):
     q = (q * F32(1.0 / np.sqrt(Dk))).astype(F32)
     gi = np.exp(np.asarray(g, np.float64)).astype(F32)          # [H, Dk]
     state = (state * gi[:, :, None]).astype(F32)
-    kv = (state * k[:, :, None]).sum(axis=-2).astype(F32)       # [H, Dv]
+    kv = _seq_sum(state * k[:, :, None], -2).astype(F32)        # [H, Dv]
     delta = ((v - kv) * np.asarray(beta, F32)[:, None]).astype(F32)
     state = (state + k[:, :, None] * delta[:, None, :]).astype(F32)
-    out = (state * q[:, :, None]).sum(axis=-2).astype(F32)      # [H, Dv]
+    out = _seq_sum(state * q[:, :, None], -2).astype(F32)       # [H, Dv]
     return out, state
 
 
