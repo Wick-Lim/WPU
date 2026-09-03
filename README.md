@@ -369,6 +369,15 @@ python3 -m pip install numpy                    # required by the golden-referen
 make glm53f-config-guard # GLM-5.3-Flash config gate: dims usable, whole-model top poisoned (8/8, both tools)
 make all                 # the rung-① FPGA prove-it gate: unittests + synth-glm + formal + more
 make release-gate-strict # the full release gate + exact per-gate test-count manifest check
+#   MEASURED wall time for the full serial ladder on this machine: 7 h 17 min
+#   (2026-09-03, 54 targets / 102 pinned gates). The long poles are pre-existing --
+#   the PE_M=2 batched model sim alone runs ~90 min, then synth-glm, the netlist
+#   equivalence checks and the SBY formal targets. The GLM-5.3-Flash gates added on
+#   this branch (glm53f-*, fp-ieee, kda*) take seconds. The ladder is strictly
+#   SERIAL; a Makefile audit found `make -j` is NOT yet safe -- 1 sim binary is
+#   written by two targets and 5 vector generators are invoked by several targets
+#   with fixed output paths (a concurrent run would read another target's vectors).
+#   Per-target output paths would fix that; see docs/GLM53_FLASH_PORT.md 6.
 make q4k                 # the Q4_K sub-gate (q4k_prim / glm_matmul_q4k / swiglu_expert_q4k / moe_router_q4k)
 make model-q4k           # assembled full-forward numeric golden (1155 tests)
 make mixedtype           # Q6_K / Q8_0 / F16 mixed-type path

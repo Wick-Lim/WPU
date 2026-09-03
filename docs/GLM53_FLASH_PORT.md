@@ -575,6 +575,21 @@ The config header itself is gated:
 make glm53f-config-guard      # 8/8: 4 cases x 2 tools
 ```
 
+**Cost of the full ladder, measured.** `make release-gate` on this machine took
+**7 h 17 min** (2026-09-03; 54 targets, 102 pinned gates), strictly serial. The
+long poles are pre-existing: the `PE_M=2` batched model sim alone ~90 min, then
+`synth-glm` (whole-chip yosys), the netlist-equivalence checks and the SBY formal
+targets. Everything this branch added (`glm53f-*`, `fp-ieee`, `kda*`) runs in
+seconds. A Makefile audit for `make -j` safety found it is **not yet safe**: one
+sim binary (`build/spec_depth_adapt_sim`) is written by two targets
+(`spec-adapt`, `unittests`), and five vector generators are invoked by several
+targets with fixed output paths (`q4k_matmul_gen.py` ×4, `glm_model_q4k_tb_gen.py`
+×3, `swiglu_q4k_gen.py`, `route_trace.py`, `l3_image_pack.py` ×2 each) — run
+concurrently, one target reads vectors generated for another: a false fail, or a
+false pass. The fix is per-target output paths (Makefile only; the manifest
+checker is already order-independent). Recorded as a finding; not applied, since
+it changes how the headline gate executes and needs its own verification run.
+
 ## 7. What is NOT claimed on this branch
 
 - **No running GLM-5.3-Flash.** 34/45 layers have no RTL, a third of the bytes
