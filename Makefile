@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee kda all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee kda unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1018,6 +1018,71 @@ kda:
 	    echo "FAILED: kda no-decay injection PASSED -- the pass-B decay is not actually checked"; exit 1; \
 	  else \
 	    echo "[kda_recur_INJECT_nodecay] injection correctly FAILED (the pass-B decay is load-bearing)"; \
+	  fi
+
+# ---- kda-conv : the KDA short causal conv step (every KDA layer, q/k/v) --------
+# The repo had no conv unit of any kind. src/kda_conv_step.v is a depthwise K-tap
+# causal conv over a [C, K-1] history + SiLU, decode-step form
+# (causal_conv1d_update, seq_len==1). Golden: tools/kda_conv_gen.py.
+# CONTRACT: torch runs this in bf16 with an implementation-defined accumulation
+# order, so the order is PINNED here -- fp32 mul/add, taps ascending oldest ->
+# newest, ONE RNE round -- and the pre-activation bf16 is exposed on conv_out so
+# that leg is checked BITWISE; silu(conv) through glm_act's polynomial is a
+# tolerance leg; the history shift is bitwise wiring.
+# INJECTION: F.conv1d CORRELATES (no kernel flip), so w[K-1] multiplies the NEWEST
+# sample. -DINJ_CONV_FLIP reverses the taps -- the plausible misreading -- and the
+# gate must fail on conv_out. The generator self-test proves the flipped dot never
+# coincides with the reference on its corpus, so that injection is live.
+kda-conv:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "kda_conv_gen"; python3 tools/kda_conv_gen.py --selftest \
+	    || { echo "FAILED: kda_conv_gen self-test"; exit 1; }
+	@python3 tools/kda_conv_gen.py 32 8 4 $(BUILD_DIR)/kda_conv_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/kda_conv_vec.txt"' -o $(BUILD_DIR)/kda_conv_sim \
+	    test/kda_conv_tb.v src/kda_conv_step.v src/glm_act.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: kda-conv compile"; exit 1; }
+	@printf '[%s] ' "kda_conv"; $(VVP) $(BUILD_DIR)/kda_conv_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kda_conv"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_CONV_FLIP -DTB_VEC='"$(BUILD_DIR)/kda_conv_vec.txt"' -o $(BUILD_DIR)/kda_conv_inj \
+	    test/kda_conv_tb.v src/kda_conv_step.v src/glm_act.v src/glm_fp_pipe.v 2>/dev/null
+	@if $(VVP) $(BUILD_DIR)/kda_conv_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: kda-conv flipped-tap injection PASSED -- tap orientation is not actually checked"; exit 1; \
+	  else \
+	    echo "[kda_conv_INJECT_flip] injection correctly FAILED (tap orientation is load-bearing: w[K-1] must multiply the newest sample)"; \
+	  fi
+
+# ---- kda-gate : KDA forget gate + beta step -- and the bf16-sigmoid finding ----
+# src/kda_gate_step.v: t = decay*(f+dt_bias); g = -5*sigmoid(t); ge = exp(g); beta =
+# sigmoid(b) (Glm5NextTextForgetGate + the beta line). decay = exp(A_log) is a
+# STATIC weight's function, host-precomputed, so no exp unit is spent on it; the
+# pipe chains on valid handshakes, not latency constants.
+# ACCURACY: the repo's only sigmoid (glm_act) is bf16 with a +/-16 input rail; the
+# reference is fp32. So ge and beta are TOLERANCE legs (rel 0.03 + abs 0.002 = the
+# measured envelope with headroom; the TB prints per-output worst error so a
+# regression moves a number), and the saturation leg cannot demand -0.0: where the
+# fp32 golden's sigmoid hit exactly 0, glm_act lands at -5*sigma(-16) = -5.63e-7, so
+# the leg requires NEGATIVE (a positive g would be a real bug) and <= that rail
+# floor. Measured on the corpus: ge 1.24% / beta 1.34% worst relative error vs fp32
+# -- the finding this unit hands to the layer test (docs/GLM53_FLASH_PORT.md 4.3e).
+# INJECTION: -DINJ_GATE_DECAY_AFTER applies decay AFTER the sigmoid (the misreading
+# of `decay_rate * g`); must fail.
+kda-gate:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "kda_gate_gen"; python3 tools/kda_gate_gen.py --selftest \
+	    || { echo "FAILED: kda_gate_gen self-test"; exit 1; }
+	@python3 tools/kda_gate_gen.py 24 3 8 $(BUILD_DIR)/kda_gate_vec.txt >/dev/null 2>&1
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/kda_gate_vec.txt"' -o $(BUILD_DIR)/kda_gate_sim \
+	    test/kda_gate_tb.v src/kda_gate_step.v src/glm_act.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: kda-gate compile"; exit 1; }
+	@printf '[%s] ' "kda_gate"; $(VVP) $(BUILD_DIR)/kda_gate_sim | grep -E 'ALL [0-9]+ TESTS PASSED|per-output' \
+	    | grep -q 'ALL [0-9]* TESTS PASSED' && $(VVP) $(BUILD_DIR)/kda_gate_sim | grep -E 'ALL [0-9]+ TESTS PASSED|per-output' \
+	    || { echo "FAILED: kda_gate"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_GATE_DECAY_AFTER -DTB_VEC='"$(BUILD_DIR)/kda_gate_vec.txt"' -o $(BUILD_DIR)/kda_gate_inj \
+	    test/kda_gate_tb.v src/kda_gate_step.v src/glm_act.v src/glm_fp_pipe.v 2>/dev/null
+	@if $(VVP) $(BUILD_DIR)/kda_gate_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: kda-gate decay-after-sigmoid injection PASSED -- decay placement is not actually checked"; exit 1; \
+	  else \
+	    echo "[kda_gate_INJECT_decay_after] injection correctly FAILED (decay multiplies the sigmoid ARGUMENT, not its output)"; \
 	  fi
 
 glm53f-config-guard:

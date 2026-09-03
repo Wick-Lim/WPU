@@ -194,7 +194,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 | # | item | why it blocks | rough shape |
 |---|---|---|---|
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
-| 2 | **KDA linear-attention block** — recurrence core DONE, layer wrapper open | 34 / 45 layers | `src/kda_recur.v`: the recurrent state update (decay → kv → delta → outer-product update → out), parameterized `H/DK/DV`, gated by `make kda` against `kda_step` (§4.3c). Still open: the layer wrapper — q/k/v projections + short conv + forget/beta gates + `o_norm`/`o_proj` are ordinary GEMVs and existing units, but they are not wired around the core yet; and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer), not in the slice's register array |
+| 2 | **KDA linear-attention block** — recurrence core, conv step and gate step DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d) and `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e). Still open: composing the layer — q/k/v/beta/f/g projections and `o_proj` are ordinary GEMVs and `o_norm` is `rmsnorm_unit` + a sigmoid gate, none yet wired around the three new units; and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **And a finding from the gate step (§4.3e): the KDA gate path may need an fp32 sigmoid — the repo's only activation unit is bf16.** |
 | 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **Indexer compressor** | the 11 DSA blocks | k-pool 4 with compression and always-select-tail; `indexer_compressor_{ape,gate}` have no GLM-5.2 counterpart |
@@ -306,6 +306,116 @@ across 34 layers, so the write is the half worth saving.
 Also: `INV_SQRT_DK` is a **parameter**, not computed from `fp32_rsqrt` — deriving
 the q scale from the Quake approximation would put an approximation inside the
 leg that claims to be exact.
+
+### 4.3d KDA causal conv step — DONE
+
+`src/kda_conv_step.v`: the depthwise K-tap causal conv + SiLU that every KDA
+layer runs its q, k and v through before the recurrence
+(`causal_conv1d_update`, seq_len = 1). GLM-5.3-Flash: K = 4 (GGUF
+`ssm.conv_kernel`), weights `ssm_conv1d_{q,k,v}.weight [4, 1, 8192]` F32, no
+bias. **This repo had no conv unit of any kind before this.**
+
+```
+window[c] = [ state[c][0..K−2], x[c] ]        oldest → newest
+state'[c] =   window[c][1..K−1]                shift in x
+conv[c]   = bf16_RNE( Σ_k w[c][k]·window[c][k] )   fp32, taps ascending
+y[c]      = silu(conv[c])
+```
+
+**Contract, stated up front:** torch runs this conv in bf16 with an
+implementation-defined accumulation order, which no fixed datapath can match
+bitwise. So the order is **pinned here** — fp32 mul/add, taps ascending
+oldest→newest, one RNE round — and the pre-activation bf16 is **exposed on
+`conv_out`** so that leg is checked bitwise. Same stance as the KDA reductions
+and the llama.cpp comparison.
+
+| leg (`make kda-conv`) | claim |
+|---|---|
+| generator self-test (400) | the pinned ascending-tap dot equals the reference's to fp32 reassociation, and a **flipped**-tap dot never does on the corpus — so the injection below is live |
+| `conv_out` (bitwise) | fp32 mul/add + one RNE round, all exact primitives (modulo `fp32_add`'s pinned gap, which the corpus shows did not move a bf16 rounding boundary) |
+| `s_out` (bitwise) | the history shift — pure wiring |
+| `y_out` (tolerance) | `silu(conv)` through `glm_act`'s polynomial — the same status `swiglu_expert_q4k` has |
+| `-DINJ_CONV_FLIP` must fail | **orientation**: `F.conv1d` *correlates*, it does not flip the kernel, so `w[K−1]` multiplies the *newest* sample. Reversing the taps is the plausible misreading; measured 255/256 `conv_out` mismatches with it |
+
+Verilator-clean (one `TIMESCALEMOD` warning fixed by giving the module the same
+`` `timescale `` as the `glm_act` it instantiates).
+
+### 4.3e KDA forget gate + beta step — DONE, with a precision finding
+
+`src/kda_gate_step.v`: the elementwise stage between the gate projections and
+the recurrence (`Glm5NextTextForgetGate.forward` + the beta line):
+
+```
+t[h,d]  = decay[h] · (f[h,d] + dt_bias[h,d])      decay = exp(A_log[h])
+g[h,d]  = −5.0 · sigmoid(t[h,d])                   lower_bound branch
+ge[h,d] = exp(g[h,d])                              → kda_recur g_in
+beta[h] = sigmoid(b[h])                            → kda_recur beta_in
+```
+
+Two design decisions: `decay = exp(A_log)` is a function of a **static weight**
+(`ssm_a [64]` F32), so it is host-precomputed once per layer and enters as an
+fp32 input — no exp unit is spent on it; and the pipe is chained on **valid
+handshakes** (`glm_act` → `fp32_exp_pipe`), not latency constants, so a
+re-timed sub-pipe cannot silently desynchronise it.
+
+| leg (`make kda-gate`) | claim |
+|---|---|
+| generator self-test (5) | on a **deliberately** saturating corpus: `g ∈ [−5, 0]`, both endpoints attained, every saturated zero is `−0.0`, `exp(g)` finite |
+| saturation (5 checks) | where the golden's fp32 sigmoid saturated to exactly 0 (`g = −0.0`), the DUT's `g` must be **negative and within `glm_act`'s rail floor** — see the finding |
+| `g` / `ge` / `beta` | **tolerance**, rel 0.03 + abs 0.002, both stages approximate |
+| `-DINJ_GATE_DECAY_AFTER` must fail | applies `decay` **after** the sigmoid — the plausible misreading of `decay_rate * g`; measured 932 mismatches with it |
+
+**Finding — the bf16 activation unit cannot honour the reference's saturation
+contract.** The fp32 reference's sigmoid reaches exactly `0.0` only for
+`t < ≈ −104`, and `−5.0 · +0.0 = −0.0` (the signed-zero contract pinned in
+`glm53_flash_ref`; `fp32_mul(−5.0, +0.0)` was probed to return `0x80000000`).
+But `glm_act` **rails its input at ±16**, and `sigmoid(−16) = 1.13e-7` *is*
+representable in bf16 — so the DUT lands at `g = −5·σ(−16) = −5.63e-7`
+(measured bits `b5174000`), never at `−0.0`. The effect on what the recurrence
+consumes: `ge = exp(−5.63e-7) = 0.99999944` instead of `1.0` — about **5 fp32
+ULP at 1.0**, in exactly the regime where the model wants *no* decay. The leg
+therefore requires *negative and ≤ the rail floor* (a positive value would be a
+real bug) and **reports the floor**, rather than either failing forever or
+quietly accepting anything.
+
+The larger precision term is the **full bf16 path**, measured per output by the
+TB (relative where `|golden| ≥ 1e-3`):
+
+| output | consumed by | worst abs | worst rel |
+|---|---|---|---|
+| `g = −5·σ(t)` | (intermediate) | 1.24e-2 | 3.23 % (in the steep σ transition, where `|g|` is small) |
+| **`ge = exp(g)`** | **the recurrence's decay** | 2.50e-3 | **1.24 %** |
+| **`beta = σ(b)`** | **the recurrence's write gate** | 2.02e-3 | **1.34 %** |
+
+The generator separately attributes **3.66e-3** of `ge`'s relative error to
+rounding the sigmoid *argument* to bf16 alone; the polynomial and the bf16
+*output* rounding supply the rest. All of it traces to one cause: **this repo's
+only sigmoid is bf16**, and the KDA gate path is fp32 in the reference.
+
+A ~1.2–1.3 % error on *both* gates the recurrence consumes — does it compound?
+`tools/kda_gate_compound_study.py` answers that on the reference recurrence
+itself (no RTL): T = 2048 tokens at the real DK = DV = 128, exact gates vs the
+same tokens with the gates perturbed by the measured error.
+
+| perturbation | `out` rel err, T=1 | T=16 | T=256 | T=2048 | state-norm ratio @2048 |
+|---|---|---|---|---|---|
+| saturation floor only (ge 0.99999944 where 1.0 wanted) | 0 | 3.4e-7 | 4.3e-7 | 5.3e-7 | 1.000000 |
+| random ±1.24 % / ±1.34 % per element per token | 4.1e-3 | 9.5e-3 | 8.9e-3 | **7.8e-3** | 1.0003 |
+| systematic +1.24 % / +1.34 % every token | 1.3e-2 | 2.0e-2 | 2.6e-2 | **2.9e-2** | 1.019 |
+
+**Reading it.** The recurrence is contractive (decay < 1), so the per-token gate
+error does **not** accumulate without bound — it settles at a steady state set by
+the decay horizon. The saturation floor is a non-issue (5e-7). Uncorrelated bf16
+error settles at ~0.8–1.0 % on `out`, about the per-token input error.
+Systematic bias — the plausible structure if `glm_act`'s polynomial is biased —
+settles at ~2.9 %, about 2.3× the input error. That rules out catastrophic
+compounding and prices the bf16 gate path: **1–3 % output error per KDA layer,
+across 34 layers.** Whether *that* is acceptable is a model-quality question
+(perplexity-level), not one the recurrence math settles — and the study uses
+random q/k/v/gates, not the model's activations, so it is decision evidence, not
+proof. The decision it informs: build an fp32 sigmoid, or accept 1–3 % per layer.
+The TB's bound (rel 0.03 + abs 0.002) is the measured envelope with headroom, so
+a regression shows as a number moving.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
