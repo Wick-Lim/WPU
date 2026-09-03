@@ -532,11 +532,21 @@ use or a small new unit), a **LayerNorm-with-bias unit** (only `rmsnorm_unit`
 exists), the 32-head ReLU + weighted head sum, and the pool→token expansion +
 tail append (index arithmetic, not numerics).
 
-Plan: an executable reference in `tools/glm53_flash_ref.py` first (as for KDA and
-mHC), then units in the same increment pattern. Not started here: adding the
-reference changes `make glm53f-ref`'s pinned count, which needs a full ladder run
-to re-pin — batched with the next RTL change rather than spending 7 h on a
-count.
+**Executable reference: DONE, self-tested, not yet in the ladder.**
+`tools/dsa_indexer_ref.py` transcribes the decode step — LayerNorm-with-bias
+`k_norm`, the gate projection, k-pool compression (per-channel softmax over the
+4 positions, pooling from the first *valid* key), the 32-head ReLU scores with
+the `D^-0.5` / `H^-0.5` scales, the head-weighted sum, top-(TOPK/KPOOL) pool
+selection, ×KPOOL expansion, and the incomplete-tail append — and pins six traps
+a plausible transcription gets wrong. Its self-test checks the invariants the
+math must satisfy (probabilities sum to 1 per channel; every pool key lies in the
+convex hull of its keys; pooling starts at the first valid key; selected pools are
+exactly the top-k over valid pools; no duplicate/invalid/out-of-range index; the
+tail is appended; a loop-form compressor agrees with the vectorised one). It is
+deliberately **not** wired into `make release-gate` yet: a new pinned gate needs a
+full ~7 h ladder run to re-pin, so it is batched with the next RTL change. Until
+then its status is "reference exists, self-tested locally" — the same standing
+`tools/glm53_flash_ref.py` had before `make glm53f-ref` existed.
 
 ### 4.3i mHC precision study — DONE (the "fixed-point study before RTL")
 
