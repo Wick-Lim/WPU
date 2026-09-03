@@ -78,8 +78,12 @@ def pooled_states(keys, gates, valid, ape, kpool):
     logits = gg + ape[None].astype(F32)                                       # [P, KPOOL, D]
     logits = np.where(gv[..., None], logits, NEG)
     # softmax over axis 1 (the KPOOL positions), per channel
+    # A pool with NO valid key has m = -inf; -inf - (-inf) is nan (with a numpy
+    # RuntimeWarning) before nan_to_num repairs it.  Use 0 for the max there so
+    # the subtraction stays -inf and exp gives 0 directly -- same result, no warning.
     m = np.max(logits, axis=1, keepdims=True)
-    e = np.exp(np.where(np.isfinite(m), logits - m, NEG).astype(np.float64))
+    m0 = np.where(np.isfinite(m), m, 0.0).astype(F32)
+    e = np.exp((logits - m0).astype(np.float64))
     e = np.nan_to_num(e)
     den = e.sum(axis=1, keepdims=True)
     prob = np.nan_to_num(np.where(den > 0, e / np.maximum(den, 1e-300), 0.0)).astype(F32)
