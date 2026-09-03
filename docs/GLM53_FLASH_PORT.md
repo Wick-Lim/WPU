@@ -197,7 +197,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 | 2 | **KDA linear-attention block** — all four non-GEMV units DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d), `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e) and `src/kda_onorm_step.v` (gated RMSNorm on the recurrence output, `make kda-onorm`, §4.3f). What remains is **composition**: the q/k/v/beta/f/g/o projections are ordinary `glm_matmul_q4k` GEMVs, and nothing new is needed *inside* any block — the layer wrapper sequences the existing GEMV engine and these four units, and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **Finding carried from §4.3e: the repo's only sigmoid is bf16, priced at ~1–3 % output error per KDA layer; fp32 sigmoid or accept — a decision.** |
 | 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
-| 5 | **Indexer compressor** | the 11 DSA blocks | k-pool 4 with compression and always-select-tail; `indexer_compressor_{ape,gate}` have no GLM-5.2 counterpart |
+| 5 | **DSA indexer — RE-SCOPED: a new indexer front-end, not a compressor bolt-on** | the 11 DSA blocks | Reading `Glm5NextTextIndexer` (§4.3h) showed the GLM-5.2 `dsa_indexer.v` (single index vector, token-level scoring, IndexShare freq-4 reuse) shares only `topk_select` with what GLM-5.3-Flash needs: a k-pool compressor (per-channel 4-way softmax over `gate + APE` logits), **LayerNorm with bias** on `k` (the repo has only RMSNorm), **32 index heads × 128 with ReLU and a `weights_proj` head combination**, scoring over `S/4` pools, top-512 pools → ×4 token expansion + tail append, and no freq-4 reuse. Medium-large, previously mis-scoped as "small" |
 | 6 | **Re-target packer / flash layout** | boot path | `tools/ckpt_pack_q4k.py`, `tools/flash_layout.py` against `glm5next` tensor names and the per-tensor UD mix |
 | 7 | **Re-seal `gguf_crosscheck`** | the dequant trust row | run against real GLM-5.3-Flash GGUF bytes, including Q5_K |
 | 8 | **Re-run the whole gate ladder** | everything above | slice → full-elab at the true shape → `release-gate-strict` with counts re-pinned |
@@ -492,6 +492,51 @@ Items 2 and 3 touch shared, baseline-pinned RTL across several files. They are
 the next work, planned rather than started, and they carry the bf16-sigmoid
 decision (§4.3e) with them: the wrapper is where an fp32 sigmoid would be
 introduced if that is the call.
+
+### 4.3h DSA indexer — SCOPED, not started (and re-scoped up)
+
+The ledger had this as "indexer compressor — small". Reading the reference
+(`Glm5NextTextIndexer`) says otherwise. Per DSA layer, per query token:
+
+```
+q[h]        = wq_b(q_resid)                       32 heads × 128      (q_lora 1536 → 4096)
+k           = LayerNorm(wk(h_tok), eps=1e-6)      128, ONE k shared by all heads; has a BIAS
+gate[tok]   = h_tok @ compress_gate^T             128
+-- k-pool compression, pools of 4 consecutive keys from the first valid key --
+logit[p][j][c] = gate[key_j][c] + ape[j][c]       j = position in pool (0..3), c = channel
+prob           = softmax_j(logit)                 per CHANNEL, over the 4 positions; -inf for invalid keys
+pool_key[p][c] = Σ_j prob[p][j][c] · k[key_j][c]
+-- scoring over POOLS, not tokens --
+score[h][p]    = relu( (q[h] · pool_key[p]) · 128^-0.5 )
+w[h]           = weights_proj(h_tok)[h] · 32^-0.5
+index_score[p] = Σ_h w[h] · score[h][p]           masked to -inf where the pool's last key is not visible
+selected       = top-(2048/4 = 512) pools  →  each expands to its 4 token indices  →  2048
+tail           = the current incomplete pool's ≤3 raw indices, appended (index_kpool_always_select_tail)
+```
+
+**What GLM-5.2's `dsa_indexer.v` has and does not have.** It scores ONE index
+vector against every token's index vector and keeps the top 2048, with the
+IndexShare freq-4 / offset-3 reuse driven from the block. It has no pooling, no
+head dimension, no ReLU, no head-weight combination, no LayerNorm, no
+pool→token expansion, no tail. GLM-5.3-Flash also has **no `index_topk_freq`**
+(the sharing that exists, `index_share_for_mtp_iteration`, is across MTP
+iterations, not layers), so the indexer runs on every DSA layer every token —
+which is exactly what `tools/glm53_flash_memory_budget.py` already assumes for
+its indexer cost (`S/4` pooled candidates × 32 heads × 128).
+
+**What carries over:** `topk_select` (top-512 over pools instead of top-2048 over
+tokens — a *smaller* select), the fp32 MAC pipes for the dot products, and the
+pull-handshake style. **What is new:** the compressor (a per-channel 4-way
+softmax — `glm_softmax` is a vector softmax over a length, so this is a reshaped
+use or a small new unit), a **LayerNorm-with-bias unit** (only `rmsnorm_unit`
+exists), the 32-head ReLU + weighted head sum, and the pool→token expansion +
+tail append (index arithmetic, not numerics).
+
+Plan: an executable reference in `tools/glm53_flash_ref.py` first (as for KDA and
+mHC), then units in the same increment pattern. Not started here: adding the
+reference changes `make glm53f-ref`'s pinned count, which needs a full ladder run
+to re-pin — batched with the next RTL change rather than spending 7 h on a
+count.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 

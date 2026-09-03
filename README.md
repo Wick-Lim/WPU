@@ -329,7 +329,10 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   GLM-5.2 path stays byte-identical. Four legs in `make q4k`: the feature, a vacuity leg (the clamp golden
   must fail against an unclamped DUT), a must-fail injection that clamps the gate symmetrically (the
   plausible wrong reading), and a generator assertion that both clamp directions actually fired.
-- **The indexer k-pool compressor** — not implemented; small.
+- **The DSA indexer** — not implemented, and **re-scoped up** from "a small compressor": GLM-5.3-Flash's
+  indexer is a new front-end (k-pool compressor with per-channel 4-way softmax, LayerNorm-with-bias on
+  `k`, 32 heads × 128 with ReLU and a `weights_proj` head sum, pool-level scoring, top-512 pools → ×4
+  expansion + tail). GLM-5.2's `dsa_indexer.v` shares only `topk_select` with it. Ledger §4.3h.
 - **Speculative-decode inputs not re-measured.** The MTP head exists here
   (`nextn_predict_layers = 1`), but GLM-5.2's `A_eff = 1.87` / accept rate 0.87 are properties of a
   different model and do not transfer, so no amortized tok/s figure is published for GLM-5.3-Flash.
