@@ -194,7 +194,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 | # | item | why it blocks | rough shape |
 |---|---|---|---|
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
-| 2 | **KDA linear-attention block** — recurrence core, conv step and gate step DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d) and `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e). Still open: composing the layer — q/k/v/beta/f/g projections and `o_proj` are ordinary GEMVs and `o_norm` is `rmsnorm_unit` + a sigmoid gate, none yet wired around the three new units; and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **And a finding from the gate step (§4.3e): the KDA gate path may need an fp32 sigmoid — the repo's only activation unit is bf16.** |
+| 2 | **KDA linear-attention block** — all four non-GEMV units DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d), `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e) and `src/kda_onorm_step.v` (gated RMSNorm on the recurrence output, `make kda-onorm`, §4.3f). What remains is **composition**: the q/k/v/beta/f/g/o projections are ordinary `glm_matmul_q4k` GEMVs, and nothing new is needed *inside* any block — the layer wrapper sequences the existing GEMV engine and these four units, and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **Finding carried from §4.3e: the repo's only sigmoid is bf16, priced at ~1–3 % output error per KDA layer; fp32 sigmoid or accept — a decision.** |
 | 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **Indexer compressor** | the 11 DSA blocks | k-pool 4 with compression and always-select-tail; `indexer_compressor_{ape,gate}` have no GLM-5.2 counterpart |
@@ -416,6 +416,82 @@ random q/k/v/gates, not the model's activations, so it is decision evidence, not
 proof. The decision it informs: build an fp32 sigmoid, or accept 1–3 % per layer.
 The TB's bound (rel 0.03 + abs 0.002) is the measured envelope with headroom, so
 a regression shows as a number moving.
+
+### 4.3f KDA output norm step — DONE
+
+`src/kda_onorm_step.v`: `Glm5NextTextRMSNormGated` on the recurrence output,
+per head over `DV`:
+
+```
+y[h][i] = weight[i] · ( x[h][i] · rsqrt( mean_i x[h]² + ε ) ) · σ(gate[h][i])
+out     = bf16(y)                                     one rounding, at the end
+```
+
+`x` is already bf16-valued at o_norm entry in the reference (the recurrence
+returns `.to(bf16)`), so a bf16 `x` port is faithful, not a shortcut. `ε = 1e-5`
+= `rmsnorm_unit`'s default; `weight = ssm_norm.weight [128]`.
+
+**Composition, and why the gate is folded into gamma.** The proven `rmsnorm_unit`
+is bf16-in / fp32-reduce / bf16-out and applies gamma *inside* its normalize
+pass. Multiplying `σ(gate)` onto its bf16 *output* would round twice where the
+reference rounds once. So the module computes `gamma_eff[i] = bf16(weight[i] ·
+σ(gate[h][i]))` per head and streams `(x, gamma_eff)` through the unit
+**unmodified** — one final rounding, faithful — at the cost of rounding
+`gamma_eff` to bf16 where the reference keeps `weight·σ` in fp32. Measured:
+that rounding alone costs **3.87e-3** relative worst-case. The generator's
+self-test proves the fold is an exact identity (300/300) and that the plausible
+misreading — gating `x` *before* the norm, which changes the variance — never
+coincides, so the injection is live.
+
+| leg (`make kda-onorm`) | claim |
+|---|---|
+| generator self-test (300) | gate folds into gamma exactly; gate-first never matches |
+| `kda_onorm` (1152) | **tolerance**: rel 0.03 + abs 0.004 — measured worst rel **1.89 %** (`|golden| ≥ 1e-3`), worst abs 1.56e-2; three approximation sources (Quake rsqrt, bf16 polynomial σ, bf16 gamma_eff) |
+| `-DINJ_ONORM_GATE_FIRST` must fail | "norm of the gated input" — measured 1097/1152 mismatches with it |
+
+The handshake mirrors `glm_decoder_block_q4k`'s idiom: the unit pulls
+(`in_req`/`g_req`), the producer answers with a registered one-cycle-later
+`valid` and a beat counter. `LANES = 1` at the slice. Verilator-clean (two
+`WIDTHEXPAND`s on the narrow head/beat counters fixed with explicit
+zero-extension wires, not a lint pragma).
+
+**With this, every non-GEMV unit of a KDA layer exists and is gated** — recurrence,
+conv, gates, output norm. The layer wrapper is now a sequencing problem over the
+existing `glm_matmul_q4k` engine plus these four, not new numerics.
+
+### 4.3g KDA layer wrapper — SCOPED, not started
+
+With the four non-GEMV units gated, the wrapper is a composition problem. Reading
+how the existing attention module is driven turned it into three concrete
+sub-problems — and two of them are plumbing gaps in shared RTL, not wiring:
+
+1. **Sequencing (pattern exists).** `mla_attn_q4k` drives ONE shared
+   `glm_matmul_q4k` through an explicit FSM (`S_QDQ → S_QNORM → S_QUQ → … →
+   S_OUT`), selecting each projection's weights with `w_sel` (0..6) on the
+   external weight-request stream and collecting `out_valid`/`c_out`. A KDA layer
+   is the same shape: nine GEMVs — `q, k, v, b, f_a, f_b, g_a, g_b, o` — with the
+   four units interleaved: `q/k/v → kda_conv_step`, `f_b(f_a) + b →
+   kda_gate_step`, `→ kda_recur`, `g_b(g_a) → kda_onorm_step → o`.
+2. **Q8_0 weight plumbing — a gap.** Every KDA projection is **Q8_0** in the
+   GGUF (`attn_{q,k,v,output}`, `ssm_{beta,f_a,f_b,g_a,g_b}`). The GEMV engine
+   handles Q8_0 (`WT_Q80`, codes on `w_hp`, scales on `w_q8_d`) and
+   `weight_loader_q4k` already emits those lanes — but the decoder block's
+   weight-response fan-out to the attention slot carries only the Q4_K header
+   buses (`w_q, w_d, w_dmin, w_scales`; no `w_type`/`w_hp`/`w_q8_d`). That
+   fan-out has to widen, and it lives in `glm_decoder_block_q4k`, which sits
+   under pinned netlist baselines.
+3. **Recurrent-state ownership — a gap.** The attention-slot contract carries KV-
+   cache ports (`kc_*`, `kv_lat_*`) that KDA has no use for, and nothing that
+   carries a `[H, DK, DV]` recurrent state plus a `[3·H·DK, K−1]` conv history in
+   and out. A KDA module is therefore **not** a drop-in for `mla_attn_q4k`: the
+   state has to be owned by the decoder block (or a KDA-specific variant of it),
+   which is also where the BRAM/DDR residency at the real 4.19 MB/layer is
+   decided.
+
+Items 2 and 3 touch shared, baseline-pinned RTL across several files. They are
+the next work, planned rather than started, and they carry the bf16-sigmoid
+decision (§4.3e) with them: the wrapper is where an fp32 sigmoid would be
+introduced if that is the call.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 

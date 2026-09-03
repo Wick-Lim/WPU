@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate kda-onorm all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate kda-onorm unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1083,6 +1083,35 @@ kda-gate:
 	    echo "FAILED: kda-gate decay-after-sigmoid injection PASSED -- decay placement is not actually checked"; exit 1; \
 	  else \
 	    echo "[kda_gate_INJECT_decay_after] injection correctly FAILED (decay multiplies the sigmoid ARGUMENT, not its output)"; \
+	  fi
+
+# ---- kda-onorm : KDA output norm (RMSNormGated) on the recurrence output ---------
+# src/kda_onorm_step.v: y = weight * (x * rsqrt(mean x^2 + eps)) * sigmoid(gate), bf16
+# out, per head over DV. The reference rounds ONCE at the end; the proven
+# rmsnorm_unit applies gamma inside its normalize pass, so the gate is FOLDED into
+# gamma (gamma_eff = bf16(weight*sigmoid(gate))) and the unit is reused unmodified
+# -- one final rounding, faithful; the bf16 gamma_eff is the stated extra (measured
+# 3.87e-3 rel alone). Three approximations (Quake rsqrt, bf16 polynomial sigmoid,
+# bf16 gamma_eff) -> TOLERANCE leg; the TB prints worst rel/abs so a regression
+# moves a number. INJECTION: -DINJ_ONORM_GATE_FIRST gates x BEFORE the norm ("norm
+# of the gated input") -- changes the variance; must fail. The generator self-test
+# shows the two never coincide on its corpus, so the injection is live.
+kda-onorm:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "kda_onorm_gen"; python3 tools/kda_onorm_gen.py --selftest \
+	    || { echo "FAILED: kda_onorm_gen self-test"; exit 1; }
+	@python3 tools/kda_onorm_gen.py 24 3 16 $(BUILD_DIR)/kda_onorm_vec.txt >/dev/null 2>&1
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/kda_onorm_vec.txt"' -o $(BUILD_DIR)/kda_onorm_sim \
+	    test/kda_onorm_tb.v src/kda_onorm_step.v src/rmsnorm_unit.v src/glm_act.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: kda-onorm compile"; exit 1; }
+	@printf '[%s] ' "kda_onorm"; $(VVP) $(BUILD_DIR)/kda_onorm_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kda_onorm"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -DINJ_ONORM_GATE_FIRST -DTB_VEC='"$(BUILD_DIR)/kda_onorm_vec.txt"' -o $(BUILD_DIR)/kda_onorm_inj \
+	    test/kda_onorm_tb.v src/kda_onorm_step.v src/rmsnorm_unit.v src/glm_act.v src/glm_fp_pipe.v 2>/dev/null
+	@if $(VVP) $(BUILD_DIR)/kda_onorm_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: kda-onorm gate-first injection PASSED -- gate placement is not actually checked"; exit 1; \
+	  else \
+	    echo "[kda_onorm_INJECT_gate_first] injection correctly FAILED (the gate multiplies the NORMALIZED x, not the input to the norm)"; \
 	  fi
 
 glm53f-config-guard:

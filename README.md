@@ -32,7 +32,7 @@ fully readable; the two attention/residual gaps remain.
 | model config (all dims, cited from the GGUF) | **LOCKED** — `configs/full_glm53_flash.vh`, gated by `make glm53f-config-guard` |
 | MLA + DSA blocks (11 / 45) + MTP | inherited, proven at GLM-5.2 shapes |
 | MoE, dequant (Q4_K/Q6_K/Q8_0), memory system | inherited, proven at GLM-5.2 shapes |
-| KDA linear attention (34 / 45 blocks) | **recurrence core + conv step + gate step DONE** (`make kda`, `kda-conv`, `kda-gate`); layer wrapper + BRAM state open; **gate step found the bf16 sigmoid may be too coarse for the fp32 gate path** |
+| KDA linear attention (34 / 45 blocks) | **all four non-GEMV units DONE** (`make kda`, `kda-conv`, `kda-gate`, `kda-onorm`); layer wrapper (sequencing over the existing GEMV engine) + BRAM state open; **bf16 sigmoid priced at ~1–3 % per layer — fp32 sigmoid or accept is a decision** |
 | hyper-connections (every block's residual) | **no RTL** |
 | Q5_K dequant (34.9 % of bytes) | **DONE** — reference + RTL + `make mixedtype` w/ must-fail injection |
 | clamped SwiGLU | **DONE** — `SWIGLU_CLAMP` in `swiglu_expert_q4k`, 4-leg gate incl. vacuity + asymmetry injection |
@@ -303,7 +303,13 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   `−5·σ(−16) = −5.6e-7`, ~5 ULP on `exp(g)` at 1.0), and over the full bf16 path the two values the
   recurrence consumes come out **1.24 % (`exp(g)`, the decay) and 1.34 % (`beta`, the write gate)** off
   the fp32 reference, worst case on the corpus. Whether that compounds acceptably across tokens in a
-  34-layer recurrent state is the question handed to the layer-level test; it may end in an fp32 sigmoid.
+  34-layer recurrent state is the question handed to the layer-level test; it may end in an fp32 sigmoid. The output norm is the fourth
+  and last non-GEMV unit (`src/kda_onorm_step.v`, `make kda-onorm`): the gate is folded into gamma so the
+  proven `rmsnorm_unit` is reused unmodified with one final rounding; tolerance leg (worst 1.89 % rel), and
+  the gate-first misreading fails as required. What remains for the KDA layer is composition, not numerics —
+  scoped in the ledger (§4.3g) as three sub-problems, two of them plumbing gaps in shared RTL: the decoder
+  block's attention-slot weight fan-out is Q4_K-only while every KDA projection is Q8_0, and nothing in that
+  slot's contract carries a recurrent state in and out (KDA is not a drop-in for `mla_attn_q4k`).
 - **Found while building it: `src/glm_fp.vh fp32_add` is not exactly IEEE** — 0.04 % of pairs land 1 ULP
   low. Harmless and invisible on every existing proven path (all end in bf16, which masks it in
   99.999 % of cases), so the Q4_K bit-exactness claim is unaffected; visible in `kda_recur` because
