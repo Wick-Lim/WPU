@@ -323,8 +323,10 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   llama.cpp seal has not been run (no checkout available; the `q5_k` arm is wired into
   `gguf_crosscheck`/`dequant_dump` and ready), and `weight_loader_q4k` cannot lay out a Q5_K tile yet
   (packer item below) — it `$fatal`s on a Q5_K descriptor rather than streaming Q4_K geometry.
-- **Hyper-connections — no RTL.** Sinkhorn normalization (20 iterations) over a width-4 connection
-  matrix replaces the plain residual add on every block; needs a fixed-point study first.
+- **Hyper-connections — no RTL; precision study DONE** (`tools/mhc_precision_study.py`, ledger §4.3i). Verdict:
+  **not fixed-point** — fp32 Sinkhorn (20 iterations reach the 1e-6 eps floor; a bf16 map breaks double-
+  stochasticity to 3e-3), `comb` entries down to 5e-8 need a float exponent, and `pre = σ+1e-6` is the
+  third path (after the KDA gate and o_norm) where the repo's bf16 sigmoid is the binding limit.
 - ~~**Clamped SwiGLU (limit 10.0)**~~ — **DONE.** `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the
   GLM-5.2 path stays byte-identical. Four legs in `make q4k`: the feature, a vacuity leg (the clamp golden
   must fail against an unclamped DUT), a must-fail injection that clamps the gate symmetrically (the

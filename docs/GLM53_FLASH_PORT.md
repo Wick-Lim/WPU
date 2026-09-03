@@ -195,7 +195,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 |---|---|---|---|
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
 | 2 | **KDA linear-attention block** — all four non-GEMV units DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d), `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e) and `src/kda_onorm_step.v` (gated RMSNorm on the recurrence output, `make kda-onorm`, §4.3f). What remains is **composition**: the q/k/v/beta/f/g/o projections are ordinary `glm_matmul_q4k` GEMVs, and nothing new is needed *inside* any block — the layer wrapper sequences the existing GEMV engine and these four units, and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **Finding carried from §4.3e: the repo's only sigmoid is bf16, priced at ~1–3 % output error per KDA layer; fp32 sigmoid or accept — a decision.** |
-| 3 | **Hyper-connections (mHC)** — spec DONE, RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. Bigger than first scoped: the block carries **4 parallel residual streams**, so this changes the block interface, not just the adder. Still needs a fixed-point study before RTL |
+| 3 | **Hyper-connections (mHC)** — spec DONE, **precision study DONE** (§4.3i), RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. The block carries **4 parallel residual streams** (interface `[4,D]`). The study's answer: **not fixed-point** — fp32 Sinkhorn (20 iters converge to the 1e-6 eps floor; bf16 breaks double-stochasticity to 3e-3), `comb` entries reach 5e-8 so a float exponent is required, and `pre = σ+1e-6` is a third case that needs an fp32 sigmoid |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **DSA indexer — RE-SCOPED: a new indexer front-end, not a compressor bolt-on** | the 11 DSA blocks | Reading `Glm5NextTextIndexer` (§4.3h) showed the GLM-5.2 `dsa_indexer.v` (single index vector, token-level scoring, IndexShare freq-4 reuse) shares only `topk_select` with what GLM-5.3-Flash needs: a k-pool compressor (per-channel 4-way softmax over `gate + APE` logits), **LayerNorm with bias** on `k` (the repo has only RMSNorm), **32 index heads × 128 with ReLU and a `weights_proj` head combination**, scoring over `S/4` pools, top-512 pools → ×4 token expansion + tail append, and no freq-4 reuse. Medium-large, previously mis-scoped as "small" |
 | 6 | **Re-target packer / flash layout** | boot path | `tools/ckpt_pack_q4k.py`, `tools/flash_layout.py` against `glm5next` tensor names and the per-tensor UD mix |
@@ -537,6 +537,33 @@ mHC), then units in the same increment pattern. Not started here: adding the
 reference changes `make glm53f-ref`'s pinned count, which needs a full ladder run
 to re-pin — batched with the next RTL change rather than spending 7 h on a
 count.
+
+### 4.3i mHC precision study — DONE (the "fixed-point study before RTL")
+
+`tools/mhc_precision_study.py`, on the transcribed reference with random weights
+(decision evidence about precision budgets, not a claim about the model):
+
+| question | result |
+|---|---|
+| **Q1** Sinkhorn convergence, fp32 | residual (max `|row/col sum − 1|`) 2.4e-1 @1 → 1.6e-3 @5 → 8.3e-6 @10 → **1.0e-6 @20** = the `eps` floor; plateaus at ~18. The reference's 20 is past the plateau — correct and sufficient |
+| **Q2** the map in bf16 | `comb` moves by up to **2.8e-3** (entries ~0.25), and a bf16 `comb` is doubly stochastic only to **~3e-3** vs 1e-6 in fp32 — the manifold constraint is lost by three orders |
+| **Q3** 45-block compounding, bf16 map vs fp32 | RMS rel divergence **1.3–3.1e-3**, settling (comb is stochastic, so the mix is contractive) |
+| **Q4** dynamic range | `pre ∈ (2.8e-6, 0.99988)`, `post ∈ [0, 1.9999]`, smallest `comb` entry **5.2e-8** |
+
+**Conclusion — not fixed-point.** The eps-floored normalisations put `comb`
+entries down to ~5e-8: that needs a floating-point exponent, and a naive
+fixed-point mantissa cannot carry it. The map (`fn` GEMV → `pre/post/comb`
+→ Sinkhorn) should be **fp32**, and the stream mix `comb @ streams` is a 4×4 fp32
+matmul over `D = 4096` per block — twice per block (attention and FFN sites).
+Sinkhorn at 20 fp32 iterations is exactly right; fewer would not be faithful and
+more buys nothing.
+
+**Third sighting of the bf16-sigmoid limit.** `pre = σ(·) + 1e-6` and `post =
+2σ(·)` are sigmoids whose *fine structure near saturation* matters (`pre` must
+resolve `1 + 1e-6`; bf16 cannot distinguish it from 1). After the KDA forget gate
+(§4.3e) and the o_norm gamma (§4.3f), this is the third GLM-5.3-Flash path where
+the repo's only sigmoid — bf16 `glm_act` — is the binding precision limit. The
+decision "build an fp32 sigmoid" is no longer about one unit.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
