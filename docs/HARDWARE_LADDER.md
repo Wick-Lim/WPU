@@ -280,20 +280,40 @@ Bus width and aggregate bandwidth follow the **number of packages or stacks**, n
 Fitting the model into fewer units is the obvious move once capacity drops 2.6×, and it is the wrong
 one — units are carried for bandwidth.
 
-| tier | units | capacity | bandwidth | tok/s `[EST]` | |
-|---|---|---|---|---|---|
-| LPDDR5X | 16 × 16 GB | 256 GB | 1.10 TB/s | **78** | rung-③ speed at half the capacity |
-| LPDDR5X | 8 × 32 GB | 256 GB | 0.55 TB/s | 39 | same capacity, **half the throughput** |
-| LPDDR5X | 16 × 32 GB | 512 GB | 1.10 TB/s | 78 | rung-③ as originally specced |
-| HBF | 1 × 256 GB | 256 GB | 1.60 TB/s | 113 | model fits one stack — but one stack is one stack's bandwidth |
-| HBF | 2 × 256 GB | 512 GB | 3.20 TB/s | **227** | rung-④ design point, re-derived |
-| HBM3E | 6 × 36 GB | 216 GB | 7.20 TB/s | 510 | newly reachable — see below |
-| HBM4 | 4 × 64 GB | 256 GB | 8.00 TB/s | 567 | newly reachable — see below |
+All tok/s below use the **full 1 M-context denominator, 14.795 GB/token** (weights
++ KDA state + DSA KV + indexer) — the same one the tok/s section uses, not the
+weights-only 14.118, which would print two different numbers for one config.
+`data pins` is the die's memory PHY width, and it is the point of the table: for
+LPDDR5X it equals `units × 64`, so halving the packages halves the PHY *and* the
+bandwidth together.
 
-So the rung-③ answer for GLM-5.3-Flash is **256 GB built as 16 packages, not 8** — capacity halves,
-the 1024-bit bus and the throughput do not. And the rung-④ answer is still **2 HBF stacks**: 199.7 GB
-fits a single stack by capacity, but the second stack is what buys the bandwidth, exactly as it was
-for GLM-5.2. The capacity headroom is real; it is not a licence to remove units.
+| tier | units | capacity | data pins | bandwidth | tok/s `[EST]` | |
+|---|---|---|---|---|---|---|
+| LPDDR5X | 16 × 16 GB | 256 GB | 1024-bit | 1.10 TB/s | **74** | full rung-③ speed at half the capacity |
+| LPDDR5X | 8 × 32 GB | 256 GB | **512-bit** | 0.55 TB/s | **37** | same capacity, **half the PHY and half the throughput** — the low-cost variant |
+| LPDDR5X | 16 × 32 GB | 512 GB | 1024-bit | 1.10 TB/s | 74 | rung-③ as originally specced |
+| HBF | 1 × 256 GB | 256 GB | — | 1.60 TB/s | 108 | model fits one stack — but one stack is one stack's bandwidth |
+| HBF | 2 × 256 GB | 512 GB | — | 3.20 TB/s | **216** | rung-④ design point, re-derived |
+| HBM3E | 6 × 36 GB | 216 GB | — | 7.20 TB/s | 487 | newly reachable — see below |
+| HBM4 | 4 × 64 GB | 256 GB | — | 8.00 TB/s | 541 | newly reachable — see below |
+
+So rung ③ for GLM-5.3-Flash has **two honest answers, not one**, and which is right depends on the
+target:
+
+- **16 × 16 GB** — 256 GB, 1024-bit, ~74 tok/s. Full rung-③ speed at half the capacity.
+- **8 × 32 GB** — 256 GB, 512-bit, ~37 tok/s. The same capacity from **half the packages**, and with
+  it **half the die's memory PHY**: fewer pins, less PHY area, less IO power, a simpler board. Half
+  the throughput is the price.
+
+An earlier revision of this document called the first one "the" answer. That was wrong. 8 × 32 GB is
+not a mistake to be corrected — it is a legitimate low-cost design point, and it is the one to pick if
+the target is a cheap compact box rather than ~74 tok/s. **Note it is the package COUNT that is the
+lever, not the capacity: 16 × 32 GB (512 GB) and 16 × 16 GB (256 GB) run at the same speed.**
+
+The same structure holds at rung ④: 199.7 GB fits a **single** HBF stack by capacity, and a 1-stack
+box is a real, cheaper, ~108 tok/s design point — the second stack buys bandwidth, not capacity. In
+every tier the capacity headroom is a genuine *choice*, not a free win: spend it on fewer units and
+you spend throughput with it.
 
 ### What the collapsed KV does to the two-store split
 

@@ -134,11 +134,21 @@ def main():
     print("\n=== 2. the coupling that decides a config: bandwidth is PER UNIT ===")
     print("  Capacity fell, so the temptation is to fit the model in fewer units.")
     print("  Bus width / aggregate bandwidth follows the UNIT COUNT, not the capacity,")
-    print("  so units are kept for BANDWIDTH. Halving them halves throughput.\n")
+    print("  so units are kept for BANDWIDTH. Halving them halves throughput.")
+    print("  DIE SIDE: the data-bus width is also the die's memory PHY width, so halving")
+    print("  the units halves the PHY (pins, area, power) -- the real draw of fewer units.")
     need = full["total"]
-    print(f"{'tier':>9} {'units':>6} {'cap/unit':>9} {'capacity':>9} {'fits?':>6} "
+    # tok/s uses the SAME full 1M denominator as section 3 (weights + KDA state + DSA
+    # KV + indexer), not the weights-only figure -- quoting both would print two
+    # different numbers for one config, which this table used to do (78 vs 74).
+    den_1m = (a.raw_gb_per_tok * GB
+              + 2 * (c["N_KDA"] * c["KDA_HEADS"] * c["KDA_DIM"] * c["KDA_DIM"] * STATE_BYTES)
+              + c["N_MLA"] * min(c.get("TOPK_ATTN", 2048), c["CTX"]) * (c["KV_LORA"] + c["ROPE"]) * KV_BYTES
+              + c["N_MLA"] * (c["CTX"] // c["IDX_KPOOL"]) * c["IDX_DIM"] * IDX_BYTES)
+    print(f"  denominator: {den_1m/GB:.3f} GB/token (full, at {c['CTX']:,} context)\n")
+    print(f"{'tier':>9} {'units':>6} {'cap/unit':>9} {'capacity':>9} {'data pins':>10} "
           f"{'bandwidth':>11} {'tok/s [EST]':>12}")
-    print("-" * 70)
+    print("-" * 76)
     for name, t in TIERS.items():
         for cap in t["cap_gb"]:
             for n in sorted({1, 2, 4, 8, t["nom"], 16}):
@@ -157,9 +167,12 @@ def main():
                 # a 1133 tok/s headline is the overclaim this repo exists to avoid.
                 mark = (" <- design point" if n == t["nom"]
                         else "    beyond the quoted bracket" if n > t["nom"] else "")
-                print(f"{name:>9} {n:>6} {cap:>7} GB {total_cap:>7} GB "
-                      f"{'yes':>6} {bw/TB:>8.2f} TB/s "
-                      f"{bw/GB/a.raw_gb_per_tok:>11.0f}{mark}")
+                # data-bus width == the die's memory PHY width. LPDDR5X packages are
+                # x64 (4 x 16-bit channels); HBF/HBM stacks are quoted per-stack, so
+                # the pin figure is only meaningful for the LPDDR5X rows.
+                pins = f"{n*64:>6}-bit" if name == "LPDDR5X" else "     --"
+                print(f"{name:>9} {n:>6} {cap:>7} GB {total_cap:>7} GB {pins:>10} "
+                      f"{bw/TB:>8.2f} TB/s {bw/GB/(den_1m/GB):>11.0f}{mark}")
 
     print(f"\n  Reference points: GLM-5.2 needs 467 GB weights + ~94 GB KV = ~561 GB,")
     print(f"  so an all-HBM residency was arithmetically out of reach for it and is")
