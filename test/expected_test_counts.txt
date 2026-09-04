@@ -31,8 +31,14 @@
 #   and host-test had banner formats the parser could not see, and ran count-unchecked;
 #   their banners are normalized and pinned below).
 
+fp32_sigmoid 1087
+fp32_exp_acc 3000
 kda_onorm 1152
 kda_onorm_gen 300
+mhc_sinkhorn 1088
+mhc_sinkhorn_gen 405
+mhc_map 800
+mhc_map_gen 364
 kda_gate 1224
 kda_gate_gen 5
 kda_conv 1280

@@ -33,6 +33,19 @@
 //       GLM53F_HC_RTL_PRESENT    residual path  (hyper-connections, Sinkhorn)
 //       GLM53F_Q5K_RTL_PRESENT   34.9% of bytes (the whole Q5_K READ PATH)
 //
+//   HC STATUS -- read this before assuming the second one is satisfied.  As of
+//   2026-09-04 the mHC MAP exists and is gated: src/mhc_map_step.v (pre, post,
+//   softmax) and src/mhc_sinkhorn.v (the 39-pass projection), `make mhc-map` and
+//   `make mhc-sinkhorn`, seven must-fail injections between them, `comb` and
+//   `post` checked against ref.hyper_connection's own output.  What does NOT
+//   exist is the RESIDUAL PATH the define names: the unweighted RMSNorm over
+//   H*D = 16384, the [(2+H)*H, H*D] `fn` GEMV that produces `mixed`, the collapse
+//   sum_h pre[h]*streams[h], the mix comb @ streams + post (x) sublayer_out, and
+//   the storage for FOUR parallel D-wide streams per block instead of one
+//   residual.  The map is the numerically hard part; the path is the plumbing,
+//   and until the plumbing lands a whole-model top would have nowhere to put its
+//   streams.  So this define stays undefined (docs/GLM53_FLASH_PORT.md 4.3j).
+//
 //   Q5_K STATUS -- read this before assuming the third one is satisfied.  The
 //   GEMM arm exists and is gated bit-exact (`WT_Q5K` in glm_matmul_q4k, `make
 //   mixedtype` with a must-fail injection).  What does NOT exist is the rest of

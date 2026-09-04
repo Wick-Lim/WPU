@@ -195,7 +195,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 |---|---|---|---|
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
 | 2 | **KDA linear-attention block** — all four non-GEMV units DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d), `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e) and `src/kda_onorm_step.v` (gated RMSNorm on the recurrence output, `make kda-onorm`, §4.3f). What remains is **composition**: the q/k/v/beta/f/g/o projections are ordinary `glm_matmul_q4k` GEMVs, and nothing new is needed *inside* any block — the layer wrapper sequences the existing GEMV engine and these four units, and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **Finding carried from §4.3e: the repo's only sigmoid is bf16, priced at ~1–3 % output error per KDA layer; fp32 sigmoid or accept — a decision.** |
-| 3 | **Hyper-connections (mHC)** — spec DONE, **precision study DONE** (§4.3i), RTL open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. The block carries **4 parallel residual streams** (interface `[4,D]`). The study's answer: **not fixed-point** — fp32 Sinkhorn (20 iters converge to the 1e-6 eps floor; bf16 breaks double-stochasticity to 3e-3), `comb` entries reach 5e-8 so a float exponent is required, and `pre = σ+1e-6` is a third case that needs an fp32 sigmoid |
+| 3 | **Hyper-connections (mHC)** — spec DONE, **precision study DONE** (§4.3i), **map RTL DONE** (§4.3k: `mhc_map_step` + `mhc_sinkhorn`, 7 must-fail injections), residual path open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. The block carries **4 parallel residual streams** (interface `[4,D]`). The study's answer: **not fixed-point** — fp32 Sinkhorn (residual @20 iters: median 1.0e-6, worst-of-200 4.8e-4; bf16 is 93× worse on the same inputs; `x·recip(y)` costs 2.7e-7, so no divider is needed), `comb` entries reach 5e-8 so a float exponent is required, and `pre = σ+1e-6` is a third case that needs an fp32 sigmoid |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **DSA indexer — RE-SCOPED: a new indexer front-end, not a compressor bolt-on** | the 11 DSA blocks | Reading `Glm5NextTextIndexer` (§4.3h) showed the GLM-5.2 `dsa_indexer.v` (single index vector, token-level scoring, IndexShare freq-4 reuse) shares only `topk_select` with what GLM-5.3-Flash needs: a k-pool compressor (per-channel 4-way softmax over `gate + APE` logits), **LayerNorm with bias** on `k` (the repo has only RMSNorm), **32 index heads × 128 with ReLU and a `weights_proj` head combination**, scoring over `S/4` pools, top-512 pools → ×4 token expansion + tail append, and no freq-4 reuse. Medium-large, previously mis-scoped as "small" |
 | 6 | **Re-target packer / flash layout** | boot path | `tools/ckpt_pack_q4k.py`, `tools/flash_layout.py` against `glm5next` tensor names and the per-tensor UD mix |
@@ -555,18 +555,28 @@ then its status is "reference exists, self-tested locally" — the same standing
 
 | question | result |
 |---|---|
-| **Q1** Sinkhorn convergence, fp32 | residual (max `|row/col sum − 1|`) 2.4e-1 @1 → 1.6e-3 @5 → 8.3e-6 @10 → **1.0e-6 @20** = the `eps` floor; plateaus at ~18. The reference's 20 is past the plateau — correct and sufficient |
-| **Q2** the map in bf16 | `comb` moves by up to **2.8e-3** (entries ~0.25), and a bf16 `comb` is doubly stochastic only to **~3e-3** vs 1e-6 in fp32 — the manifold constraint is lost by three orders |
+| **Q1** how doubly stochastic is `comb`, fp32 | over **200 draws** of (`fn`, `base`, streams), residual (max `|row/col sum − 1|`) @20 iters = **median 1.0e-6** (the `eps` floor), p90 5.9e-6, **worst 4.8e-4**; @40 the worst is still 2.3e-6. Swept over the comb-logit spread, the worst residual @20 grows 1.1e-6 (std 0.7) → 5.9e-3 (std 1.4) → 6.7e-2 (std 11) |
+| **Q2** the map in bf16 | `comb` moves by up to **2.8e-3** (entries ~0.25), and a bf16 `comb`'s residual is **2.8e-3 vs 3.0e-5 fp32 on the same inputs — 93×** (an earlier version of this row divided by fp32's *median* and claimed three orders; 93× is the paired number) |
 | **Q3** 45-block compounding, bf16 map vs fp32 | RMS rel divergence **1.3–3.1e-3**, settling (comb is stochastic, so the mix is contractive) |
-| **Q4** dynamic range | `pre ∈ (2.8e-6, 0.99988)`, `post ∈ [0, 1.9999]`, smallest `comb` entry **5.2e-8** |
+| **Q4** dynamic range | `pre ∈ (2.0e-4, 0.99997)`, `post ∈ [0, 1.99999]`, smallest `comb` entry **1.8e-8** |
+| **Q5** no divider: `x·recip(y)` for `x/y` | Sinkhorn's 20 iterations are **40 divisions** and this repo has no fp32 divide. With `glm_fp_recip.vh`'s worst case (+1 ULP on every one of the 40), `comb` moves by **2.7e-7** and the residual is **unchanged** (5.440e-3 both ways). The substitution is safe — mHC needs no divider |
 
 **Conclusion — not fixed-point.** The eps-floored normalisations put `comb`
 entries down to ~5e-8: that needs a floating-point exponent, and a naive
 fixed-point mantissa cannot carry it. The map (`fn` GEMV → `pre/post/comb`
 → Sinkhorn) should be **fp32**, and the stream mix `comb @ streams` is a 4×4 fp32
 matmul over `D = 4096` per block — twice per block (attention and FFN sites).
-Sinkhorn at 20 fp32 iterations is exactly right; fewer would not be faithful and
-more buys nothing.
+**Correction, 2026-09-04 — why 20 iterations, restated.** The first version of
+this row read "20 is past the plateau — correct and sufficient", from a study
+that measured **one** random draw. 1.0e-6 is that draw's residual and is the
+population *median*, but not a bound: the tail reaches 4.8e-4 at 20 iterations
+and grows with the comb-logit spread, whose trained value is not published. So
+20 is **not** a convergence criterion that happens to be met — it is a published
+constant (`hc_sinkhorn_iters = 20`), and the matrix the model uses is whatever 20
+iterations produce, doubly stochastic or not. **Consequence for RTL:** run
+exactly 20 on a fixed schedule and never early-exit on a convergence test — an
+early exit would be both faster and less faithful. That also makes the mHC
+latency data-independent, which is the easier thing to build.
 
 **Third sighting of the bf16-sigmoid limit.** `pre = σ(·) + 1e-6` and `post =
 2σ(·)` are sigmoids whose *fine structure near saturation* matters (`pre` must
@@ -574,6 +584,156 @@ resolve `1 + 1e-6`; bf16 cannot distinguish it from 1). After the KDA forget gat
 (§4.3e) and the o_norm gamma (§4.3f), this is the third GLM-5.3-Flash path where
 the repo's only sigmoid — bf16 `glm_act` — is the binding precision limit. The
 decision "build an fp32 sigmoid" is no longer about one unit.
+
+### 4.3j fp32 sigmoid — DONE, and the exp ceiling it uncovered
+
+The bf16-sigmoid limit was sighted three times (§4.3e KDA gate, §4.3f o_norm
+gamma, §4.3i mHC `pre`), and the mHC study made it blocking: that map **must** be
+fp32, and `pre = σ + 1e-6` is not representable in bf16 at all. So mHC RTL cannot
+start without an fp32 sigmoid. `src/fp32_sigmoid_pipe.v` is it.
+
+The repo had **no fp32 divide**, so `src/glm_fp_recip.vh` adds a Newton
+reciprocal (`r ← r(2 − yr)`, exponent-trick seed) in its own header — not in
+`glm_fp.vh`, because every pinned netlist baseline depends on that file being
+untouched. Measured on 4003 vectors over the range `1+exp(−x)` actually spans:
+
+| Newton iters | not bit-exact | worst |
+|---|---|---|
+| 1 | 3995/4003 | 42804 ULP |
+| 2 | 3523/4003 | 109 ULP |
+| 3 | 1687/4003 | 2 ULP |
+| **4** | 1251/4003 | **1 ULP** ← plateau |
+| 5 | 1251/4003 | 1 ULP |
+
+**What makes the unit worth building is saturation, not average accuracy.**
+`fp32_exp_pipe` is FTZ and overflows to `+inf`, so `σ` reaches **exactly 1.0**
+(x ≳ 17, once `1+e` rounds to 1.0) and **exactly 0.0** (x ≲ −88). Those are the
+two things bf16 cannot do and the two the callers need: mHC needs `σ = 1.0` so
+that `σ + 1e-6` differs from 1.0, and the KDA forget gate needs `σ = +0.0` so
+that `−5.0·σ = −0.0`. Both are checked **bitwise**, each with a vacuity check.
+The saturation-to-1.0 mux is not cosmetic: without it Newton on `y = 1.0` lands
+1 ULP low (measured `0x3F7FFFFF` at x = 21.6), which would break the mHC caller
+outright.
+
+**The finding: `fp32_exp_pipe` is the ceiling, not the sigmoid.** Three spot
+checks had suggested ~10 ULP. Swept over `x ∈ [−40, 40]`, the pipe is **1899 ULP
+= 2.3e-4 relative** — two orders worse. The sigmoid built on it measures **790
+ULP (≈9.4e-5)**, *better* than its own exp, because `σ = 1/(1+e)` compresses the
+error (`dσ/σ = −(e/(1+e))·de/e`, and `e/(1+e) < 1`). `make fp-sigmoid` pins both
+numbers as ceilings.
+
+| leg (`make fp-sigmoid`) | claim |
+|---|---|
+| `fp32_exp_acc` (3000) | `fp32_exp_pipe` vs correctly-rounded exp: worst **1899 ULP**, ceiling 4096 |
+| `fp32_sigmoid` (1087) | 130 bitwise σ = 1.0, 34 bitwise σ = 0.0, 6 subnormal goldens correctly FTZ-flushed, 917 normal points ≤ **790 ULP** (ceiling 1024) |
+
+**What this changes for the callers, and what it does not.** Against the bf16
+path's ~1.2e-2 this is ~130×. But it is *not* "fp32-exact": a 2.3e-4 exp inside
+the mHC softmax sets `comb`'s accuracy floor well above the `eps`-floor residual
+of §4.3i's median draw. **Improving mHC further
+means improving `fp32_exp_pipe`'s polynomial**, not the sigmoid wrapper — a
+separate, now-quantified piece of work. The KDA gate and o_norm retrofits (their
+FSMs are built around `glm_act`'s latency and bf16 ports) are the next
+increment, not done here.
+
+### 4.3k mHC RTL — DONE for the map, NOT for the residual path
+
+The precision study (§4.3i) said fp32 and no fixed-point; Q5 there said no
+divider is needed. Both mHC units are now built and gated.
+
+**`src/mhc_sinkhorn.v` — `make mhc-sinkhorn`, 1088 checks.** The 4×4 projection:
+one column normalise then `ITERS−1` (row, column) pairs = **39 passes**, every
+normalise dividing by `sum + 1e-6`. 14 cycles per pass, so **548 cycles**, and the
+TB pins `done` to that exact cycle — which makes `NPASS = 39` a structural check
+independent of the numerics. Three must-fail injections: `INJ_SINK_SYMM` (40 symmetric passes),
+`INJ_SINK_ROWFIRST`, `INJ_SINK_NOEPS`.
+
+**`src/mhc_map_step.v` — `make mhc-map`, 800 checks.** `pre = σ(·)+ε`,
+`post = 2σ(·)`, `comb = softmax(·)+ε` → Sinkhorn. Streams 8 sigmoids through one
+`fp32_sigmoid_pipe` and 16 exps through one `fp32_exp_pipe`. **700 cycles, and the
+TB requires every vector to take exactly that** — mHC has no convergence early
+exit, so data-independent latency is a design claim worth testing. Four must-fail
+injections: `INJ_MAP_POST_NO2`, `INJ_MAP_PRE_NOEPS`, `INJ_MAP_COMB_NOEPS`,
+`INJ_MAP_SOFTMAX_NOMAX`.
+
+| | measured |
+|---|---|
+| `pre` / `post` vs the float64 reference | worst **493 / 719 ULP**, bound 1024 |
+| `comb` (softmax + 39 Sinkhorn passes) | worst **1681 ULP ≈ 2.0e-4**, bound 16384 |
+| predicted worst-case envelope | pre/post 790 ULP, comb **9886 ULP ≈ 1.2e-3** |
+| Sinkhorn alone, `x·recip(y)` vs true division | worst **18 ULP** (12 predicted; the rest is `fp32_add`) |
+
+**Where the bounds come from, and why it matters.** They are not the DUT's own
+output rounded up. The generator perturbs every exp by `fp32_exp_pipe`'s measured
+2.3e-4 and every non-railed sigmoid by `fp32_sigmoid_pipe`'s measured 790 ULP, in
+the worst-case direction, and pushes that through the renormalise and all 39
+passes. So the test constrains the implementation instead of describing it, and
+the actual 1681 ULP being 5.9× inside the 9886 envelope is a real result — the
+adversarial model assumes uncorrelated exp errors, and a softmax row's errors come
+from one polynomial and partly cancel in the ratio.
+
+**A consequence worth stating plainly.** `comb`'s envelope is ~1.2e-3 against the
+**2.8e-3** a bf16 map costs (§4.3i Q2). The fp32 map is better, but by ~2.4×, not
+by the orders §4.3i's original phrasing implied — because the binding term is
+`fp32_exp_pipe`'s polynomial, not the sigmoid wrapper and not the reciprocal.
+**Improving mHC now means improving that polynomial**, and nothing else in this
+subsystem will move the number.
+
+**Two things this surfaced.**
+* `fp32_sigmoid_pipe`'s exposed `LAT` said `LAT_EXP + 2 + RECIP_ITERS` = 52; the
+  real valid-in→valid-out latency is **53** (`LAT_EXP + 3 + RECIP_ITERS`: exp,
+  stage A, `RECIP_ITERS+1` Newton stages, output mux). It is documentation only —
+  no logic reads it, and `make fp-sigmoid` is unchanged — but it is a parameter
+  labelled "exposed for callers", and the first caller to schedule on it hit the
+  off-by-one. Now measured rather than counted by eye.
+* `INJ_SINK_PAIRWISE` is **deliberately not a must-fail injection.** At H = 4 a
+  pairwise reduction moves the result ≤ 40 ULP while the reciprocal substitution
+  already moves it ≤ 49, so the reduction order is below the noise floor of a
+  divider-free datapath and no tolerance the DUT can meet would separate them. The
+  RTL still reduces sequentially (it matches the reference and costs nothing), but
+  that is not a gated claim here — unlike KDA, where the reduction is over 128+
+  terms and the order is decisive. A must-fail entry that cannot fail is worse
+  than none.
+* `INJ_MAP_SOFTMAX_NOMAX` needed the corpus fixed before it fired. The softmax's
+  max subtraction is invariant in exact arithmetic and only a rounding difference
+  at ordinary logit spreads — measured, it does **not** fail on such a corpus. Past
+  |logit| ≈ 88 `fp32_exp_pipe` overflows and the shift stops being cosmetic, so
+  every 8th vector is now a wide-logit saturation case. That case also drives the
+  sigmoids onto their exact-0/exact-1 rails, which the clean run passes.
+
+**What is still missing, and why `GLM53F_HC_RTL_PRESENT` stays undefined.** The
+map is the numerically hard part; the *residual path* the define names is not
+built: the unweighted RMSNorm over `H·D = 16384`, the `[(2+H)·H, H·D]` `fn` GEMV
+that produces `mixed`, the collapse `Σ_h pre[h]·streams[h]`, the mix
+`comb @ streams + post ⊗ sublayer_out`, and storage for **four** parallel D-wide
+streams per block instead of one residual. Defining the flag now would be exactly
+the overclaim the guard exists to catch, so `configs/full_glm53_flash.vh` carries
+an HC STATUS note instead.
+
+**Cost, and whether it is hideable.** 700 cycles per invocation, twice per block
+over 45 blocks = **63,000 cycles/token** (49,320 of it Sinkhorn) = **63 µs at
+1 GHz**. Against the token times the memory tiers imply (§5's 14.795 GB/token
+denominator):
+
+| tier | tok/s | token | mHC share | block weight fetch | 2 invocations |
+|---|---|---|---|---|---|
+| LPDDR5X ×16, 1.10 TB/s | 74 | 13.51 ms | 0.47 % | 294 µs | 1.4 µs |
+| HBF ×2, 3.20 TB/s | 216 | 4.63 ms | 1.36 % | 101 µs | 1.4 µs |
+| HBM3E ×6, 7.20 TB/s | 487 | 2.05 ms | 3.07 % | 45 µs | 1.4 µs |
+| HBM4 ×4, 8.0 TB/s | 567 | 1.76 ms | 3.57 % | 38 µs | 1.4 µs |
+
+**It is hideable, and the tightest case is the *fastest* memory.** A block's
+weights do not depend on that block's residual streams, so the map can run
+underneath the weight fetch. The binding comparison is therefore 1.4 µs of mHC
+against the *shortest* per-block fetch — 38 µs at the HBM4 tier, so 3.7 % — not
+against the longest. **But it is only hideable if the scheduler prefetches block
+N's weights while block N's map runs**; serialised, mHC costs the full 0.5–3.6 %
+of every token, which is a real number at the HBM tiers and a scheduling
+requirement worth writing down rather than discovering later.
+
+The H lanes run in parallel because H is a small fixed constant; serialising them
+is ¼ the adders and ~4× the cycles if area ever binds — which the table says there
+is room for at the LPDDR5X tiers and not much at HBM4.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
@@ -651,11 +811,26 @@ That prints the metadata KV, the layer schedule, the full tensor census, the
 quant mix, the byte cross-check against the published shard sizes, the active
 parameter count, and the RTL coverage gap.
 
-The config header itself is gated:
+The config header itself is gated, and so is every unit built on this branch:
 
 ```sh
-make glm53f-config-guard      # 8/8: 4 cases x 2 tools
+make glm53f-config-guard      # 8/8:  4 cases x 2 tools
+make glm53f-ref               # 15/15: the executable spec (4.4)
+make fp-ieee                  # 10000: fp32_add's pinned 1-ULP non-conformance
+make fp-sigmoid               # 3000 + 1087: the fp32 sigmoid and its exp ceiling
+make kda kda-conv kda-gate kda-onorm     # the four non-GEMV KDA units
+make mhc-sinkhorn             # 405 + 1088: the 39-pass projection (4.3k)
+make mhc-map                  # 364 + 800:  pre / post / softmax + Sinkhorn (4.3k)
 ```
+
+Each of those prints its own worst-case error, so a regression moves a number
+rather than flipping a boolean. Between them they carry **11 must-fail
+injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
+`INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
+`INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}` — plus
+`INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
+`INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains
+why a gate that cannot fail is worse than no gate).
 
 **Cost of the full ladder, measured.** `make release-gate` on this machine took
 **7 h 17 min** (2026-09-03; 54 targets, 102 pinned gates), strictly serial. The

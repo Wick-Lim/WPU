@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate kda-onorm all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee kda kda-conv kda-gate kda-onorm unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1113,6 +1113,108 @@ kda-onorm:
 	  else \
 	    echo "[kda_onorm_INJECT_gate_first] injection correctly FAILED (the gate multiplies the NORMALIZED x, not the input to the norm)"; \
 	  fi
+
+# ---- mhc-sinkhorn : the Sinkhorn projection inside hyper-connections -----------
+# src/mhc_sinkhorn.v: a 4x4 row-stochastic matrix pushed toward doubly stochastic by
+# ONE column normalise then ITERS-1 (row, column) pairs = 39 passes, every normalise
+# dividing by (sum + 1e-6).  This repo has no fp32 divide, so each of the 156
+# divisions is x*recip(y) via src/glm_fp_recip.vh -- which makes this a TOLERANCE
+# leg BY CONSTRUCTION, not by convenience (docs/GLM53_FLASH_PORT.md 4.3j).  The
+# generator emulates the DUT exactly and prints the measured gap; the TB bound is
+# 64 ULP against a measured worst of 18.  The `done`-at-548-cycles check pins
+# NPASS=39 independently of the numerics.
+#   Three injections MUST fail.  INJ_SINK_PAIRWISE deliberately is NOT one of them:
+#   measured, the reduction order moves the result by <=40 ULP while the reciprocal
+#   substitution already moves it <=49, so at H=4 it is unobservable here and a
+#   must-fail entry for it would be a gate that cannot fail.
+mhc-sinkhorn:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "mhc_sinkhorn_gen"; python3 tools/mhc_sinkhorn_gen.py --selftest \
+	    || { echo "FAILED: mhc_sinkhorn_gen self-test"; exit 1; }
+	@python3 tools/mhc_sinkhorn_gen.py 64 4 20 $(BUILD_DIR)/mhc_sinkhorn_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/mhc_sinkhorn_vec.txt"' -o $(BUILD_DIR)/mhc_sinkhorn_sim \
+	    test/mhc_sinkhorn_tb.v src/mhc_sinkhorn.v 2>/dev/null \
+	    || { echo "FAILED: mhc-sinkhorn compile"; exit 1; }
+	@printf '[%s] ' "mhc_sinkhorn"; $(VVP) $(BUILD_DIR)/mhc_sinkhorn_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mhc_sinkhorn"; exit 1; }
+	@for inj in INJ_SINK_SYMM INJ_SINK_ROWFIRST INJ_SINK_NOEPS; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/mhc_sinkhorn_vec.txt"' \
+	        -o $(BUILD_DIR)/mhc_sinkhorn_inj test/mhc_sinkhorn_tb.v src/mhc_sinkhorn.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mhc_sinkhorn_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mhc-sinkhorn $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mhc_sinkhorn_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- mhc-map : the mHC map -- 24 mixed logits -> pre[4], post[4], comb[4x4] ----
+# src/mhc_map_step.v, the rest of Glm5NextTextHyperConnection.forward around the
+# Sinkhorn above: pre = sigmoid(.)+eps, post = 2*sigmoid(.), comb = softmax then
+# Sinkhorn.  Uses src/fp32_sigmoid_pipe.v (2H sigmoids streamed) and
+# src/glm_fp_pipe.v's fp32_exp_pipe (H*H exps streamed).
+#   The golden is ref.hyper_connection's OWN post and comb -- bitwise, asserted in
+# the generator's self-test -- with `pre` cross-checked against the reference's
+# returned `collapsed`.  The bounds are the generator's PREDICTED envelope (every
+# exp perturbed by fp32_exp_pipe's measured 2.3e-4, every non-railed sigmoid by
+# 790 ULP, worst-case direction, pushed through the renormalise and all 39 Sinkhorn
+# passes) with ~1.6x headroom: 1024 ULP on pre/post, 16384 on comb.  The bound is
+# therefore set by the primitives, not by what the DUT prints.
+#   The latency check is a design claim: mHC has no convergence early exit, so the
+# unit must be DATA-INDEPENDENT in time.  The TB requires all vectors to finish in
+# the same 700 cycles.
+#   Every 8th vector is a WIDE-logit saturation case.  Without it
+# INJ_MAP_SOFTMAX_NOMAX does not fire -- the softmax max-shift is only a rounding
+# difference until exp overflows -- so that case is what makes the trap testable.
+mhc-map:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "mhc_map_gen"; python3 tools/mhc_map_gen.py --selftest \
+	    || { echo "FAILED: mhc_map_gen self-test"; exit 1; }
+	@python3 tools/mhc_map_gen.py 32 4 20 $(BUILD_DIR)/mhc_map_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/mhc_map_vec.txt"' -o $(BUILD_DIR)/mhc_map_sim \
+	    test/mhc_map_step_tb.v src/mhc_map_step.v src/mhc_sinkhorn.v \
+	    src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: mhc-map compile"; exit 1; }
+	@printf '[%s] ' "mhc_map"; $(VVP) $(BUILD_DIR)/mhc_map_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mhc_map"; exit 1; }
+	@for inj in INJ_MAP_POST_NO2 INJ_MAP_PRE_NOEPS INJ_MAP_COMB_NOEPS INJ_MAP_SOFTMAX_NOMAX; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/mhc_map_vec.txt"' \
+	        -o $(BUILD_DIR)/mhc_map_inj test/mhc_map_step_tb.v src/mhc_map_step.v \
+	        src/mhc_sinkhorn.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mhc_map_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mhc-map $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mhc_map_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- fp-sigmoid : an fp32 sigmoid, and the exp accuracy ceiling underneath it --
+# Until now the repo's only sigmoid was glm_act: bf16 in/out, polynomial exp, input
+# railed at +/-16. Three GLM-5.3-Flash paths are limited by it, each measured: the
+# KDA forget gate (1.24%/1.34% on the two values the recurrence consumes, and it
+# CANNOT reach the reference's exact-0 saturation), the KDA o_norm gamma, and the
+# mHC map -- where `pre = sigma + 1e-6` is not even representable in bf16 and the
+# precision study concluded the whole map must be fp32.
+# src/fp32_sigmoid_pipe.v: exp(-x) -> 1+e -> Newton reciprocal (src/glm_fp_recip.vh,
+# the repo had NO fp32 divide), with the saturation cases muxed out. It reaches
+# EXACTLY 1.0 and EXACTLY 0.0 -- the two properties bf16 cannot give, and the two
+# the callers actually need -- and both are checked BITWISE with a vacuity check.
+# THE FINDING this unit produced: fp32_exp_pipe is NOT near-exact. Swept over
+# x in [-40,40] it is 1899 ULP = 2.3e-4 relative, two orders worse than spot checks
+# suggested, and it is the precision CEILING for the sigmoid and for the mHC
+# softmax. The second leg pins that number so it stays a tracked property.
+fp-sigmoid:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/fp32_exp_acc_gen.py $(BUILD_DIR)/fp32_exp_acc_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/fp32_exp_acc_vec.txt"' -o $(BUILD_DIR)/fp32_exp_acc_sim \
+	    test/fp32_exp_acc_tb.v src/glm_fp_pipe.v 2>/dev/null || { echo "FAILED: fp32_exp_acc compile"; exit 1; }
+	@printf '[%s] ' "fp32_exp_acc"; $(VVP) $(BUILD_DIR)/fp32_exp_acc_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: fp32_exp_acc -- the exp polynomial moved past its pinned ULP ceiling"; exit 1; }
+	@python3 tools/fp32_sigmoid_gen.py $(BUILD_DIR)/fp32_sigmoid_vec.txt >/dev/null 2>&1
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/fp32_sigmoid_vec.txt"' -o $(BUILD_DIR)/fp32_sigmoid_sim \
+	    test/fp32_sigmoid_tb.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: fp32_sigmoid compile"; exit 1; }
+	@printf '[%s] ' "fp32_sigmoid"; $(VVP) $(BUILD_DIR)/fp32_sigmoid_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: fp32_sigmoid"; exit 1; }
 
 glm53f-config-guard:
 	@printf '[%s] ' "glm53f-config-guard"; \

@@ -310,6 +310,23 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   scoped in the ledger (§4.3g) as three sub-problems, two of them plumbing gaps in shared RTL: the decoder
   block's attention-slot weight fan-out is Q4_K-only while every KDA projection is Q8_0, and nothing in that
   slot's contract carries a recurrent state in and out (KDA is not a drop-in for `mla_attn_q4k`).
+- **An fp32 sigmoid now exists** (`src/fp32_sigmoid_pipe.v`, `make fp-sigmoid`) — the bf16 `glm_act`
+  was the binding limit on three GLM-5.3-Flash paths and blocked mHC outright. It needed the repo's
+  first fp32 divide (a Newton reciprocal, ≤1 ULP at 4 iterations) and it reaches **exactly 1.0 and
+  exactly 0.0** — the saturation bf16 cannot give and both callers require, checked bitwise.
+  **It also uncovered the real ceiling: `fp32_exp_pipe` is 1899 ULP (2.3e-4) over [−40,40]**, not the
+  ~10 ULP three spot checks implied; the sigmoid on top measures 790 ULP because `1/(1+e)` compresses
+  the error. Both are pinned. Improving mHC further means improving that polynomial.
+- **The hyper-connection MAP has RTL** (`src/mhc_sinkhorn.v` + `src/mhc_map_step.v`, `make mhc-sinkhorn`
+  / `mhc-map`, 7 must-fail injections). `post` and `comb` are checked against `ref.hyper_connection`'s
+  own output and `pre` against the reference's returned `collapsed`; the bounds are predicted from the
+  primitives' measured error rather than fitted to the DUT. Two findings worth the ledger (§4.3k):
+  **`hc_sinkhorn_iters = 20` is a published constant, not a satisfied convergence criterion** — the
+  residual's worst case over 200 draws is 4.8e-4, not the 1.0e-6 a single draw suggested — so the RTL
+  runs exactly 39 passes with **no early exit**, which also makes its latency data-independent (pinned
+  at 700 cycles). And the fp32 map beats a bf16 one by **~2.4×, not by orders**, because the exp
+  polynomial binds. The residual *path* — four D-wide streams per block, the `fn` GEMV, collapse and
+  mix — is still open, so `GLM53F_HC_RTL_PRESENT` stays undefined.
 - **Found while building it: `src/glm_fp.vh fp32_add` is not exactly IEEE** — 0.04 % of pairs land 1 ULP
   low. Harmless and invisible on every existing proven path (all end in bf16, which masks it in
   99.999 % of cases), so the Q4_K bit-exactness claim is unaffected; visible in `kda_recur` because
