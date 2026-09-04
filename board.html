@@ -213,7 +213,7 @@
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">Rung ③ design point · concept · <span class="tag">[EST]</span></div>
       <h1>WPU appliance board</h1>
-      <p class="lede">A concept design point for the rung-③ silicon appliance: a 512&nbsp;GB LPDDR5X full-residency box holding the whole ~467&nbsp;GB Q4_K checkpoint in DRAM. <b>Sized for GLM-5.2.</b> The current target, GLM-5.3-Flash, needs <b>212&nbsp;GB</b> resident at the full 1M context, so the same board becomes <b>16&nbsp;×&nbsp;16&nbsp;GB = 256&nbsp;GB</b> — the package count stays at 16, because the 1024-bit bus and the ~1.1&nbsp;TB/s follow the number of packages, not the capacity. Dropping to 8&nbsp;×&nbsp;32&nbsp;GB would hit the same 256&nbsp;GB at half the bandwidth. <b>No board has been built.</b> Every throughput, power, and cost figure below is an estimate <span class="k">[EST]</span>; the physical PHYs are vendor IP, TB-stubbed in RTL.</p>
+      <p class="lede">A concept design point for the rung-③ silicon appliance: a 512&nbsp;GB LPDDR5X full-residency box holding the whole ~467&nbsp;GB Q4_K checkpoint in DRAM. <b>Sized for GLM-5.2.</b> The current target, GLM-5.3-Flash, needs <b>212&nbsp;GB</b> resident at the full 1M context, which opens <b>two</b> honest builds of this board — the package count, not the capacity, is the lever: <b>16&nbsp;×&nbsp;16&nbsp;GB</b> keeps the 1024-bit bus and ~1.1&nbsp;TB/s (~74 tok/s), while <b>8&nbsp;×&nbsp;32&nbsp;GB</b> holds the same 256&nbsp;GB on <b>half the packages and half the die's memory PHY</b> — fewer pins, less PHY area, less IO power, a simpler board — at 512-bit, ~0.55&nbsp;TB/s and ~37 tok/s. Neither is wrong; they are the fast build and the cheap build. <b>No board has been built.</b> Every throughput, power, and cost figure below is an estimate <span class="k">[EST]</span>; the physical PHYs are vendor IP, TB-stubbed in RTL.</p>
       <div class="proof">The measured, in-repo result is the <b>FPGA fit</b> (rung ①) shown directly below. The board on this page is the rung-③ endpoint of the hardware ladder — a modeled target, not fabricated hardware.</div>
     </div>
   </div>
@@ -248,7 +248,7 @@
 
   <section>
     <div class="sec-head"><h2>Rung-③ primary design point</h2></div>
-    <p class="sec-sub">A 512&nbsp;GB LPDDR5X full-residency box. The whole ~467&nbsp;GB Q4_K checkpoint is DRAM-resident, so expert-reuse <span class="k">h&nbsp;=&nbsp;1</span> by construction — there is no streaming tier. Cold storage is one M.2 NVMe; boot-load is ~70&nbsp;s.</p>
+    <p class="sec-sub">A full-residency box — 512&nbsp;GB as drawn for GLM-5.2, 256&nbsp;GB for GLM-5.3-Flash (16&nbsp;×&nbsp;16&nbsp;GB for full speed, or 8&nbsp;×&nbsp;32&nbsp;GB for half the PHY at half the speed). The whole ~467&nbsp;GB Q4_K checkpoint is DRAM-resident, so expert-reuse <span class="k">h&nbsp;=&nbsp;1</span> by construction — there is no streaming tier. Cold storage is one M.2 NVMe; boot-load is ~70&nbsp;s.</p>
 
     <figure class="figure">
       <svg viewBox="0 0 480 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concept top-down PCB floorplan of the residency appliance board">
@@ -274,7 +274,7 @@
         <rect x="292" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
         <rect x="340" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
         <rect x="388" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
-        <text x="48" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="start">16 &#215; 32 GB LPDDR5X</text>
+        <text x="48" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="start">16 &#215; 16 GB LPDDR5X &#183; 256 GB</text>
         <line x1="72" y1="66" x2="72" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
         <line x1="120" y1="66" x2="120" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
         <line x1="168" y1="66" x2="168" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
@@ -298,7 +298,7 @@
         <text x="240" y="164" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7.5" fill="var(--ink-2)" text-anchor="middle">@490 MHz</text>
         <text x="240" y="196" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-dim)" text-anchor="middle">die</text>
         <text x="362" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="middle">1024-bit bus</text>
-        <text x="362" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle">16 &#215; 64-bit &#183; ~1.1 TB/s</text>
+        <text x="362" y="172" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="7" fill="var(--ink-2)" text-anchor="middle">16 &#215; 64-bit &#183; ~1.1 TB/s &#183; ~74 tok/s</text>
         <rect x="448" y="120" width="16" height="100" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
         <line x1="451" y1="138" x2="461" y2="138" stroke="var(--ink-2)" stroke-width="0.5"/>
         <line x1="451" y1="143" x2="461" y2="143" stroke="var(--ink-2)" stroke-width="0.5"/>
@@ -321,14 +321,14 @@
         <line x1="4" y1="174" x2="4" y2="303" stroke="var(--accent)" stroke-width="0.75"/>
         <text x="5" y="100" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle" transform="rotate(-90 5 100)">80 mm</text>
       </svg>
-      <figcaption>Concept board floorplan — SoC + 16&nbsp;×&nbsp;32&nbsp;GB LPDDR5X (1024-bit) on a 120&nbsp;×&nbsp;80&nbsp;mm board. <span class="tag">Schematic, not a built board; every figure [EST].</span></figcaption>
+      <figcaption>Concept board floorplan — SoC + <b>16&nbsp;×&nbsp;16&nbsp;GB</b> LPDDR5X (256&nbsp;GB, 1024-bit, ~74 tok/s) on a 120&nbsp;×&nbsp;80&nbsp;mm board. The alternative build is <b>8&nbsp;×&nbsp;32&nbsp;GB</b>: the same 256&nbsp;GB from eight packages, so the die carries a <b>512-bit</b> PHY instead of 1024-bit — half the memory pins and PHY area, ~0.55&nbsp;TB/s, ~37 tok/s. The drawing shows the full-bandwidth build; halving the packages halves both the top and bottom rows. <span class="tag">Schematic, not a built board; every figure [EST].</span></figcaption>
     </figure>
 
     <div class="spec">
       <div class="cell">
         <div class="k2">Memory</div>
-        <div class="v2">16 × 32&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate bus · <b>~1.1&nbsp;TB/s</b></div>
-        <div class="d2">Full residency of the ~467&nbsp;GB checkpoint in 512&nbsp;GB of DRAM.</div>
+        <div class="v2">16 × 16&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate bus · <b>~1.1&nbsp;TB/s</b> · ~74 tok/s</div>
+        <div class="d2">Full residency of GLM-5.3-Flash in 256&nbsp;GB (212&nbsp;GB at 1M context). Alternative: <b>8 × 32&nbsp;GB</b> — same capacity, <b>512-bit</b> PHY, ~0.55&nbsp;TB/s, ~37 tok/s. For GLM-5.2 the same board is 16 × 32&nbsp;GB = 512&nbsp;GB.</div>
       </div>
       <div class="cell">
         <div class="k2">Cold storage</div>
@@ -353,7 +353,7 @@
       <div class="cell">
         <div class="k2">Physical / BOM</div>
         <div class="v2">Board <b>120 × 80&nbsp;mm</b> · ~$1.8–2.4k <span class="tag">[EST]</span></div>
-        <div class="d2">On-substrate 1024-bit memory. BOM is a planning number, not a quote — memory/storage/board-dominated; the compute die is a minority of cost.</div>
+        <div class="d2">On-substrate 1024-bit memory — and that width IS the die's memory PHY, so the 8-package build removes half of it (pins, area, IO power). BOM is a planning number, not a quote — memory/storage/board-dominated; the compute die is a minority of cost.</div>
       </div>
     </div>
   </section>

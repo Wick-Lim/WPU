@@ -260,7 +260,7 @@
           </tr>
           <tr>
             <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">양산 규모</span></td>
-            <td>커스텀 실리콘; 전량 상주. 512 GB(16×32 GB)는 GLM-5.2 기준이고, GLM-5.3-Flash는 <b>212 GB</b>면 되므로 <b>256 GB를 16×16 GB로</b> — 1024-bit 버스는 용량이 아니라 패키지 수를 따라가므로 패키지는 16개를 유지해야 한다</td>
+            <td>커스텀 실리콘; 전량 상주. 512 GB(16×32 GB)는 GLM-5.2 기준이다. GLM-5.3-Flash는 <b>212 GB</b>면 되므로 구성이 둘이다: <b>16×16 GB</b>(1024-bit, ~74 tok/s) 또는 <b>8×32 GB</b>(같은 256 GB, <b>512-bit</b> — die 메모리 PHY 절반 — ~37 tok/s). 레버는 용량이 아니라 패키지 수다</td>
             <td>1024-bit, ~1.1 TB/s; 체크포인트 전체 상주 — GLM-5.2 기준 ~467 GB, GLM-5.3-Flash 기준 ~199.7 GB. cold store는 M.2 NVMe 1개(~70 s 부팅)</td>
             <td class="toks">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></td>
             <td>bit-exact (상주 ⇒ h=1)</td>
@@ -314,7 +314,7 @@
 
       <div class="card">
         <h3><span style="font-family:var(--mono);color:var(--accent)">③</span> SoC / ASIC <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(양산 규모)</span></h3>
-        <p>커스텀 실리콘. 주 설계 지점: 512 GB LPDDR5X 전량 상주(16×32 GB, 1024-bit, ~1.1 TB/s). 체크포인트 전체가 상주하며, cold store는 M.2 NVMe 1개다(~70 s 부팅). 512 GB라는 수치는 GLM-5.2의 ~467 GB에 맞춰 잡은 것이다. <b>199.7 GB</b>인 GLM-5.3-Flash라면 이 rung에 여유가 크게 남고, 전체 상주는 이보다 한참 아래에서 이미 제약 조건이 아니게 된다.</p>
+        <p>커스텀 실리콘. 주 설계 지점: 512 GB LPDDR5X 전량 상주(16×32 GB, 1024-bit, ~1.1 TB/s) — GLM-5.3-Flash라면 256 GB로 충분하며, 전속도는 16×16 GB, PHY와 속도를 절반으로 줄이려면 8×32 GB다. 체크포인트 전체가 상주하며, cold store는 M.2 NVMe 1개다(~70 s 부팅). 512 GB라는 수치는 GLM-5.2의 ~467 GB에 맞춰 잡은 것이다. <b>199.7 GB</b>인 GLM-5.3-Flash라면 이 rung에 여유가 크게 남고, 전체 상주는 이보다 한참 아래에서 이미 제약 조건이 아니게 된다.</p>
         <div class="toks-big">≈80 tok/s <span class="tag">[실측 입력 기반 추정]</span></div>
         <div class="meta">
           <span><b>상방</b> MTP가 공개된 depth에 도달하면 ~95</span>

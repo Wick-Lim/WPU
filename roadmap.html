@@ -260,7 +260,7 @@
           </tr>
           <tr>
             <td class="rungcell">③ SoC / ASIC<br><span style="color:var(--ink-dim);font-weight:400">at scale</span></td>
-            <td>Custom silicon; full residency. 512 GB (16×32 GB) sizes it for GLM-5.2; GLM-5.3-Flash needs <b>212 GB</b>, so <b>256 GB as 16×16 GB</b> — the package count must stay 16, since the 1024-bit bus follows units, not capacity</td>
+            <td>Custom silicon; full residency. 512 GB (16×32 GB) sizes it for GLM-5.2. GLM-5.3-Flash needs <b>212 GB</b>, so two builds: <b>16×16 GB</b> (1024-bit, ~74 tok/s) or <b>8×32 GB</b> (same 256 GB, <b>512-bit</b> — half the die's memory PHY — ~37 tok/s). The package count is the lever, not the capacity</td>
             <td>1024-bit, ~1.1 TB/s; whole checkpoint resident — ~467 GB sizing it for GLM-5.2, ~199.7 GB for GLM-5.3-Flash; cold store one M.2 NVMe (~70 s boot)</td>
             <td class="toks">≈80 tok/s <span class="tag">[measured-inputs EST]</span></td>
             <td>bit-exact (residency ⇒ h=1)</td>
@@ -314,7 +314,7 @@
 
       <div class="card">
         <h3><span style="font-family:var(--mono);color:var(--accent)">③</span> SoC / ASIC <span style="color:var(--ink-dim);font-weight:400;font-size:.85rem">(at scale)</span></h3>
-        <p>Custom silicon. Primary design point: 512 GB LPDDR5X full residency (16×32 GB, 1024-bit, ~1.1 TB/s). The whole checkpoint is resident; cold store is one M.2 NVMe (~70 s boot). The 512 GB figure was sized against GLM-5.2's ~467 GB — at <b>199.7 GB</b>, GLM-5.3-Flash leaves this rung with a lot of headroom, and full residency stops being the binding constraint well below it.</p>
+        <p>Custom silicon. Primary design point: 512 GB LPDDR5X full residency (16×32 GB, 1024-bit, ~1.1 TB/s) — for GLM-5.3-Flash, 256 GB is enough, as 16×16 GB at full speed or 8×32 GB at half the PHY and half the speed. The whole checkpoint is resident; cold store is one M.2 NVMe (~70 s boot). The 512 GB figure was sized against GLM-5.2's ~467 GB — at <b>199.7 GB</b>, GLM-5.3-Flash leaves this rung with a lot of headroom, and full residency stops being the binding constraint well below it.</p>
         <div class="toks-big">≈80 tok/s <span class="tag">[measured-inputs EST]</span></div>
         <div class="meta">
           <span><b>upside</b> ~95 if MTP hits published depth</span>

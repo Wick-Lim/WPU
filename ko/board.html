@@ -213,7 +213,7 @@
     <div class="hero wrap" style="padding-left:0;padding-right:0;max-width:none">
       <div class="eyebrow kicker">3단계 설계 지점 · 개념 설계 · <span class="tag">[추정]</span></div>
       <h1>WPU 어플라이언스 보드</h1>
-      <p class="lede">3단계 실리콘 어플라이언스의 개념 설계 지점: ~467&nbsp;GB Q4_K 체크포인트 전체를 DRAM에 상주시키는 512&nbsp;GB LPDDR5X 완전 상주 박스다. <b>GLM-5.2 기준으로 사이징된 값이다.</b> 현재 타깃인 GLM-5.3-Flash는 1M 문맥을 꽉 채워도 <b>212&nbsp;GB</b>면 되므로 같은 보드가 <b>16&nbsp;×&nbsp;16&nbsp;GB = 256&nbsp;GB</b>가 된다. 패키지 수는 16개를 유지한다. 1024-bit 버스와 ~1.1&nbsp;TB/s가 용량이 아니라 패키지 수를 따라가기 때문이다. 8&nbsp;×&nbsp;32&nbsp;GB로 가면 같은 256&nbsp;GB를 대역폭 절반으로 얻게 된다. <b>보드는 제작된 적이 없다.</b> 아래의 모든 처리량·전력·비용 수치는 추정치 <span class="k">[추정]</span>이며, 물리 PHY는 벤더 IP로서 RTL에서는 testbench 스텁으로만 존재한다.</p>
+      <p class="lede">3단계 실리콘 어플라이언스의 개념 설계 지점: ~467&nbsp;GB Q4_K 체크포인트 전체를 DRAM에 상주시키는 512&nbsp;GB LPDDR5X 완전 상주 박스다. <b>GLM-5.2 기준으로 사이징된 값이다.</b> 현재 타깃인 GLM-5.3-Flash는 1M 문맥을 꽉 채워도 <b>212&nbsp;GB</b>면 되므로, 이 보드를 만드는 <b>정직한 방법이 둘</b> 생긴다. 레버는 용량이 아니라 패키지 수다. <b>16&nbsp;×&nbsp;16&nbsp;GB</b>는 1024-bit 버스와 ~1.1&nbsp;TB/s(~74 tok/s)를 유지하고, <b>8&nbsp;×&nbsp;32&nbsp;GB</b>는 같은 256&nbsp;GB를 <b>패키지 절반, die의 메모리 PHY 절반</b>으로 얻는다 — 핀 수·PHY 면적·IO 전력이 줄고 보드가 단순해지며, 대신 512-bit·~0.55&nbsp;TB/s·~37 tok/s다. 어느 쪽도 틀린 게 아니라 빠른 구성과 저렴한 구성이다. <b>보드는 제작된 적이 없다.</b> 아래의 모든 처리량·전력·비용 수치는 추정치 <span class="k">[추정]</span>이며, 물리 PHY는 벤더 IP로서 RTL에서는 testbench 스텁으로만 존재한다.</p>
       <div class="proof">저장소 안에서 실측된 결과는 바로 아래에 제시된 <b>FPGA fit</b>(1단계)이다. 이 페이지의 보드는 하드웨어 사다리의 3단계 종착점 — 모델링된 목표이며, 제작된 하드웨어가 아니다.</div>
     </div>
   </div>
@@ -248,7 +248,7 @@
 
   <section>
     <div class="sec-head"><h2>3단계 주 설계 지점</h2></div>
-    <p class="sec-sub">512&nbsp;GB LPDDR5X 완전 상주 박스다. ~467&nbsp;GB Q4_K 체크포인트 전체가 DRAM에 상주하므로 expert 재사용 <span class="k">h&nbsp;=&nbsp;1</span>이 구조적으로 성립한다 — 스트리밍 계층 자체가 없다. 콜드 스토리지는 M.2 NVMe 한 장이며, 부트 로드는 ~70&nbsp;s다.</p>
+    <p class="sec-sub">완전 상주 박스다 — 그림은 GLM-5.2 기준 512&nbsp;GB이고, GLM-5.3-Flash는 256&nbsp;GB면 된다(전속도는 16&nbsp;×&nbsp;16&nbsp;GB, PHY 절반은 8&nbsp;×&nbsp;32&nbsp;GB로 속도도 절반). ~467&nbsp;GB Q4_K 체크포인트 전체가 DRAM에 상주하므로 expert 재사용 <span class="k">h&nbsp;=&nbsp;1</span>이 구조적으로 성립한다 — 스트리밍 계층 자체가 없다. 콜드 스토리지는 M.2 NVMe 한 장이며, 부트 로드는 ~70&nbsp;s다.</p>
 
     <figure class="figure">
       <svg viewBox="0 0 480 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="상주형 어플라이언스 보드의 개념 top-down PCB 플로어플랜">
@@ -274,7 +274,7 @@
         <rect x="292" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
         <rect x="340" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
         <rect x="388" y="272" width="40" height="26" fill="var(--panel)" stroke="var(--ink-2)" stroke-width="0.75"/>
-        <text x="48" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="start">16 &#215; 32 GB LPDDR5X</text>
+        <text x="48" y="34" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--ink)" text-anchor="start">16 &#215; 16 GB LPDDR5X &#183; 256 GB</text>
         <line x1="72" y1="66" x2="72" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
         <line x1="120" y1="66" x2="120" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
         <line x1="168" y1="66" x2="168" y2="80" stroke="var(--accent)" stroke-width="0.75"/>
@@ -321,14 +321,14 @@
         <line x1="4" y1="174" x2="4" y2="303" stroke="var(--accent)" stroke-width="0.75"/>
         <text x="5" y="100" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8" fill="var(--accent)" text-anchor="middle" transform="rotate(-90 5 100)">80 mm</text>
       </svg>
-      <figcaption>개념 보드 플로어플랜 — 120&nbsp;×&nbsp;80&nbsp;mm 보드 위의 SoC + 16&nbsp;×&nbsp;32&nbsp;GB LPDDR5X (1024-bit). <span class="tag">제작된 보드가 아닌 개념도이며, 모든 수치는 [추정].</span></figcaption>
+      <figcaption>개념 보드 플로어플랜 — 120&nbsp;×&nbsp;80&nbsp;mm 보드 위의 SoC + <b>16&nbsp;×&nbsp;16&nbsp;GB</b> LPDDR5X(256&nbsp;GB, 1024-bit, ~74 tok/s). 대안 구성은 <b>8&nbsp;×&nbsp;32&nbsp;GB</b>다: 같은 256&nbsp;GB를 여덟 패키지로 얻으므로 die가 1024-bit 대신 <b>512-bit</b> PHY를 지고 — 메모리 핀과 PHY 면적이 절반 — ~0.55&nbsp;TB/s, ~37 tok/s가 된다. 그림은 전대역폭 구성이며, 패키지를 절반으로 줄이면 위아래 두 줄이 함께 절반이 된다. <span class="tag">제작된 보드가 아닌 개념도이며, 모든 수치는 [추정].</span></figcaption>
     </figure>
 
     <div class="spec">
       <div class="cell">
         <div class="k2">메모리</div>
-        <div class="v2">16 × 32&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate 버스 · <b>~1.1&nbsp;TB/s</b></div>
-        <div class="d2">512&nbsp;GB DRAM에 ~467&nbsp;GB 체크포인트를 완전 상주.</div>
+        <div class="v2">16 × 16&nbsp;GB LPDDR5X · <b>1024-bit</b> on-package / on-substrate 버스 · <b>~1.1&nbsp;TB/s</b> · ~74 tok/s</div>
+        <div class="d2">256&nbsp;GB에 GLM-5.3-Flash 완전 상주(1M 문맥에서 212&nbsp;GB). 대안: <b>8 × 32&nbsp;GB</b> — 같은 용량, <b>512-bit</b> PHY, ~0.55&nbsp;TB/s, ~37 tok/s. GLM-5.2 기준으로는 같은 보드가 16 × 32&nbsp;GB = 512&nbsp;GB다.</div>
       </div>
       <div class="cell">
         <div class="k2">콜드 스토리지</div>
@@ -353,7 +353,7 @@
       <div class="cell">
         <div class="k2">물리 / BOM</div>
         <div class="v2">보드 <b>120 × 80&nbsp;mm</b> · ~$1.8–2.4k <span class="tag">[추정]</span></div>
-        <div class="d2">On-substrate 1024-bit 메모리. BOM은 견적이 아니라 계획 수치이며, 메모리·스토리지·보드가 비용을 지배한다. 연산 die는 비용에서 차지하는 비중이 작다.</div>
+        <div class="d2">On-substrate 1024-bit 메모리 — 그리고 그 폭이 곧 die의 메모리 PHY이므로 8-패키지 구성은 그 절반(핀·면적·IO 전력)을 덜어낸다. BOM은 견적이 아니라 계획 수치이며, 메모리·스토리지·보드가 비용을 지배한다. 연산 die는 비용에서 차지하는 비중이 작다.</div>
       </div>
     </div>
   </section>
