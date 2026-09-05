@@ -233,6 +233,53 @@ def hyper_connection(hidden_streams, fn, base, scale, hc_mult=4,
     return post, comb, collapsed
 
 
+def hc_collapse(hidden_streams, pre):
+    """collapsed = sum_h pre[h] * streams[h]   -- the sublayer's input.
+
+    Pinned SEQUENTIAL over h, which is what numpy's .sum(axis=0) already does at
+    H = 4 (measured 0/300 differing), so this only makes the contract explicit.
+    Note the result is NOT normalised: the block's own attn_norm / ffn_norm still
+    applies to it (both tensors exist on all 46 blocks per the GGUF census).
+    """
+    hs = np.asarray(hidden_streams, F32)
+    pre = np.asarray(pre, F32)
+    acc = (pre[0] * hs[0]).astype(F32)
+    for h in range(1, hs.shape[0]):
+        acc = (acc + (pre[h] * hs[h]).astype(F32)).astype(F32)
+    return acc
+
+
+def hc_mix(hidden_streams, comb, post, sub_out):
+    """streams' = comb @ streams + post (x) sub_out   -- the residual update.
+
+    TRAP, and the reason this function exists rather than a bare `comb @ hs`:
+    numpy's matmul does NOT reduce in this order -- measured 300/300 differing on
+    [4,4] @ [4,D].  The gap is one fp32 rounding (5.0e-7 of the output RMS; it is
+    an FMA-vs-mul-then-add difference), but it is not zero, so a golden built on
+    `@` would depend on whichever BLAS the host links and could never be matched
+    bitwise by streaming RTL.  The order is therefore pinned HERE -- multiply, then
+    accumulate sequentially over g, then add the post term last -- exactly as
+    _seq_sum does for KDA, and that order is this repo's contract.
+
+    Beware the metric when checking this: comb is doubly stochastic, so the four
+    terms nearly cancel and some outputs land near zero.  A plain relative error
+    divides by those and reports ~1e-2 for what is a 1-ULP difference; compare
+    against the output RMS instead.
+    """
+    hs = np.asarray(hidden_streams, F32)
+    comb = np.asarray(comb, F32)
+    post = np.asarray(post, F32)
+    sub = np.asarray(sub_out, F32)
+    H = hs.shape[0]
+    out = np.empty_like(hs)
+    for h in range(H):
+        acc = (comb[h, 0] * hs[0]).astype(F32)
+        for g in range(1, H):
+            acc = (acc + (comb[h, g] * hs[g]).astype(F32)).astype(F32)
+        out[h] = (acc + (post[h] * sub).astype(F32)).astype(F32)
+    return out
+
+
 # ------------------------------------------------------------------ self-test
 def _selftest():
     rng = np.random.default_rng(0x5F3)
@@ -317,6 +364,40 @@ def _selftest():
         np.array([1.0, 1.0, 1.0], F32), hc, 1, 1e-6)
     chk(comb_sym.shape == (hc, hc), "mHC: 1-iteration path broken")
 
+    # --- the residual path: collapse and mix ---
+    hs_r    = rng.normal(size=(hc, D)).astype(F32)
+    fn_r    = (rng.normal(size=(mix, hc * D)) * 0.05).astype(F32)
+    base_r  = rng.normal(size=mix).astype(F32)
+    scale_r = np.array([1.0, 1.0, 1.0], F32)
+    sub_r   = rng.normal(size=D).astype(F32)
+
+    # collapse must be exactly what hyper_connection itself returns for the same pre
+    post_r, comb_r, coll_ref = hyper_connection(hs_r, fn_r, base_r, scale_r, hc, 20, 1e-6)
+    flat_r = hs_r.reshape(-1).astype(F32)
+    flat_r = (flat_r / np.sqrt((flat_r.astype(np.float64) ** 2).mean() + 1e-5)).astype(F32)
+    pre_int = (sigmoid((fn_r[:hc] @ flat_r) * scale_r[0] + base_r[:hc]) + F32(1e-6)).astype(F32)
+    chk(np.array_equal(hc_collapse(hs_r, pre_int), coll_ref),
+        "mHC: hc_collapse does not reproduce hyper_connection's own collapsed")
+
+    mixed_r = hc_mix(hs_r, comb_r, post_r, sub_r)
+    chk(mixed_r.shape == (hc, D), "mHC: mix shape wrong")
+    # post = 0 leaves the pure stream re-mix
+    chk(np.array_equal(hc_mix(hs_r, comb_r, np.zeros(hc, F32), sub_r),
+                       hc_mix(hs_r, comb_r, np.zeros(hc, F32), np.zeros(D, F32))),
+        "mHC: post=0 still let sub_out through")
+    # comb = I, post = 0 is the identity on the streams
+    chk(np.array_equal(hc_mix(hs_r, np.eye(hc, dtype=F32), np.zeros(hc, F32), sub_r),
+                       hs_r), "mHC: comb=I, post=0 is not the identity")
+    # comb = 0, comb = I with post = 1 recovers the ordinary single residual add
+    chk(np.array_equal(hc_mix(hs_r, np.eye(hc, dtype=F32), np.ones(hc, F32), sub_r),
+                       (hs_r + sub_r[None, :]).astype(F32)),
+        "mHC: comb=I, post=1 is not the plain residual add")
+    # THE PIN: numpy's own matmul must NOT match, or the sequential order is
+    # not actually being enforced and a BLAS change could move the golden.
+    chk(not np.array_equal((comb_r @ hs_r + post_r[:, None] * sub_r[None, :]).astype(F32),
+                           mixed_r),
+        "mHC: numpy matmul matches the pinned order -- the pin is not live")
+
     if fails:
         for f in fails:
             print("  FAIL:", f)
@@ -324,7 +405,8 @@ def _selftest():
         return 1
     print(f"ALL {n} TESTS PASSED (clamped SwiGLU asymmetry, l2norm, forget-gate "
           f"range + signed zero, KDA delta rule + decay + beta=0, mHC double "
-          f"stochasticity + post range)")
+          f"stochasticity + post range, hc_collapse vs hyper_connection's own "
+          f"collapsed, hc_mix identities + the pinned-order pin)")
     return 0
 
 

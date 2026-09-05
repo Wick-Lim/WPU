@@ -195,7 +195,7 @@ These are **GLM-5.2 proofs**, measured at GLM-5.2's shape. They transfer as
 |---|---|---|---|
 | 1 | ~~**Q5_K dequant**~~ — **DONE**: reference + RTL + gate + must-fail injection | was: 34.9 % of bytes unreadable | landed, see §3. Residual: the llama.cpp seal (needs a checkout) and the loader/packer tile geometry (item 6) |
 | 2 | **KDA linear-attention block** — all four non-GEMV units DONE; layer wrapper open | 34 / 45 layers | `src/kda_recur.v` (state update, `make kda`, §4.3c), `src/kda_conv_step.v` (k=4 causal conv + SiLU, `make kda-conv`, §4.3d), `src/kda_gate_step.v` (forget gate → `exp(g)` and beta, `make kda-gate`, §4.3e) and `src/kda_onorm_step.v` (gated RMSNorm on the recurrence output, `make kda-onorm`, §4.3f). What remains is **composition**: the q/k/v/beta/f/g/o projections are ordinary `glm_matmul_q4k` GEMVs, and nothing new is needed *inside* any block — the layer wrapper sequences the existing GEMV engine and these four units, and the state has to live in BRAM/DDR at the real shape (4.19 MB/layer). **Finding carried from §4.3e: the repo's only sigmoid is bf16, priced at ~1–3 % output error per KDA layer; fp32 sigmoid or accept — a decision.** |
-| 3 | **Hyper-connections (mHC)** — spec DONE, **precision study DONE** (§4.3i), **map RTL DONE** (§4.3k: `mhc_map_step` + `mhc_sinkhorn`, 7 must-fail injections), residual path open | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. The block carries **4 parallel residual streams** (interface `[4,D]`). The study's answer: **not fixed-point** — fp32 Sinkhorn (residual @20 iters: median 1.0e-6, worst-of-200 4.8e-4; bf16 is 93× worse on the same inputs; `x·recip(y)` costs 2.7e-7, so no divider is needed), `comb` entries reach 5e-8 so a float exponent is required, and `pre = σ+1e-6` is a third case that needs an fp32 sigmoid |
+| 3 | **Hyper-connections (mHC)** — spec DONE, precision study DONE (§4.3i), map RTL DONE (§4.3k), **residual path RTL DONE** (§4.3l: `mhc_fn_gemv` + `mhc_stream_ops` + `mhc_block_site`, 17 injections across the five units). **block skeleton DONE** (§4.3m: `glm53f_hc_block`, two sites per block). `GLM53F_HC_RTL_PRESENT` is now **defined**; composing it with real sublayers is assembly work | every block's residual path | `tools/glm53_flash_ref.py: hyper_connection`, gated. The block carries **4 parallel residual streams** (interface `[4,D]`). The study's answer: **not fixed-point** — fp32 Sinkhorn (residual @20 iters: median 1.0e-6, worst-of-200 4.8e-4; bf16 is 93× worse on the same inputs; `x·recip(y)` costs 2.7e-7, so no divider is needed), `comb` entries reach 5e-8 so a float exponent is required, and `pre = σ+1e-6` is a third case that needs an fp32 sigmoid |
 | 4 | ~~**Clamped SwiGLU**~~ — **DONE** (RTL + 4-leg gate) | every FFN | `SWIGLU_CLAMP` in `swiglu_expert_q4k`, default 0 so the GLM-5.2 path stays byte-identical. Gated by `make q4k`: the feature leg, a **vacuity leg** (the clamp golden must FAIL against an unclamped DUT), and a **must-fail injection** that clamps the gate symmetrically |
 | 5 | **DSA indexer — RE-SCOPED: a new indexer front-end, not a compressor bolt-on** | the 11 DSA blocks | Reading `Glm5NextTextIndexer` (§4.3h) showed the GLM-5.2 `dsa_indexer.v` (single index vector, token-level scoring, IndexShare freq-4 reuse) shares only `topk_select` with what GLM-5.3-Flash needs: a k-pool compressor (per-channel 4-way softmax over `gate + APE` logits), **LayerNorm with bias** on `k` (the repo has only RMSNorm), **32 index heads × 128 with ReLU and a `weights_proj` head combination**, scoring over `S/4` pools, top-512 pools → ×4 token expansion + tail append, and no freq-4 reuse. Medium-large, previously mis-scoped as "small" |
 | 6 | **Re-target packer / flash layout** | boot path | `tools/ckpt_pack_q4k.py`, `tools/flash_layout.py` against `glm5next` tensor names and the per-tensor UD mix |
@@ -735,6 +735,130 @@ The H lanes run in parallel because H is a small fixed constant; serialising the
 is ¼ the adders and ~4× the cycles if area ever binds — which the table says there
 is room for at the LPDDR5X tiers and not much at HBM4.
 
+### 4.3l mHC residual path — DONE in RTL; nothing instantiates it yet
+
+§4.3k built the map. This is the path around it, and it is what makes a block
+carry **four** residual streams instead of one.
+
+**The structure, settled from the census rather than inferred.** `attn_norm[4096]`
+and `ffn_norm[4096]` exist on all 46 blocks *alongside* the `hc_*` tensors, so mHC
+**wraps** a sublayer and does not replace its norm:
+
+```
+flat      = unweighted_rmsnorm(streams.flatten())     [16384]  -- map input only
+mixed     = hc_{attn,ffn}_fn @ flat                   [24],  Q8_0 weights
+pre,post,comb = map(mixed, base, scale)
+collapsed = Σ_h pre[h]·streams[h]                     [D],  NOT normalised
+sub_out   = SUBLAYER( attn_norm(collapsed) )                  -- contract unchanged
+streams'  = comb @ streams + post ⊗ sub_out           [4,D]
+```
+
+The sublayer still sees `[D]` in and `[D]` out. **That is why hyper-connections and
+the KDA layer wrapper do not block each other** — a fact worth having, because the
+earlier scoping assumed they might.
+
+| unit | gate | checked against |
+|---|---|---|
+| `mhc_fn_gemv` | `make mhc-gemv`, 300 + 51 | bit-exact emulation, worst **11 ULP** |
+| `mhc_stream_ops` | `make mhc-ops`, 15392 + 244 | the pinned `hc_collapse`/`hc_mix`, worst **0 / 4 ULP** |
+| `mhc_block_site` | `make mhc-site`, 2568 + 39 | the composed spec, worst **7.7e-5 / 2.5e-4** abs |
+
+**Five measurements decided this design before any RTL was written.**
+
+| question | measured | decision |
+|---|---|---|
+| `hc_*_fn` dtype | **Q8_0** `[16384,24]` | not F32 — the F32 bucket's size made F32 a tempting, wrong guess |
+| streams in bf16? | 5.9e-3 RMS after 90 sites | **fp32** — the streams are ONE 64 KB buffer, so bf16 saves nothing |
+| `fn` GEMV on the existing GEMM? | bf16 activations cost **2.9e-3 – 6.0e-3** | **no** — ~40× the map's bound, worse than the bf16 map fp32 replaced |
+| reduction order at K = 16384 | 1.05e-4 on `mixed`, **6e-6** propagated | not decisive; the reference is left on BLAS |
+| fold `rms` past the GEMV | 7.4e-5 on `mixed`, **7e-6** propagated | **yes** — removes a pass and a 64 KB `flat` buffer |
+
+**A new unit the earlier scoping missed.** `glm_matmul_q4k` is bf16-in/bf16-out, so
+the `fn` GEMV needed its own fp32-activation × Q8_0-weight engine. It is a small
+dedicated unit, deliberately not a widening of `glm_matmul_q4k`: that GEMM is
+netlist-pinned and used by every top, and widening it for a 24-output GEMV would
+re-pin baselines repo-wide for nothing. This is the **fourth** time the repo's
+bf16 convention has collided with GLM-5.3-Flash's precision needs — after the
+sigmoid, the map, and the residual streams — which is a pattern, not three
+coincidences.
+
+**Two metric traps, both of which produced a wrong number first.**
+* `comb` is doubly stochastic, so the mix's four terms nearly cancel (this corpus
+  reaches `Σ|terms| / |result|` = **1239×**). A plain relative error divides by the
+  cancelled result and reported **1.8e-2** for what is a 1-ULP difference; against
+  the output RMS it is **5.0e-7**. The site's bound is therefore **absolute** — a
+  ULP bound derived from the same envelope comes out at 1.4e6 ULP, ~17 % at these
+  magnitudes, which gates nothing.
+* numpy's `comb @ streams` does **not** reduce sequentially — 300/300 differing.
+  `tools/glm53_flash_ref.py` now pins the order in `hc_mix`, and `make glm53f-ref`
+  (15 → **21** checks) asserts that numpy does **not** match, so the pin stays live.
+
+**Also fixed here:** the `mhc_stream_ops` TB claimed the gate was bitwise "because
+the reference performs the same fp32 adds in the same order". Same order is not
+the same adder — `fp32_add` is 1 ULP low on ~0.04 % of pairs, and under the mix's
+cancellation that surfaces as 4 ULP. Collapse *is* bitwise (0 ULP, `pre[h] > 0`,
+no systematic cancellation); mix is not.
+
+**`GLM53F_HC_RTL_PRESENT` still stays undefined — and now for exactly one reason.**
+The machine is built and gated; **nothing instantiates it.**
+`glm_decoder_block_q4k.v` still computes `h = x + attn(rmsnorm(x))` — one residual,
+added. The define flips when the decoder block instantiates two `mhc_block_site`
+per block. That is the entire remaining gap, it is decoder-block work rather than
+mHC work, and the sublayer contract does not change.
+
+### 4.3m Block residual skeleton — DONE, and the first guard condition closes
+
+`src/glm53f_hc_block.v` — `make hc-block`, 2310 + 20 checks, 4 must-fail
+injections. Two mHC sites (attention, FFN) wrapped around two sublayers it does
+not own. This is the thing `glm_decoder_block_q4k.v` cannot express: that block
+computes `h = x + attn(rmsnorm(x))` — **one residual, added**.
+
+**A sibling, not an edit.** The repo already keeps `glm_decoder_block.v` (bf16)
+and `glm_decoder_block_q4k.v` (Q4_K) as siblings; this is the GLM-5.3-Flash one.
+Editing the Q4_K block would re-pin every netlist baseline depending on it for a
+change no GLM-5.2 build wants.
+
+**One site instance, run twice.** `mhc_block_site` owns the streams, so muxing the
+weights and running it twice keeps **one** `[H,D]` buffer per block rather than two
+plus a copy. The second pass must see what the first wrote — which is exactly what
+`INJ_HCB_STALE_STREAMS` checks.
+
+**What this gate is for.** `mhc-site` already pins one site's numerics; what a
+block adds is *wiring*, so all four injections target that: per-site weights
+(`SAME_WEIGHTS`), per-site learned norm (`NORM_SWAP`), the norm being applied at
+all (`SKIP_NORM`), and the stream threading (`STALE_STREAMS`). `rmsnorm_unit` is
+modelled bit for bit in the generator (LANES=1: bf16 in, sequential fp32 sumsq,
+`mean·1/LEN`, `+eps`, the same Quake rsqrt, `bf16(x·inv·γ)`), leaving
+`mhc_map_step`'s polynomial exp as the only non-bitwise term in the whole chain.
+Measured, **bf16 rounding absorbs it entirely — worst normed error 0.0**, i.e. the
+normalised sublayer input is bitwise; the mixed streams land at 7.0e-5.
+
+**Where fp32 stops — and the right lesson from four bf16 collisions.** mHC's
+gating math is fp32 because its ε-floored maps demand it. The *sublayer* path is
+bf16, exactly like every other activation in this repo, and that is faithful
+rather than a concession: `collapsed` is converted to bf16 for the block's own
+RMSNorm, the sublayer works in bf16 throughout, and its output widens back to fp32
+only to re-enter the mix. So all four collisions (§4.3j sigmoid, §4.3k map, §4.3l
+streams and GEMV activations) were **inside mHC's gating**, not in the main
+activation path. "GLM-5.3-Flash needs fp32 activations" would be the wrong
+generalisation.
+
+**`GLM53F_HC_RTL_PRESENT` is now DEFINED — the first of the three to close.** The
+residual path is built end to end at block level and gated by six targets with 21
+must-fail injections. What the define does **not** claim: `glm53f_hc_block` reaches
+its sublayers through a handshake and does not instantiate them, so composing it
+with `mla_attn_q4k` and the MoE/dense FFN into a real decoder layer is assembly
+work that remains open — and for 34 of 45 layers the sublayer *is* the KDA machine
+that `GLM53F_KDA_RTL_PRESENT` gates. The whole-model top therefore stays poisoned
+by the other two conditions.
+
+The guard grew a case for this (8 → **10** checks): the top must elaborate with
+only `KDA` and `Q5K` on the command line, which is true only if `HC` really comes
+from the header. The header's `` `define `` is wrapped in `` `ifndef `` — not
+decoration, since the guard drives these from the command line to test both
+directions, and an unconditional define would make a must-fail case fail for a
+*redefinition error* rather than for the guard, i.e. pass for the wrong reason.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -821,13 +945,21 @@ make fp-sigmoid               # 3000 + 1087: the fp32 sigmoid and its exp ceilin
 make kda kda-conv kda-gate kda-onorm     # the four non-GEMV KDA units
 make mhc-sinkhorn             # 405 + 1088: the 39-pass projection (4.3k)
 make mhc-map                  # 364 + 800:  pre / post / softmax + Sinkhorn (4.3k)
+make mhc-gemv                 # 51 + 300:   fp32 acts x Q8_0 fn, RMS folded (4.3l)
+make mhc-ops                  # 244 + 15392: collapse and mix, D-wide (4.3l)
+make mhc-site                 # 39 + 2568:  one whole site, streams carried (4.3l)
+make hc-block                 # 20 + 2310:  TWO sites per block, wiring (4.3m)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **11 must-fail
+rather than flipping a boolean. Between them they carry **25 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
-`INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}` — plus
+`INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
+`INJ_OPS_{MIX_TRANSPOSE,MIX_NOPOST,COLLAPSE_NOPRE,POST_FIRST}`,
+`INJ_GEMV_{Q8_NOSCALE,MEAN_SUM,NO_EPS}`,
+`INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
+`INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}` — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains
 why a gate that cannot fail is worse than no gate).

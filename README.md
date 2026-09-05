@@ -327,6 +327,21 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   at 700 cycles). And the fp32 map beats a bf16 one by **~2.4×, not by orders**, because the exp
   polynomial binds. The residual *path* — four D-wide streams per block, the `fn` GEMV, collapse and
   mix — is still open, so `GLM53F_HC_RTL_PRESENT` stays undefined.
+- **The residual PATH landed too, and the first guard condition closed.**
+  `mhc_fn_gemv` (fp32 activations x Q8_0 `hc_*_fn`, RMS folded past the GEMV),
+  `mhc_stream_ops` (collapse and mix), `mhc_block_site` (one site, holding the four
+  streams) and `glm53f_hc_block` (two sites per block) — `make mhc-gemv mhc-ops
+  mhc-site hc-block`, 25 must-fail injections across the six mHC targets.
+  **`GLM53F_HC_RTL_PRESENT` is now defined**; the whole-model top stays poisoned by
+  KDA and Q5_K. Five measurements decided the design before any RTL: `hc_*_fn` is
+  **Q8_0**, not the F32 the bucket size suggested; bf16 streams cost 5.9e-3 while
+  saving nothing (one 64 KB buffer); bf16 activations into the `fn` GEMV cost
+  2.9e-3–6.0e-3, ~40x the map's bound, which is why that GEMV is its own unit
+  rather than a widening of the netlist-pinned `glm_matmul_q4k`; the K=16384
+  reduction order is not decisive (6e-6 propagated); and folding the scalar `rms`
+  past the GEMV removes a whole pass for 7e-6. The four bf16 collisions this port
+  hit were all **inside mHC's gating** — the sublayer path is bf16 and that is
+  faithful, so "GLM-5.3-Flash needs fp32 activations" would be the wrong lesson.
 - **Found while building it: `src/glm_fp.vh fp32_add` is not exactly IEEE** — 0.04 % of pairs land 1 ULP
   low. Harmless and invisible on every existing proven path (all end in bf16, which masks it in
   99.999 % of cases), so the Q4_K bit-exactness claim is unaffected; visible in `kda_recur` because

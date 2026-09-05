@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1187,6 +1187,151 @@ mhc-map:
 	    fi; \
 	done
 
+# ---- mhc-ops : the two D-wide datapaths of the mHC residual path ---------------
+# src/mhc_stream_ops.v: COLLAPSE (sum_h pre[h]*streams[h] -> the sublayer's [D] input)
+# and MIX (comb @ streams + post (x) sub_out -> back to [H,D]).  This is what makes a
+# block carry FOUR residual streams instead of one.  The sublayer's contract is
+# UNCHANGED: the GGUF census shows attn_norm[4096] and ffn_norm[4096] on all 46 blocks
+# alongside the hc_* tensors, so `collapsed` is not normalised here.
+#   The golden is tools/glm53_flash_ref.py's hc_collapse / hc_mix, which pin the
+# reduction order SEQUENTIALLY -- numpy's own matmul does not use it (300/300 differing
+# on [4,4]@[4,D]), and glm53f-ref asserts numpy does NOT match so the pin stays live.
+#   Bound is 32 ULP against a measured worst of 0 (collapse) and 4 (mix): fp32_add's
+# 1-ULP gap amplified by comb's cancellation, which this corpus drives to
+# sum|terms|/|result| = 1239x.  Three instances at DLANES 1/2/4 run against the SAME
+# golden -- every d is independent, so the lane count is a throughput knob that must
+# not change the answer, which is how DLANES gets sized against the memory tier later
+# without re-gating the numerics.
+mhc-ops:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "mhc_stream_ops_gen"; python3 tools/mhc_stream_ops_gen.py --selftest \
+	    || { echo "FAILED: mhc_stream_ops_gen self-test"; exit 1; }
+	@python3 tools/mhc_stream_ops_gen.py 16 4 64 $(BUILD_DIR)/mhc_stream_ops_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/mhc_stream_ops_vec.txt"' -o $(BUILD_DIR)/mhc_ops_sim \
+	    test/mhc_stream_ops_tb.v src/mhc_stream_ops.v 2>/dev/null \
+	    || { echo "FAILED: mhc-ops compile"; exit 1; }
+	@printf '[%s] ' "mhc_ops"; $(VVP) $(BUILD_DIR)/mhc_ops_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mhc_ops"; exit 1; }
+	@for inj in INJ_OPS_MIX_TRANSPOSE INJ_OPS_MIX_NOPOST INJ_OPS_COLLAPSE_NOPRE INJ_OPS_POST_FIRST; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/mhc_stream_ops_vec.txt"' \
+	        -o $(BUILD_DIR)/mhc_ops_inj test/mhc_stream_ops_tb.v src/mhc_stream_ops.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mhc_ops_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mhc-ops $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mhc_ops_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- mhc-gemv : the mHC `fn` GEMV, fp32 activations x Q8_0 weights -------------
+# src/mhc_fn_gemv.v: raw streams -> the 24 mixed logits, RMS folded past the GEMV.
+#   WHY NOT glm_matmul_q4k: that engine is bf16-in/bf16-out, and rounding `flat` to
+# bf16 first costs 2.9e-3..6.0e-3 relative on pre/post/comb -- ~40x the map's gated
+# bound and worse than the bf16 MAP the fp32 map replaced. Widening the pinned GEMM
+# for a 24-output GEMV would re-pin baselines repo-wide for nothing, so this is a
+# small dedicated unit. (hc_*_fn is Q8_0 [16384,24], read from the GGUF census.)
+#   The RMS fold is measured, not assumed: rms is a scalar, so one streaming pass
+# does both sum(x^2) and all 24 dot products; the reordering costs 7.4e-5 on `mixed`
+# and 3-7e-6 once the sigmoid/softmax compress it.
+#   BITWISE gate: the generator emulates the datapath exactly, Quake rsqrt included,
+# so 64 ULP is headroom over a measured 11 -- fp32_add's 1-ULP gap over a K=256
+# chain. It also PRINTS the deviation from the spec path (normalise-then-GEMV,
+# float64 rms), because a bitwise gate against an emulation only proves the RTL
+# matches the model; that second number is what says the model is right.
+mhc-gemv:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "mhc_fn_gemv_gen"; python3 tools/mhc_fn_gemv_gen.py --selftest \
+	    || { echo "FAILED: mhc_fn_gemv_gen self-test"; exit 1; }
+	@python3 tools/mhc_fn_gemv_gen.py 12 4 64 $(BUILD_DIR)/mhc_fn_gemv_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/mhc_fn_gemv_vec.txt"' -o $(BUILD_DIR)/mhc_gemv_sim \
+	    test/mhc_fn_gemv_tb.v src/mhc_fn_gemv.v 2>/dev/null \
+	    || { echo "FAILED: mhc-gemv compile"; exit 1; }
+	@printf '[%s] ' "mhc_gemv"; $(VVP) $(BUILD_DIR)/mhc_gemv_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mhc_gemv"; exit 1; }
+	@for inj in INJ_GEMV_Q8_NOSCALE INJ_GEMV_MEAN_SUM INJ_GEMV_NO_EPS; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/mhc_fn_gemv_vec.txt"' \
+	        -o $(BUILD_DIR)/mhc_gemv_inj test/mhc_fn_gemv_tb.v src/mhc_fn_gemv.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mhc_gemv_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mhc-gemv $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mhc_gemv_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- mhc-site : ONE whole mHC site, all five units composed ---------------------
+# src/mhc_block_site.v: fn GEMV -> map -> collapse -> [sublayer] -> mix, holding the
+# FOUR residual streams.  A GLM-5.3-Flash block has two of these (attention, FFN).
+#   The golden composes the SPECIFICATION -- bit-exact GEMV emulation, then
+# ref_map (float64), then glm53_flash_ref's pinned hc_collapse/hc_mix -- so passing
+# means the composition reproduces the spec, not that three units were wired up.
+#   The bound is implied by mhc_map_step's OWN gate: the generator perturbs
+# pre/post/comb by exactly 1024/1024/16384 ULP and pushes that through collapse and
+# mix. It is ABSOLUTE, not ULP: comb is doubly stochastic, its four terms nearly
+# cancel, and a ULP bound on a cancelled result comes out at ~1.4e6 ULP (~17% at
+# these magnitudes) -- a bound that gates nothing.
+#   Stub sublayer is 0.5*collapsed: exact in fp32 and COUPLED to collapsed, so a
+# broken collapse cannot hide behind an independent sublayer value.
+mhc-site:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "mhc_block_site_gen"; python3 tools/mhc_block_site_gen.py --selftest \
+	    || { echo "FAILED: mhc_block_site_gen self-test"; exit 1; }
+	@python3 tools/mhc_block_site_gen.py 8 4 64 $(BUILD_DIR)/mhc_block_site_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/mhc_block_site_vec.txt"' -o $(BUILD_DIR)/mhc_site_sim \
+	    test/mhc_block_site_tb.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v \
+	    src/mhc_sinkhorn.v src/mhc_stream_ops.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: mhc-site compile"; exit 1; }
+	@printf '[%s] ' "mhc_site"; $(VVP) $(BUILD_DIR)/mhc_site_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mhc_site"; exit 1; }
+	@for inj in INJ_SITE_IGNORE_SUB INJ_SITE_NO_UPDATE INJ_SITE_PRE_FOR_POST; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/mhc_block_site_vec.txt"' \
+	        -o $(BUILD_DIR)/mhc_site_inj test/mhc_block_site_tb.v src/mhc_block_site.v \
+	        src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v \
+	        src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mhc_site_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mhc-site $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mhc_site_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- hc-block : the GLM-5.3-Flash block residual skeleton ----------------------
+# src/glm53f_hc_block.v: TWO mHC sites (attention, FFN) around two sublayers it does
+# not own.  glm_decoder_block_q4k.v computes `h = x + attn(rmsnorm(x))` -- ONE
+# residual, added; a GLM-5.3-Flash block carries FOUR streams and replaces each `+`
+# with a hyper-connection.  This is a SIBLING of that block, not an edit: editing it
+# would re-pin every netlist baseline that depends on it for a change no GLM-5.2
+# build wants.
+#   ONE mhc_block_site instance is run twice with the weights muxed, so the block
+# keeps ONE [H,D] buffer instead of two plus a copy; the second pass sees what the
+# first wrote, which INJ_HCB_STALE_STREAMS checks.
+#   mhc-site already pins one site's numerics. What is new here is WIRING -- per-site
+# weights, per-site learned norm between `collapsed` and the sublayer, and the stream
+# threading -- so all four injections target that. rmsnorm_unit is modelled bit for
+# bit in the generator, leaving mhc_map_step's polynomial exp as the only
+# non-bitwise term; measured, bf16 rounding absorbs it entirely (worst normed 0.0).
+hc-block:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_hc_block_gen"; python3 tools/glm53f_hc_block_gen.py --selftest \
+	    || { echo "FAILED: glm53f_hc_block_gen self-test"; exit 1; }
+	@python3 tools/glm53f_hc_block_gen.py 6 4 64 $(BUILD_DIR)/glm53f_hc_block_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_hc_block_vec.txt"' -o $(BUILD_DIR)/hc_block_sim \
+	    test/glm53f_hc_block_tb.v src/glm53f_hc_block.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v \
+	    src/mhc_sinkhorn.v src/mhc_stream_ops.v src/fp32_sigmoid_pipe.v \
+	    src/glm_fp_pipe.v src/rmsnorm_unit.v 2>/dev/null \
+	    || { echo "FAILED: hc-block compile"; exit 1; }
+	@printf '[%s] ' "hc_block"; $(VVP) $(BUILD_DIR)/hc_block_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: hc_block"; exit 1; }
+	@for inj in INJ_HCB_SAME_WEIGHTS INJ_HCB_NORM_SWAP INJ_HCB_SKIP_NORM INJ_HCB_STALE_STREAMS; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_hc_block_vec.txt"' \
+	        -o $(BUILD_DIR)/hc_block_inj test/glm53f_hc_block_tb.v src/glm53f_hc_block.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v \
+	    src/mhc_sinkhorn.v src/mhc_stream_ops.v src/fp32_sigmoid_pipe.v \
+	    src/glm_fp_pipe.v src/rmsnorm_unit.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/hc_block_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: hc-block $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[hc_block_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
 # ---- fp-sigmoid : an fp32 sigmoid, and the exp accuracy ceiling underneath it --
 # Until now the repo's only sigmoid was glm_act: bf16 in/out, polynomial exp, input
 # railed at +/-16. Three GLM-5.3-Flash paths are limited by it, each measured: the
@@ -1227,10 +1372,12 @@ glm53f-config-guard:
 	must_fail $(VERILATOR) --lint-only -Iconfigs --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	must_fail $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_KDA_RTL_PRESENT -DGLM53F_HC_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
 	must_fail $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_HC_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
+	must_pass $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_KDA_RTL_PRESENT -DGLM53F_Q5K_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
+	must_pass $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_Q5K_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	must_pass $(IVERILOG) -g2012 -I configs -tnull $(GLM53F_DEFS_IV) test/glm53f_fulltop_wrap.v; \
 	must_pass $(VERILATOR) --lint-only -Iconfigs $(GLM53F_DEFS_VL) --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	[ $$fail -eq 0 ] \
-	    && echo "ALL 8 TESTS PASSED (4 cases x 2 tools: dims usable; whole-model top poisoned until KDA + hyper-connections + the Q5_K loader path land -- the Q5_K GEMM arm is done, the tile geometry is not)" \
+	    && echo "ALL 10 TESTS PASSED (5 cases x 2 tools: dims usable; whole-model top poisoned until KDA + the Q5_K loader path land; hyper-connections are BUILT, and the KDA+Q5K-only case elaborating is what pins that GLM53F_HC_RTL_PRESENT really comes from the header)" \
 	    || { echo "FAILED: glm53f-config-guard"; exit 1; }
 
 # ---------------------------------------------------------------------------

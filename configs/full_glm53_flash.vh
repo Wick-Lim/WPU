@@ -33,18 +33,28 @@
 //       GLM53F_HC_RTL_PRESENT    residual path  (hyper-connections, Sinkhorn)
 //       GLM53F_Q5K_RTL_PRESENT   34.9% of bytes (the whole Q5_K READ PATH)
 //
-//   HC STATUS -- read this before assuming the second one is satisfied.  As of
-//   2026-09-04 the mHC MAP exists and is gated: src/mhc_map_step.v (pre, post,
-//   softmax) and src/mhc_sinkhorn.v (the 39-pass projection), `make mhc-map` and
-//   `make mhc-sinkhorn`, seven must-fail injections between them, `comb` and
-//   `post` checked against ref.hyper_connection's own output.  What does NOT
-//   exist is the RESIDUAL PATH the define names: the unweighted RMSNorm over
-//   H*D = 16384, the [(2+H)*H, H*D] `fn` GEMV that produces `mixed`, the collapse
-//   sum_h pre[h]*streams[h], the mix comb @ streams + post (x) sublayer_out, and
-//   the storage for FOUR parallel D-wide streams per block instead of one
-//   residual.  The map is the numerically hard part; the path is the plumbing,
-//   and until the plumbing lands a whole-model top would have nowhere to put its
-//   streams.  So this define stays undefined (docs/GLM53_FLASH_PORT.md 4.3j).
+//   HC STATUS -- this one is now SATISFIED, and here is exactly what that means.
+//   The hyper-connection residual path exists in RTL, end to end at BLOCK level:
+//       src/mhc_fn_gemv.v      fp32 activations x Q8_0 hc_*_fn, RMS folded in
+//       src/mhc_map_step.v     pre = sigma+eps, post = 2*sigma, softmax
+//       src/mhc_sinkhorn.v     the 39-pass doubly-stochastic projection
+//       src/mhc_stream_ops.v   collapse (H->1) and mix (H->H + outer product)
+//       src/mhc_block_site.v   ONE site, holding the four residual streams
+//       src/glm53f_hc_block.v  TWO sites per block, per-site weights and norms,
+//                              streams threaded attention -> FFN
+//   `make mhc-gemv mhc-map mhc-sinkhorn mhc-ops mhc-site hc-block`, 21 must-fail
+//   injections, checked against ref.hyper_connection's own outputs and the pinned
+//   hc_collapse / hc_mix (docs/GLM53_FLASH_PORT.md 4.3k, 4.3l, 4.3m).
+//
+//   WHAT THIS DEFINE DOES NOT CLAIM.  glm53f_hc_block reaches its two sublayers
+//   through a handshake and does not instantiate them; composing it with
+//   mla_attn_q4k and the MoE/dense FFN into a real decoder layer is ASSEMBLY work
+//   that is still open, and for 34 of 45 layers the sublayer itself is the KDA
+//   machine that GLM53F_KDA_RTL_PRESENT gates.  So this define says the residual
+//   path is built, not that the model is assembled -- which is why the whole-model
+//   top stays poisoned by the other two.  The sublayer contract is unchanged
+//   ([D] in, [D] out, bf16): attn_norm[4096] and ffn_norm[4096] still sit between
+//   `collapsed` and the sublayer on all 46 blocks [scan].
 //
 //   Q5_K STATUS -- read this before assuming the third one is satisfied.  The
 //   GEMM arm exists and is gated bit-exact (`WT_Q5K` in glm_matmul_q4k, `make
@@ -188,6 +198,16 @@
 // ============================================================================
 // FULL-MODEL TOP GATE -- see the header comment for why this, and not the dims
 // ============================================================================
+// Hyper-connections: BUILT and gated (see HC STATUS above). Declared here rather
+// than left to each caller so there is ONE place the claim lives. The `ifndef is
+// not decoration: the config guard drives these defines from the command line to
+// test both directions, and an unconditional `define collides there -- which would
+// make a must-fail case "fail" for a redefinition error rather than for the guard,
+// i.e. a test that passes for the wrong reason.
+`ifndef GLM53F_HC_RTL_PRESENT
+`define GLM53F_HC_RTL_PRESENT 1
+`endif
+
 `ifdef GLM53F_KDA_RTL_PRESENT
  `ifdef GLM53F_HC_RTL_PRESENT
   `ifdef GLM53F_Q5K_RTL_PRESENT
