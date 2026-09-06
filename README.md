@@ -342,6 +342,19 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   past the GEMV removes a whole pass for 7e-6. The four bf16 collisions this port
   hit were all **inside mHC's gating** — the sublayer path is bf16 and that is
   faithful, so "GLM-5.3-Flash needs fp32 activations" would be the wrong lesson.
+- **The KDA layer landed as a unit** (`src/glm53f_kda_layer.v`, `make kda-layer`):
+  nine projections sequenced, ONE conv over the concatenation of q,k,v, forget
+  gate, delta-rule recurrence and gated o_norm, owning both the `[H,DK,DV]` state
+  and the `[3·H·DK,K−1]` conv history. `GLM53F_KDA_RTL_PRESENT` **stays
+  undefined**: the projections arrive through a handshake, and unlike the mHC
+  block's sublayers those are the layer's *own weights*. Driving `glm_matmul_q4k`
+  with the Q8_0 lanes it already accepts is the remaining, mechanical step.
+- **Also corrected: the "blocked on shared decoder RTL" note was wrong.** It
+  assumed GLM-5.3-Flash would reuse `glm_decoder_block_q4k`; it does not — these
+  are siblings, and a sibling declares its own port widths. Nothing shared has to
+  change. And `kda_recur`'s accuracy contract said `EXACT=0` exponentiates
+  internally; it does not, on either leg — that stale wording cost a debugging
+  round and is now fixed at the source.
 - **Found while building it: `src/glm_fp.vh fp32_add` is not exactly IEEE** — 0.04 % of pairs land 1 ULP
   low. Harmless and invisible on every existing proven path (all end in bf16, which masks it in
   99.999 % of cases), so the Q4_K bit-exactness claim is unaffected; visible in `kda_recur` because

@@ -19,10 +19,17 @@
 //             so everything this module does is fp32 mul/add, which src/glm_fp.vh
 //             fp32_mul / fp32_add implement EXACTLY.  This leg is bit-exact to
 //             the golden.
-//   EXACT=0 : the module computes l2norm and exp itself, via fp32_rsqrt (Quake
-//             inverse sqrt, 2 Newton iterations) and a Horner exp.  Both are
-//             APPROXIMATIONS, so this leg is checkable only to a TOLERANCE --
-//             the same status swiglu_expert_q4k has.  Two legs, two honest claims.
+//   EXACT=0 : the module computes the l2norm itself, via fp32_rsqrt (Quake inverse
+//             sqrt, 2 Newton iterations).  That is an APPROXIMATION, so this leg
+//             is checkable only to a TOLERANCE -- the same status
+//             swiglu_expert_q4k has.  Two legs, two honest claims.
+//             g_in IS ALREADY exp(g) ON BOTH LEGS.  This text used to say the
+//             module exponentiates on EXACT=0; it does not, and never did -- see
+//             the note in S_PREP, which says a Horner exp belongs in
+//             fp32_exp_pipe rather than inlined here.  Corrected 2026-09-06 after
+//             the stale wording sent glm53f_kda_layer's first build in with the
+//             raw log-decay, which silently multiplied the state by g instead of
+//             exp(g).  Callers: pass kda_gate_step's `ge_out`, not `g_out`.
 //
 //   REDUCTION ORDER is part of the contract: both SUM_d run in ASCENDING d,
 //   sequentially.  numpy's pairwise .sum() differs from a sequential accumulate
@@ -67,7 +74,7 @@ module kda_recur #(
     // per-token operands, fp32, head-major
     input  wire [32*H*DK-1:0]      q_in,       // raw q      (EXACT=0) or l2-normed q (EXACT=1)
     input  wire [32*H*DK-1:0]      k_in,       // raw k      (EXACT=0) or l2-normed k (EXACT=1)
-    input  wire [32*H*DK-1:0]      g_in,       // log-decay  (EXACT=0) or exp(g)      (EXACT=1)
+    input  wire [32*H*DK-1:0]      g_in,       // exp(g) on BOTH legs -- see the accuracy contract
     input  wire [32*H*DV-1:0]      v_in,
     input  wire [32*H-1:0]         beta_in,
 

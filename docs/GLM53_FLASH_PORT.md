@@ -459,39 +459,52 @@ zero-extension wires, not a lint pragma).
 conv, gates, output norm. The layer wrapper is now a sequencing problem over the
 existing `glm_matmul_q4k` engine plus these four, not new numerics.
 
-### 4.3g KDA layer wrapper — SCOPED, not started
+### 4.3g KDA layer wrapper — SCOPED; and the "blocker" was my own framing error
 
 With the four non-GEMV units gated, the wrapper is a composition problem. Reading
-how the existing attention module is driven turned it into three concrete
-sub-problems — and two of them are plumbing gaps in shared RTL, not wiring:
+how the existing attention module is driven turned it into three sub-problems:
 
 1. **Sequencing (pattern exists).** `mla_attn_q4k` drives ONE shared
-   `glm_matmul_q4k` through an explicit FSM (`S_QDQ → S_QNORM → S_QUQ → … →
-   S_OUT`), selecting each projection's weights with `w_sel` (0..6) on the
-   external weight-request stream and collecting `out_valid`/`c_out`. A KDA layer
-   is the same shape: nine GEMVs — `q, k, v, b, f_a, f_b, g_a, g_b, o` — with the
-   four units interleaved: `q/k/v → kda_conv_step`, `f_b(f_a) + b →
-   kda_gate_step`, `→ kda_recur`, `g_b(g_a) → kda_onorm_step → o`.
-2. **Q8_0 weight plumbing — a gap.** Every KDA projection is **Q8_0** in the
-   GGUF (`attn_{q,k,v,output}`, `ssm_{beta,f_a,f_b,g_a,g_b}`). The GEMV engine
-   handles Q8_0 (`WT_Q80`, codes on `w_hp`, scales on `w_q8_d`) and
-   `weight_loader_q4k` already emits those lanes — but the decoder block's
-   weight-response fan-out to the attention slot carries only the Q4_K header
-   buses (`w_q, w_d, w_dmin, w_scales`; no `w_type`/`w_hp`/`w_q8_d`). That
-   fan-out has to widen, and it lives in `glm_decoder_block_q4k`, which sits
-   under pinned netlist baselines.
-3. **Recurrent-state ownership — a gap.** The attention-slot contract carries KV-
-   cache ports (`kc_*`, `kv_lat_*`) that KDA has no use for, and nothing that
-   carries a `[H, DK, DV]` recurrent state plus a `[3·H·DK, K−1]` conv history in
-   and out. A KDA module is therefore **not** a drop-in for `mla_attn_q4k`: the
-   state has to be owned by the decoder block (or a KDA-specific variant of it),
-   which is also where the BRAM/DDR residency at the real 4.19 MB/layer is
-   decided.
+   `glm_matmul_q4k` through an explicit FSM, selecting each projection with
+   `w_sel` on the external weight-request stream. `swiglu_expert_q4k` is the same
+   pattern in 403 lines rather than 2041, and is the better template — KDA has no
+   RoPE, no KV paging, no DSA indexer. A KDA layer is **nine** GEMVs —
+   `attn_{q,k,v,output}`, `ssm_{beta,f_a,f_b,g_a,g_b}` [scan, all Q8_0] — with the
+   four units interleaved.
+2. ~~**Q8_0 weight plumbing — a gap.**~~ **CORRECTED 2026-09-06: there is no gap.**
+   The claim was that the decoder block's fan-out to the attention slot carries
+   only Q4_K header buses, "and that fan-out has to widen, and it lives in
+   `glm_decoder_block_q4k`, which sits under pinned netlist baselines". Both halves
+   are true and the conclusion still does not follow: it assumed GLM-5.3-Flash
+   would **reuse** that block. It will not — §4.3m already established the sibling
+   pattern (`glm53f_hc_block` beside `glm_decoder_block_q4k`, itself beside
+   `glm_decoder_block.v`), and a sibling declares its own port widths. The GEMV
+   engine already takes `w_type` (2 = Q8_0), `w_hp` (code in [7:0]) and `w_q8_d`
+   (fp16 d per 32-block) as inputs, and `weight_loader_q4k` already emits them.
+   **Nothing shared has to change.**
+3. ~~**Recurrent-state ownership — a gap.**~~ **Same correction.** The point that
+   KDA is not a drop-in for `mla_attn_q4k` stands — that slot's contract carries
+   KV-cache ports KDA cannot use and nothing that threads a `[H, DK, DV]` state
+   plus a `[3·H·DK, K−1]` conv history. But a GLM-5.3-Flash layer module is not
+   trying to fit that slot; it declares the state ports it needs, exactly as
+   `mhc_block_site` declares the four residual streams. What remains real is the
+   BRAM/DDR **residency** decision at 4.19 MB/layer — a memory question, not a
+   plumbing one.
 
-Items 2 and 3 touch shared, baseline-pinned RTL across several files. They are
-the next work, planned rather than started, and they carry the bf16-sigmoid
-decision (§4.3e) with them: the wrapper is where an fp32 sigmoid would be
-introduced if that is the call.
+**So the KDA wrapper is not blocked on a decision about shared RTL; it is work.**
+I had recorded it as "two gaps in shared, baseline-pinned RTL" and repeated that
+until building `glm53f_hc_block` made the sibling route obvious in the other
+direction. The cost of the error was direction, not rework: nothing was built
+against the wrong assumption.
+
+**Composition, pinned from the reference rather than inferred.**
+`causal_conv_step` is ONE depthwise conv over the **concatenated** q,k,v
+(`C = 3·qkv_dim`) with SiLU on its output; `forget_gate` takes
+`decay = exp(A_log)` from `ssm_a` [64], which is a per-layer constant and so is
+legitimately precomputed (`kda_gate_step` already expects it that way);
+`g = f_b(f_a(h)) + dt_bias` is `[H, DK] = [64, 128]`; and `beta = σ(ssm_beta @ h)`
+is `[64]`, one per head. Dimensions check against the census: 64 heads × 128
+head_dim = 8192 = the q/k/v projection width.
 
 ### 4.3h DSA indexer — SCOPED, not started (and re-scoped up)
 
@@ -859,6 +872,61 @@ decoration, since the guard drives these from the command line to test both
 directions, and an unconditional define would make a must-fail case fail for a
 *redefinition error* rather than for the guard, i.e. pass for the wrong reason.
 
+### 4.3n KDA layer — DONE as a unit; the guard does NOT flip, and why
+
+`src/glm53f_kda_layer.v` — `make kda-layer`, 968 + 84 checks, 4 must-fail
+injections. One decode step of Kimi Delta Attention: nine projections sequenced,
+ONE depthwise conv over the **concatenation** of q,k,v with SiLU, the forget gate,
+the delta-rule recurrence and the gated output norm. It owns the two pieces of
+state that make KDA not a drop-in for `mla_attn_q4k`: the `[H, DK, DV]` recurrence
+(fixed size — **not** a growing KV cache, which is why only 11 of 45 layers page
+KV) and the `[3·H·DK, K−1]` conv history.
+
+**Why `GLM53F_KDA_RTL_PRESENT` stays undefined even though the layer passes.** The
+nine GEMVs arrive through a `proj_req`/`proj_sel` handshake, answered
+behaviourally by the TB. That is *not* the same situation as `glm53f_hc_block`,
+whose sublayers are genuinely separate machines: these projections are the
+layer's **own weights**, and a layer that cannot fetch them is incomplete.
+Driving `glm_matmul_q4k` directly is the remaining step and it is mechanical —
+`w_type = 2`, code on `w_hp`, fp16 `d` on `w_q8_d`, all already engine inputs and
+all already emitted by `weight_loader_q4k`, with `swiglu_expert_q4k` (403 lines)
+as the template rather than `mla_attn_q4k` (2041).
+
+**Two bugs this surfaced, one of them not mine.**
+
+*`kda_recur`'s accuracy contract was wrong.* Its header said "EXACT=0: the module
+computes l2norm and exp itself", and its port comment called `g_in` "log-decay
+(EXACT=0)". The code does neither — a note inside `S_PREP` says plainly that
+"EXACT=0 expects the caller to still supply exp(g): a Horner exp belongs in
+fp32_exp_pipe, not inlined here". **`g_in` is `exp(g)` on both legs.** The stale
+wording sent this layer's first build in with the raw log-decay, which multiplies
+the state by `g` instead of `exp(g)` — 374/968 failures. Corrected in
+`src/kda_recur.v` (comments only, netlist-neutral; `make kda` unchanged at
+5184+5184), with a pointer telling callers to pass `kda_gate_step`'s `ge_out`.
+
+*`INV_SQRT_DK` does not track `DK`.* `kda_recur` defaults it to `1/√8`; this slice
+is `DK = 4`, which needs `1/√4`. It is a parameter rather than a computation
+because `1/√128` is not exactly representable and deriving it from the approximate
+`fp32_rsqrt` would put an approximation inside the bit-exact leg (§4.3c). **The
+failure mode is worth remembering: `q` feeds `out` but not the state update, so
+the recurrence's STATE still matched the golden while its OUTPUT was off by
+exactly `√(8/DK)` = 1.414.** A checker that only compared the state would have
+passed a wrong layer.
+
+**Composition pinned from the reference, not inferred.** `causal_conv_step` is
+ONE conv over `C = 3·qkv_dim`; `decay = exp(A_log)` from `ssm_a[64]` is a
+per-layer constant, so precomputing it is faithful and `kda_gate_step` already
+expects it that way; `g = f_b(f_a(h)) + dt_bias` is `[H, DK]`; `beta` is `[H]`.
+The recurrence's output is **bf16-valued** at o_norm entry in the reference, which
+is why `kda_onorm_step` takes a bf16 `x` port — the generator rounds there too,
+and omitting that made the composed golden disagree on `y` alone while state and
+history matched.
+
+**Bounds are composed from the units' own published numbers**, not read off this
+DUT: rel 6 % because §4.3e measures a KDA layer at 1–3 %, abs 0.03 because
+`kda_onorm_step` is gated at abs 0.004 and `o_proj` sums `H·DV` of them. The first
+attempt used abs 0.01 and passed with 0.6 % margin — that is luck, not a bound.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -949,17 +1017,19 @@ make mhc-gemv                 # 51 + 300:   fp32 acts x Q8_0 fn, RMS folded (4.3
 make mhc-ops                  # 244 + 15392: collapse and mix, D-wide (4.3l)
 make mhc-site                 # 39 + 2568:  one whole site, streams carried (4.3l)
 make hc-block                 # 20 + 2310:  TWO sites per block, wiring (4.3m)
+make kda-layer                # 84 + 968:   one whole KDA decode step (4.3n)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **25 must-fail
+rather than flipping a boolean. Between them they carry **29 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
 `INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
 `INJ_OPS_{MIX_TRANSPOSE,MIX_NOPOST,COLLAPSE_NOPRE,POST_FIRST}`,
 `INJ_GEMV_{Q8_NOSCALE,MEAN_SUM,NO_EPS}`,
 `INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
-`INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}` — plus
+`INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}`,
+`INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}` — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains
 why a gate that cannot fail is worse than no gate).
