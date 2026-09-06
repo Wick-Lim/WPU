@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1364,6 +1364,44 @@ kda-layer:
 	    fi; \
 	done
 
+# ---- kda-attn : the WHOLE KDA sublayer, fetching its own Q8_0 weights ----------
+# src/glm53f_kda_attn.v = glm53f_kda_layer (datapath + the two pieces of state)
+# + glm53f_kda_gemv (the nine projections streamed off glm_matmul_q4k).
+#   `make kda-layer` checks the datapath with its projections HANDED to it; this
+# checks the same datapath when they are STREAMED off real Q8_0 weights. That is
+# the difference between a unit and a sublayer, and it is what
+# GLM53F_KDA_RTL_PRESENT was waiting on.
+#   Q8_0 needed nothing new from the engine: w_type=2, code on w_hp[7:0], fp16 d on
+# w_q8_d were already inputs and weight_loader_q4k already emits them. 4.3g used to
+# call this a gap in shared RTL; it was not (see the correction there).
+#   The golden runs on the DEQUANTISED weights, so the Q8_0 round trip is part of
+# the INPUT and any disagreement is the streaming path. Bounds are the SAME ones
+# kda-layer uses -- streaming the weights must not need a looser bound, and
+# measured it does not (worst abs identical at 7.8e-3).
+kda-attn:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_kda_attn_gen"; python3 tools/glm53f_kda_attn_gen.py --selftest \
+	    || { echo "FAILED: glm53f_kda_attn_gen self-test"; exit 1; }
+	@python3 tools/glm53f_kda_attn_gen.py 6 $(BUILD_DIR)/glm53f_kda_attn_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_kda_attn_vec.txt"' -o $(BUILD_DIR)/kda_attn_sim \
+	    test/glm53f_kda_attn_tb.v src/glm53f_kda_attn.v src/glm53f_kda_gemv.v src/glm53f_kda_layer.v \
+	    src/kda_conv_step.v src/kda_gate_step.v src/kda_recur.v src/kda_onorm_step.v \
+	    src/glm_act.v src/rmsnorm_unit.v src/glm_fp_pipe.v src/glm_matmul_q4k.v 2>/dev/null \
+	    || { echo "FAILED: kda-attn compile"; exit 1; }
+	@printf '[%s] ' "kda_attn"; $(VVP) $(BUILD_DIR)/kda_attn_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: kda_attn"; exit 1; }
+	@for inj in INJ_KGV_Q4K_TYPE INJ_KGV_NO_SCALE INJ_KGV_GRP_ALIAS; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_kda_attn_vec.txt"' \
+	        -o $(BUILD_DIR)/kda_attn_inj test/glm53f_kda_attn_tb.v src/glm53f_kda_attn.v src/glm53f_kda_gemv.v src/glm53f_kda_layer.v \
+	    src/kda_conv_step.v src/kda_gate_step.v src/kda_recur.v src/kda_onorm_step.v \
+	    src/glm_act.v src/rmsnorm_unit.v src/glm_fp_pipe.v src/glm_matmul_q4k.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/kda_attn_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: kda-attn $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[kda_attn_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
 # ---- fp-sigmoid : an fp32 sigmoid, and the exp accuracy ceiling underneath it --
 # Until now the repo's only sigmoid was glm_act: bf16 in/out, polynomial exp, input
 # railed at +/-16. Three GLM-5.3-Flash paths are limited by it, each measured: the
@@ -1404,12 +1442,12 @@ glm53f-config-guard:
 	must_fail $(VERILATOR) --lint-only -Iconfigs --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	must_fail $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_KDA_RTL_PRESENT -DGLM53F_HC_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
 	must_fail $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_HC_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
-	must_pass $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_KDA_RTL_PRESENT -DGLM53F_Q5K_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
-	must_pass $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_Q5K_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
+	must_pass $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_Q5K_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
+	must_pass $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_Q5K_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	must_pass $(IVERILOG) -g2012 -I configs -tnull $(GLM53F_DEFS_IV) test/glm53f_fulltop_wrap.v; \
 	must_pass $(VERILATOR) --lint-only -Iconfigs $(GLM53F_DEFS_VL) --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	[ $$fail -eq 0 ] \
-	    && echo "ALL 10 TESTS PASSED (5 cases x 2 tools: dims usable; whole-model top poisoned until KDA + the Q5_K loader path land; hyper-connections are BUILT, and the KDA+Q5K-only case elaborating is what pins that GLM53F_HC_RTL_PRESENT really comes from the header)" \
+	    && echo "ALL 10 TESTS PASSED (5 cases x 2 tools: dims usable; whole-model top poisoned until the Q5_K loader path lands; hyper-connections AND KDA are BUILT, and the Q5K-only case elaborating is what pins that both defines really come from the header)" \
 	    || { echo "FAILED: glm53f-config-guard"; exit 1; }
 
 # ---------------------------------------------------------------------------

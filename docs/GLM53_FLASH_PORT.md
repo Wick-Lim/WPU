@@ -882,7 +882,7 @@ state that make KDA not a drop-in for `mla_attn_q4k`: the `[H, DK, DV]` recurren
 (fixed size — **not** a growing KV cache, which is why only 11 of 45 layers page
 KV) and the `[3·H·DK, K−1]` conv history.
 
-**Why `GLM53F_KDA_RTL_PRESENT` stays undefined even though the layer passes.** The
+**Why this unit alone did not justify the define** (§4.3o then closed it). The
 nine GEMVs arrive through a `proj_req`/`proj_sel` handshake, answered
 behaviourally by the TB. That is *not* the same situation as `glm53f_hc_block`,
 whose sublayers are genuinely separate machines: these projections are the
@@ -926,6 +926,52 @@ history matched.
 DUT: rel 6 % because §4.3e measures a KDA layer at 1–3 %, abs 0.03 because
 `kda_onorm_step` is gated at abs 0.004 and `o_proj` sums `H·DV` of them. The first
 attempt used abs 0.01 and passed with 0.6 % margin — that is luck, not a bound.
+
+### 4.3o KDA weight streaming — the second guard condition closes
+
+`src/glm53f_kda_gemv.v` + `src/glm53f_kda_attn.v` — `make kda-attn`, 726 + 228
+checks, 3 must-fail injections. The nine Q8_0 projections are now **streamed off
+`glm_matmul_q4k`** instead of handed to the layer, which is the difference
+between a unit and a sublayer. `glm53f_kda_attn` is the module that goes where
+`mla_attn_q4k` goes, for 34 of the 45 blocks.
+
+**Q8_0 needed nothing new from the engine**, which is the concrete refutation of
+§4.3g's "gap": `w_type = 2`, the code on `w_hp[7:0]` and the fp16 block scale on
+`w_q8_d` were already `glm_matmul_q4k` inputs, and `weight_loader_q4k` already
+emits them. The protocol was copied from `swiglu_expert_q4k` (403 lines) rather
+than invented.
+
+**The result that matters: the bound did not move.** `make kda-attn` runs the
+*same* composed bounds as `make kda-layer` — rel 6 %, abs 0.03 — and the measured
+worst is **identical at 7.8e-3**. Streaming the weights off real Q8_0 did not cost
+accuracy, because the golden runs on the *dequantised* weights: the Q8_0 round
+trip (worst 4.4e-3 on the weights) is part of the **input**, not of the error. Two
+gates, two claims: `kda-layer` says the datapath is right, `kda-attn` says it is
+still right when the weights arrive the way the system will actually deliver them.
+
+**A contract change that made both gates honest.** The layer's `proj_out` port is
+fp32-*typed* but now carries bf16-*valued* data, because `glm_matmul_q4k`'s
+`c_out` is bf16 and so are the model's own linear layers. The generator and the
+`kda-layer` stub were both changed to round there. Before that they disagreed —
+the golden assumed bf16 while the stub returned fp32 — and the layer's worst error
+read 1.19e-2 instead of 7.8e-3. Making the contract match reality *improved* the
+number.
+
+**An injection that had to be redesigned.** `INJ_KGV_GRP_STUCK` froze the output
+group, which hangs the FSM: it does fail, but only by TB timeout, and it would
+have cost the release gate ~3M simulated cycles on every run. Replaced with
+`INJ_KGV_GRP_ALIAS`, which writes every group to slot 0 — wrong data, same
+runtime. A must-fail injection should fail on the *answer*, not on the clock.
+
+**`GLM53F_KDA_RTL_PRESENT` is now defined — the second of three.** The guard's
+pinning case got stronger with it: the whole-model top must elaborate with only
+`Q5K` on the command line, which is true only if **both** `HC` and `KDA` really
+come from the header. Only the Q5_K loader path still poisons the top.
+
+**What neither define claims.** Neither module instantiates a decoder layer.
+Composing `glm53f_kda_attn` and the MLA/MoE sublayers inside `glm53f_hc_block` is
+assembly, and the 4.19 MB/layer recurrent state still lives in registers rather
+than BRAM/DDR — a residency decision, not plumbing.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
@@ -1018,10 +1064,11 @@ make mhc-ops                  # 244 + 15392: collapse and mix, D-wide (4.3l)
 make mhc-site                 # 39 + 2568:  one whole site, streams carried (4.3l)
 make hc-block                 # 20 + 2310:  TWO sites per block, wiring (4.3m)
 make kda-layer                # 84 + 968:   one whole KDA decode step (4.3n)
+make kda-attn                 # 228 + 726:  the same, fetching its own Q8_0 weights (4.3o)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **29 must-fail
+rather than flipping a boolean. Between them they carry **32 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
 `INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
@@ -1029,7 +1076,8 @@ injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_GEMV_{Q8_NOSCALE,MEAN_SUM,NO_EPS}`,
 `INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
 `INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}`,
-`INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}` — plus
+`INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}`,
+`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}` — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains
 why a gate that cannot fail is worse than no gate).

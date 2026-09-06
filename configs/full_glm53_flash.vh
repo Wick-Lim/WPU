@@ -33,28 +33,28 @@
 //       GLM53F_HC_RTL_PRESENT    residual path  (hyper-connections, Sinkhorn)
 //       GLM53F_Q5K_RTL_PRESENT   34.9% of bytes (the whole Q5_K READ PATH)
 //
-//   HC STATUS -- this one is now SATISFIED, and here is exactly what that means.
-//   The hyper-connection residual path exists in RTL, end to end at BLOCK level:
-//       src/mhc_fn_gemv.v      fp32 activations x Q8_0 hc_*_fn, RMS folded in
-//       src/mhc_map_step.v     pre = sigma+eps, post = 2*sigma, softmax
-//       src/mhc_sinkhorn.v     the 39-pass doubly-stochastic projection
-//       src/mhc_stream_ops.v   collapse (H->1) and mix (H->H + outer product)
-//       src/mhc_block_site.v   ONE site, holding the four residual streams
-//       src/glm53f_hc_block.v  TWO sites per block, per-site weights and norms,
-//                              streams threaded attention -> FFN
-//   `make mhc-gemv mhc-map mhc-sinkhorn mhc-ops mhc-site hc-block`, 21 must-fail
-//   injections, checked against ref.hyper_connection's own outputs and the pinned
-//   hc_collapse / hc_mix (docs/GLM53_FLASH_PORT.md 4.3k, 4.3l, 4.3m).
+//   HC STATUS -- SATISFIED.  The hyper-connection residual path exists end to end
+//   at block level: mhc_fn_gemv, mhc_map_step, mhc_sinkhorn, mhc_stream_ops,
+//   mhc_block_site (one site, holding the four streams) and glm53f_hc_block (two
+//   sites per block).  `make mhc-gemv mhc-map mhc-sinkhorn mhc-ops mhc-site
+//   hc-block` (4.3k, 4.3l, 4.3m).
 //
-//   WHAT THIS DEFINE DOES NOT CLAIM.  glm53f_hc_block reaches its two sublayers
-//   through a handshake and does not instantiate them; composing it with
-//   mla_attn_q4k and the MoE/dense FFN into a real decoder layer is ASSEMBLY work
-//   that is still open, and for 34 of 45 layers the sublayer itself is the KDA
-//   machine that GLM53F_KDA_RTL_PRESENT gates.  So this define says the residual
-//   path is built, not that the model is assembled -- which is why the whole-model
-//   top stays poisoned by the other two.  The sublayer contract is unchanged
-//   ([D] in, [D] out, bf16): attn_norm[4096] and ffn_norm[4096] still sit between
-//   `collapsed` and the sublayer on all 46 blocks [scan].
+//   KDA STATUS -- SATISFIED as of 2026-09-06.  src/glm53f_kda_attn.v is the whole
+//   sublayer: glm53f_kda_layer (the datapath, the [H,DK,DV] recurrence and the
+//   [3*H*DK,K-1] conv history) plus glm53f_kda_gemv, which STREAMS the nine Q8_0
+//   projections off glm_matmul_q4k.  `make kda kda-conv kda-gate kda-onorm
+//   kda-layer kda-attn` (4.3c-4.3f, 4.3n, 4.3o).  It fetches its own weights, so
+//   unlike the earlier layer-only unit it is not waiting on anything to be handed
+//   to it.  Q8_0 needed NOTHING new from the engine -- w_type=2, code on w_hp,
+//   fp16 d on w_q8_d were already inputs and weight_loader_q4k already emits them.
+//
+//   WHAT NEITHER DEFINE CLAIMS.  Both modules reach the rest of the system through
+//   handshakes and neither instantiates a decoder layer: composing glm53f_kda_attn
+//   and the MLA/MoE sublayers inside glm53f_hc_block is ASSEMBLY work that is still
+//   open, and the 4.19 MB/layer recurrent state still lives in registers rather
+//   than BRAM/DDR -- a residency decision, not a plumbing one.  These defines say
+//   the machines are built, not that the model is assembled; the whole-model top
+//   stays poisoned by Q5_K.
 //
 //   Q5_K STATUS -- read this before assuming the third one is satisfied.  The
 //   GEMM arm exists and is gated bit-exact (`WT_Q5K` in glm_matmul_q4k, `make
@@ -206,6 +206,9 @@
 // i.e. a test that passes for the wrong reason.
 `ifndef GLM53F_HC_RTL_PRESENT
 `define GLM53F_HC_RTL_PRESENT 1
+`endif
+`ifndef GLM53F_KDA_RTL_PRESENT
+`define GLM53F_KDA_RTL_PRESENT 1
 `endif
 
 `ifdef GLM53F_KDA_RTL_PRESENT

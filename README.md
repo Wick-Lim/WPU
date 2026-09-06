@@ -347,8 +347,16 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   gate, delta-rule recurrence and gated o_norm, owning both the `[H,DK,DV]` state
   and the `[3·H·DK,K−1]` conv history. `GLM53F_KDA_RTL_PRESENT` **stays
   undefined**: the projections arrive through a handshake, and unlike the mHC
-  block's sublayers those are the layer's *own weights*. Driving `glm_matmul_q4k`
-  with the Q8_0 lanes it already accepts is the remaining, mechanical step.
+  block's sublayers those are the layer's *own weights*.
+- **Then it did fetch them, and the second guard condition closed.**
+  `src/glm53f_kda_gemv.v` streams the nine Q8_0 projections off `glm_matmul_q4k`
+  and `src/glm53f_kda_attn.v` is the resulting whole sublayer (`make kda-attn`).
+  **`GLM53F_KDA_RTL_PRESENT` is now defined**; only Q5_K still poisons the
+  whole-model top. Q8_0 needed *nothing* new from the engine — `w_type=2`, code on
+  `w_hp`, fp16 `d` on `w_q8_d` were already inputs. And the bound did not move:
+  `kda-attn` runs the same composed bounds as `kda-layer` and measures an
+  identical worst 7.8e-3, because the golden uses the dequantised weights, so the
+  Q8_0 round trip is part of the input rather than the error.
 - **Also corrected: the "blocked on shared decoder RTL" note was wrong.** It
   assumed GLM-5.3-Flash would reuse `glm_decoder_block_q4k`; it does not — these
   are siblings, and a sibling declares its own port widths. Nothing shared has to

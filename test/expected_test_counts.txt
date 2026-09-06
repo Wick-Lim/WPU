@@ -49,6 +49,8 @@ hc_block 2310
 glm53f_hc_block_gen 20
 kda_layer 968
 glm53f_kda_layer_gen 84
+kda_attn 726
+glm53f_kda_attn_gen 228
 kda_gate 1224
 kda_gate_gen 5
 kda_conv 1280

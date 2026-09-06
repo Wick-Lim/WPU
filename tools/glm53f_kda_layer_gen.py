@@ -44,7 +44,14 @@ def bf16b(v):
 
 
 def seq_gemv(W, x):
-    """fp32 GEMV in explicit sequential order -- what the TB's stub responder does."""
+    """fp32-accumulate GEMV, sequential order, bf16 OUT.
+
+    The bf16 output is not a shortcut: glm_matmul_q4k's c_out is bf16, the model's
+    own linear layers are bf16-out, and every activation in this repo is bf16. The
+    layer's proj_out port stays fp32-TYPED and carries bf16-VALUED data, so the
+    weight-streaming step can drop the real engine in without changing the layer's
+    contract. Accumulation stays fp32 -- that is the engine's behaviour too.
+    """
     W = np.asarray(W, F32)
     x = np.asarray(x, F32)
     out = np.empty(W.shape[0], F32)
@@ -52,7 +59,7 @@ def seq_gemv(W, x):
         a = F32(0.0)
         for c in range(W.shape[1]):
             a = F32(a + F32(W[r, c] * x[c]))
-        out[r] = a
+        out[r] = bf16(a)
     return out
 
 

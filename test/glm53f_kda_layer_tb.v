@@ -9,9 +9,11 @@
 // (the [H,DK,DV] recurrence AND the [3*H*DK,K-1] conv history), and the fp32/bf16
 // boundaries between the units. All four injections target that.
 //
-// THE STUB RESPONDER answers the nine projections behaviourally, in fp32 and in
-// the same sequential order the generator uses, from the weights in the vector
-// file. That isolates the layer from the GEMV engine, which q4k/mixedtype already
+// THE STUB RESPONDER answers the nine projections behaviourally -- fp32
+// accumulation, bf16-VALUED result, in the same sequential order the generator
+// uses, from the weights in the vector file. The bf16 rounding matters: it is what
+// glm_matmul_q4k's c_out does and what the model's own linear layers do, so the
+// weight-streaming step drops the real engine in without changing the contract. That isolates the layer from the GEMV engine, which q4k/mixedtype already
 // gate; driving glm_matmul_q4k with Q8_0 lanes (w_type=2, code on w_hp, fp16 d on
 // w_q8_d -- all already engine inputs) is the follow-on.
 //
@@ -111,7 +113,9 @@ module glm53f_kda_layer_tb;
                             for (cc = 0; cc < rcols; cc = cc + 1)
                                 acc = fp32_add(acc, fp32_mul(wmem[roff + rr*rcols + cc],
                                                              rin[32*cc +: 32]));
-                        proj_out[32*rr +: 32] = acc;
+                        // bf16-VALUED, like glm_matmul_q4k's c_out and like every
+                        // linear layer in the model. Accumulation stays fp32.
+                        proj_out[32*rr +: 32] = bf16_to_fp32(fp32_to_bf16(acc));
                     end
                     proj_done <= 1'b1; rp <= 3'd0;
                 end else rp <= rp + 3'd1;
