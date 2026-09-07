@@ -64,12 +64,13 @@ GGML_F32  = 0
 GGML_F16  = 1
 GGML_Q8_0 = 8
 GGML_Q4_K = 12
+GGML_Q5_K = 13
 GGML_Q6_K = 14
 TYPE_NAME = {GGML_F32: "F32", GGML_F16: "F16", GGML_Q8_0: "Q8_0",
-             GGML_Q4_K: "Q4_K", GGML_Q6_K: "Q6_K"}
+             GGML_Q4_K: "Q4_K", GGML_Q5_K: "Q5_K", GGML_Q6_K: "Q6_K"}
 # type -> (elements_per_block, bytes_per_block)
 BLOCK = {GGML_F32: (1, 4), GGML_F16: (1, 2), GGML_Q8_0: (32, 34),
-         GGML_Q4_K: (256, 144), GGML_Q6_K: (256, 210)}
+         GGML_Q4_K: (256, 144), GGML_Q5_K: (256, 176), GGML_Q6_K: (256, 210)}
 
 # ---- GGUF metadata value-type enums ---------------------------------------
 GV_UINT32 = 4
@@ -83,7 +84,10 @@ GGUF_VERSION = 3
 
 # ---- RTL geometry (weight_loader_q4k / glm_matmul_q4k image defaults) ------
 PE_N   = 4
-QK_K   = 256                        # Q4_K/Q6_K super-block width
+QK_K   = 256                        # Q4_K/Q5_K/Q6_K super-block width
+# types the packer lays out as loader TILES (header region + code region)
+# rather than passing through as native block bytes.
+TILED_TYPES = ("Q4_K", "Q5_K")
 DATA_W = 256                        # 2.1: stays 256 (== ddr5_xbar beat)
 DATA_HEX = DATA_W // 4
 
@@ -202,6 +206,36 @@ def q4k_unpack_block(raw):
     qs128 = list(raw[16:144])
     return d_h, dmin_h, scales12, qs128
 
+# ---------------------------------------------------------------- Q5_K
+# Q5_K is Q4_K plus a fifth bit: identical fp16 d/dmin and 12-byte packed scales,
+# plus a 32-byte qh carrying one high bit per weight.  176 B/super-block.
+def q5k_pack_block(d_h, dmin_h, scales12, qh32, qs128):
+    return struct.pack("<HH", d_h & 0xFFFF, dmin_h & 0xFFFF) + \
+           bytes(bytearray(scales12)) + bytes(bytearray(qh32)) + bytes(bytearray(qs128))
+
+def q5k_unpack_block(raw):
+    d_h, dmin_h = struct.unpack_from("<HH", raw, 0)
+    return d_h, dmin_h, list(raw[4:16]), list(raw[16:48]), list(raw[48:176])
+
+def q5k_qs_to_codes(qh32, qs128):
+    """(qh[32], qs[128]) -> 256 weight-position 5-bit codes, ggml order.
+
+    THIS is the pre-assembly the RTL depends on: glm_matmul_q4k's Q5_K arm reads a
+    ready-made 5-bit code off w_hp[4:0] and never sees qh.  The code is
+    (nibble | 16*qh_bit), and the qh bit for a weight position is bit
+    (2*group + half) of qh[lane], with ggml's u1/u2 walking two bits per group.
+    Same function as tools/q4k_mixed_gen.q5k_codes, which `make mixedtype` already
+    gates against the dequant reference -- kept in step deliberately.
+    """
+    codes, qi = [], 0
+    for grp in range(4):
+        for l in range(32):
+            codes.append((qs128[qi + l] & 0xF) | (16 if (qh32[l] >> (2 * grp + 0)) & 1 else 0))
+        for l in range(32):
+            codes.append((qs128[qi + l] >> 4) | (16 if (qh32[l] >> (2 * grp + 1)) & 1 else 0))
+        qi += 32
+    return codes
+
 def qs_to_codes(qs128):
     """qs[128] -> 256 codes in ggml weight-position order (matches q4k_ref)."""
     codes = []
@@ -248,6 +282,21 @@ def gen_synthetic(path):
                 raw += q4k_pack_block(d_h, dm_h, scales, qs)
         tensors.append((name, GGML_Q4_K, [K, N], bytes(raw)))
 
+    def q5k_tensor(name, N, K):
+        assert K % QK_K == 0
+        nb = K // QK_K
+        raw = bytearray()
+        for _ in range(N * nb):
+            scs    = [int(v) for v in rng.integers(0, 64, 8)]
+            mns    = [int(v) for v in rng.integers(0, 64, 8)]
+            scales = ref._pack_6bit_scales(scs, mns)
+            qh     = [int(v) for v in rng.integers(0, 256, 32)]
+            qs     = [int(v) for v in rng.integers(0, 256, 128)]
+            d_h    = ref._f32_to_f16bits(rng.uniform(0.003, 0.05))
+            dm_h   = ref._f32_to_f16bits(rng.uniform(0.0, 0.02))
+            raw += q5k_pack_block(d_h, dm_h, scales, qh, qs)
+        tensors.append((name, GGML_Q5_K, [K, N], bytes(raw)))
+
     def q6k_tensor(name, N, K):
         assert K % QK_K == 0
         nb = K // QK_K
@@ -281,6 +330,7 @@ def gen_synthetic(path):
     # a faithful mini dynamic-mix: most Q4_K, sensitive ones higher precision.
     q4k_tensor("blk.0.ffn_down.weight",   8, 512)   # NSB=2 super-blocks/row
     q4k_tensor("blk.0.ffn_gate.weight",   8, 256)
+    q5k_tensor("blk.0.ffn_up.weight",      4, 512)  # GLM-5.3-Flash mixes Q5_K; nb=2
     q6k_tensor("blk.0.attn_output.weight", 4, 256)  # sensitive proj -> Q6_K
     q8_0_tensor("blk.0.attn_q.weight",     4, 256)  # sensitive proj -> Q8_0
     f16_tensor("output.weight",            4, 256)  # lm head kept F16
@@ -300,7 +350,7 @@ def classify(tensors):
        tiles; tail: 1-D vectors (norms) passed through.  GGUF ne = [K, N]."""
     weights, tail = [], []
     for name, (ttype, dims, raw) in tensors.items():
-        if len(dims) == 2 and ttype in (GGML_Q4_K, GGML_Q6_K, GGML_Q8_0, GGML_F16):
+        if len(dims) == 2 and ttype in (GGML_Q4_K, GGML_Q5_K, GGML_Q6_K, GGML_Q8_0, GGML_F16):
             K, N = dims[0], dims[1]
             weights.append(dict(name=name, ttype=ttype, N=N, K=K, raw=raw))
         else:
@@ -380,6 +430,62 @@ def pack_q4k_weight(w, pe_n=PE_N):
                 N=N, pe_n=pe_n, tiles=descs)
     return words, desc
 
+def pack_q5k_weight(w, pe_n=PE_N):
+    """Q5_K weight -> (words, descriptor), the SAME tile shape as Q4_K.
+
+    The header region is byte-identical to Q4_K's -- d | dmin<<16 | scales<<32,
+    col-outer / super-block-inner -- because a Q5_K super-block's header fields
+    ARE Q4_K's; the extra 32 bytes are qh, and qh never reaches the RTL.
+
+    The CODE region is where they differ, and only in width: Q4_K packs a 4-bit
+    code at 4*pj, Q5_K packs a PRE-ASSEMBLED 5-bit code into the 16-bit lane at
+    16*pj, which is the lane weight_loader_q4k publishes on mm_w_hp and the lane
+    glm_matmul_q4k's Q5_K arm reads. So this needs nothing new from either: the
+    loader's header decode is its Q4_K default branch, its `ns` is the same
+    nsblk*PE_N, and its per-beat word is the same one word per k.
+    """
+    N, K, raw = w["N"], w["K"], w["raw"]
+    nb = K // QK_K
+    d_h  = [[0] * nb for _ in range(N)]
+    dm_h = [[0] * nb for _ in range(N)]
+    sc96 = [[0] * nb for _ in range(N)]
+    codes = [[0] * K for _ in range(N)]
+    for col in range(N):
+        for sb in range(nb):
+            blk = raw[(col * nb + sb) * 176:(col * nb + sb) * 176 + 176]
+            dh, dmh, scales12, qh, qs = q5k_unpack_block(blk)
+            d_h[col][sb] = dh; dm_h[col][sb] = dmh
+            sc96[col][sb] = int.from_bytes(bytes(scales12), "little")
+            cc = q5k_qs_to_codes(qh, qs)
+            for i in range(QK_K):
+                codes[col][sb * QK_K + i] = cc[i]
+    n_tiles = (N + pe_n - 1) // pe_n
+    words, descs = [], []
+    for ct in range(n_tiles):
+        col0 = ct * pe_n
+        base = len(words)
+        for pj in range(pe_n):
+            for sb in range(nb):
+                col = col0 + pj
+                if col < N:
+                    word = (d_h[col][sb] & 0xFFFF) | ((dm_h[col][sb] & 0xFFFF) << 16) \
+                           | (sc96[col][sb] << 32)
+                else:
+                    word = 0
+                words.append(word)
+        # CODE : word[16*pj +: 16] = 5-bit code[col][k]  (the mm_w_hp lane)
+        for k in range(K):
+            word = 0
+            for pj in range(pe_n):
+                col = col0 + pj
+                c = codes[col][k] if col < N else 0
+                word |= (c & 0x1F) << (16 * pj)
+            words.append(word)
+        descs.append(dict(base=base, col0=col0, n_tiles=n_tiles))
+    desc = dict(name=w["name"], type="Q5_K", base=None, k_len=K, n_sblk=nb,
+                N=N, pe_n=pe_n, tiles=descs)
+    return words, desc
+
 def pack_raw_weight(w):
     """Q6_K / Q8_0 / F16 weight -> native block bytes byte-packed into words."""
     words = _bytes_to_words(w["raw"])
@@ -396,11 +502,18 @@ def pack_gguf(buf, out_dir=None, pe_n=PE_N):
     for w in weights:
         if w["ttype"] == GGML_Q4_K:
             words, desc = pack_q4k_weight(w, pe_n)
+        elif w["ttype"] == GGML_Q5_K:
+            words, desc = pack_q5k_weight(w, pe_n)
         else:
             words, desc = pack_raw_weight(w)
         off = len(all_words)
         desc["base"] = off
-        if desc["type"] == "Q4_K":            # relocate per-tile bases
+        # relocate per-tile bases -- EVERY tiled type, not a hardcoded one.  This
+        # read `== "Q4_K"` and silently skipped Q5_K, whose tiles then pointed at
+        # the image's start instead of the tensor's.  It only showed up once the
+        # Q5_K tensor was not the FIRST weight in the image (off != 0), which is
+        # why the first version of the selftest passed.
+        if desc["type"] in TILED_TYPES:
             for t in desc["tiles"]:
                 t["base"] += off
         all_words += words
@@ -461,6 +574,64 @@ def unpack_q4k_weight(words, desc, pe_n):
             raw += q4k_pack_block(d_h[col][sb], dm_h[col][sb], scales12, qs)
     return bytes(raw)
 
+def q5k_codes_to_qs_qh(codes):
+    """Inverse of q5k_qs_to_codes: 256 five-bit codes -> (qh[32], qs[128]).
+
+    Exists so the packer's round-trip actually PROVES the Q5_K tile is lossless.
+    Splitting the code back into (nibble, high bit) and rebuilding both arrays is
+    the only way to show the fifth bit survived the layout -- reconstructing qs
+    alone would round-trip a Q4_K image just as happily.
+    """
+    qh = [0] * 32
+    qs = [0] * 128
+    ci = 0
+    for grp in range(4):
+        for l in range(32):
+            c = codes[ci]; ci += 1
+            qs[grp * 32 + l] |= (c & 0xF)
+            if c & 0x10:
+                qh[l] |= 1 << (2 * grp + 0)
+        for l in range(32):
+            c = codes[ci]; ci += 1
+            qs[grp * 32 + l] |= (c & 0xF) << 4
+            if c & 0x10:
+                qh[l] |= 1 << (2 * grp + 1)
+    return qh, qs
+
+
+def unpack_q5k_weight(words, desc, pe_n):
+    N, K, nb = desc["N"], desc["k_len"], desc["n_sblk"]
+    d_h  = [[0] * nb for _ in range(N)]
+    dm_h = [[0] * nb for _ in range(N)]
+    sc96 = [[0] * nb for _ in range(N)]
+    codes = [[0] * K for _ in range(N)]
+    for t in desc["tiles"]:
+        base, col0 = t["base"], t["col0"]
+        for pj in range(pe_n):
+            for sb in range(nb):
+                col = col0 + pj
+                if col >= N:
+                    continue
+                word = words[base + pj * nb + sb]
+                d_h[col][sb]  = word & 0xFFFF
+                dm_h[col][sb] = (word >> 16) & 0xFFFF
+                sc96[col][sb] = (word >> 32) & ((1 << 96) - 1)
+        code_base = base + nb * pe_n
+        for k in range(K):
+            word = words[code_base + k]
+            for pj in range(pe_n):
+                col = col0 + pj
+                if col < N:
+                    codes[col][k] = (word >> (16 * pj)) & 0x1F
+    raw = bytearray()
+    for col in range(N):
+        for sb in range(nb):
+            scales12 = list(sc96[col][sb].to_bytes(12, "little"))
+            qh, qs = q5k_codes_to_qs_qh([codes[col][sb * QK_K + i] for i in range(QK_K)])
+            raw += q5k_pack_block(d_h[col][sb], dm_h[col][sb], scales12, qh, qs)
+    return bytes(raw)
+
+
 def roundtrip_check(buf, out_dir=None):
     all_words, manifest, weights, tail = pack_gguf(buf, out_dir)
     if out_dir:                               # prove the on-disk hex is faithful
@@ -472,6 +643,8 @@ def roundtrip_check(buf, out_dir=None):
         desc = by_name[w["name"]]
         if desc["type"] == "Q4_K":
             recon = unpack_q4k_weight(all_words, desc, manifest["params"]["PE_N"])
+        elif desc["type"] == "Q5_K":
+            recon = unpack_q5k_weight(all_words, desc, manifest["params"]["PE_N"])
         else:
             recon = _words_to_bytes(all_words[desc["base"]:], desc["nbytes"])
         if recon != w["raw"]:
@@ -501,6 +674,35 @@ def dequant_crosscheck(buf):
                 o = (col * nb + sb) * 144
                 a = ref.dequantize_block_q4_K(*q4k_unpack_block(w["raw"][o:o+144]))
                 b = ref.dequantize_block_q4_K(*q4k_unpack_block(recon[o:o+144]))
+                if np.frombuffer(a.tobytes(), np.uint32).tolist() != \
+                   np.frombuffer(b.tobytes(), np.uint32).tolist():
+                    return False, checked
+                checked += 1
+    return True, checked
+
+
+def dequant_crosscheck_q5k(buf):
+    """The same closing of the loop for Q5_K: pack, unpack, and confirm the
+    reconstructed super-blocks dequantize bit-exact to q4k_ref's ggml golden.
+
+    Round-tripping the BYTES already proves the tile is lossless; this proves the
+    bytes still MEAN the same thing, which is the claim that matters when the
+    fifth bit has been split out into a separate array and put back.
+    """
+    all_words, manifest, weights, _ = pack_gguf(buf)
+    by_name = {d["name"]: d for d in manifest["tensors"]}
+    checked = 0
+    for w in weights:
+        if w["ttype"] != GGML_Q5_K:
+            continue
+        desc = by_name[w["name"]]
+        recon = unpack_q5k_weight(all_words, desc, manifest["params"]["PE_N"])
+        nb = w["K"] // QK_K
+        for col in range(w["N"]):
+            for sb in range(nb):
+                o = (col * nb + sb) * 176
+                a = ref.dequantize_block_q5_K(*q5k_unpack_block(w["raw"][o:o+176]))
+                b = ref.dequantize_block_q5_K(*q5k_unpack_block(recon[o:o+176]))
                 if np.frombuffer(a.tobytes(), np.uint32).tolist() != \
                    np.frombuffer(b.tobytes(), np.uint32).tolist():
                     return False, checked
@@ -557,6 +759,9 @@ def _selftest():
     print(f"round-trip (pack -> unpack == original GGUF blocks, bit-exact): "
           f"{'PASS' if ok else 'FAIL'}")
 
+    deq5_ok, ndeq5 = dequant_crosscheck_q5k(buf)
+    print(f"dequant cross-check (packed Q5_K == ggml dequantize_block_q5_K): "
+          f"{'PASS' if deq5_ok else 'FAIL'} ({ndeq5} super-blocks)")
     deq_ok, ndeq = dequant_crosscheck(buf)
     print(f"dequant cross-check (packed Q4_K == ggml dequantize_block_q4_K): "
           f"{'PASS' if deq_ok else 'FAIL'} ({ndeq} super-blocks)")
@@ -574,7 +779,7 @@ def _selftest():
     print(f"moat guard (Q4_K >=43% smaller/weight than FP8): "
           f"{'PASS' if moat else 'FAIL'}")
 
-    allok = ok and deq_ok and moat
+    allok = ok and deq_ok and deq5_ok and moat
     print("SELFTEST", "PASS" if allok else "FAIL")
     return 0 if allok else 1
 

@@ -28,10 +28,16 @@
 //
 //   Therefore: dims are plain, usable, cited defines.  `GLM53F_FULL_TOP_OK`
 //   -- required by any *whole-model* wrapper -- expands to a self-describing
-//   UNDEFINED identifier until all three missing machines are declared present:
+//   UNDEFINED identifier unless all three machines are declared present:
 //       GLM53F_KDA_RTL_PRESENT   34/45 layers   (KDA linear attention)
 //       GLM53F_HC_RTL_PRESENT    residual path  (hyper-connections, Sinkhorn)
 //       GLM53F_Q5K_RTL_PRESENT   34.9% of bytes (the whole Q5_K READ PATH)
+//   AS OF 2026-09-07 ALL THREE ARE BUILT AND GATED, so the top elaborates by
+//   default and the guard now works the other way round: it forces each machine
+//   absent in turn (GLM53F_NO_HC / NO_KDA / NO_Q5K) and requires the top to go
+//   back to un-elaboratable.  Read the STATUS notes below for what each define
+//   does and does NOT claim -- in particular, none of them claims the model is
+//   ASSEMBLED, which is a separate open item.
 //
 //   HC STATUS -- SATISFIED.  The hyper-connection residual path exists end to end
 //   at block level: mhc_fn_gemv, mhc_map_step, mhc_sinkhorn, mhc_stream_ops,
@@ -56,15 +62,18 @@
 //   the machines are built, not that the model is assembled; the whole-model top
 //   stays poisoned by Q5_K.
 //
-//   Q5_K STATUS -- read this before assuming the third one is satisfied.  The
-//   GEMM arm exists and is gated bit-exact (`WT_Q5K` in glm_matmul_q4k, `make
-//   mixedtype` with a must-fail injection).  What does NOT exist is the rest of
-//   the read path: weight_loader_q4k cannot lay out a Q5_K tile, because that
-//   needs the packer to emit pre-assembled 5-bit codes and a 176 B/super-block
-//   geometry (docs/GLM53_FLASH_PORT.md 4.2 item 6).  A whole-model top has to
-//   STREAM Q5_K tiles, not just multiply them, so this define stays undefined
-//   until the loader path lands -- and the loader $fatal's on a Q5_K descriptor
-//   in the meantime rather than silently streaming Q4_K geometry.
+//   Q5_K STATUS -- SATISFIED as of 2026-09-07.  The GEMM arm was already gated
+//   bit-exact (`WT_Q5K` in glm_matmul_q4k, `make mixedtype` with a must-fail
+//   injection); what was missing was a way to GET a tile to it.  This loader used
+//   to $fatal on a Q5_K descriptor.  That guard's premise turned out to be wrong:
+//   a Q5_K tile needs NOTHING new from weight_loader_q4k -- its header fields ARE
+//   Q4_K's, so the Q4_K default decode branch is already right and `ns` is
+//   unchanged, and its 5-bit code rides mm_w_hp, the lane Q6_K and Q8_0 already
+//   use.  The missing half was the PACKER, and ckpt_pack_q4k.pack_q5k_weight now
+//   emits that layout.  `make q5k-loader` is the cross-TOOL gate -- the file the
+//   packer writes is the file the RTL reads -- plus a packer round-trip and a
+//   dequant cross-check against ggml (4.3p).
+//
 //   Defining any of those without landing the RTL is falsifying the ledger.
 //   Partial-model studies (the 11 MLA+DSA layers, the MoE, the memory system)
 //   do NOT need the gate and keep working -- that is the inherited, proven part.
@@ -198,17 +207,39 @@
 // ============================================================================
 // FULL-MODEL TOP GATE -- see the header comment for why this, and not the dims
 // ============================================================================
-// Hyper-connections: BUILT and gated (see HC STATUS above). Declared here rather
-// than left to each caller so there is ONE place the claim lives. The `ifndef is
-// not decoration: the config guard drives these defines from the command line to
-// test both directions, and an unconditional `define collides there -- which would
-// make a must-fail case "fail" for a redefinition error rather than for the guard,
-// i.e. a test that passes for the wrong reason.
-`ifndef GLM53F_HC_RTL_PRESENT
-`define GLM53F_HC_RTL_PRESENT 1
+// All three machines are BUILT and gated (see the STATUS notes above), so all
+// three are declared here -- one place the claim lives, rather than each caller
+// asserting it.
+//
+// WHY EACH ONE HAS A `GLM53F_NO_* ESCAPE.  A gate that can no longer fail proves
+// nothing.  Once the last define moved into this header, "elaborate with no
+// command-line defines" became a MUST-PASS and the old must-fail cases could not
+// be expressed at all -- there was no way to ask "what if this machine were
+// missing?".  These overrides restore that: `make glm53f-config-guard` forces
+// each one off in turn and requires the whole-model top to go back to being
+// un-elaboratable, which is what keeps all three conditions load-bearing instead
+// of decorative.  They are a TEST affordance and nothing else -- defining
+// GLM53F_NO_* in a real build is asking for a top that lies in the other
+// direction.
+//
+// The `ifndef around each `define is separate and also not decoration: the guard
+// drives these from the command line too, and an unconditional `define collides
+// there -- which would make a case fail for a redefinition error rather than for
+// the guard, i.e. pass for the wrong reason.
+`ifndef GLM53F_NO_HC
+ `ifndef GLM53F_HC_RTL_PRESENT
+ `define GLM53F_HC_RTL_PRESENT 1
+ `endif
 `endif
-`ifndef GLM53F_KDA_RTL_PRESENT
-`define GLM53F_KDA_RTL_PRESENT 1
+`ifndef GLM53F_NO_KDA
+ `ifndef GLM53F_KDA_RTL_PRESENT
+ `define GLM53F_KDA_RTL_PRESENT 1
+ `endif
+`endif
+`ifndef GLM53F_NO_Q5K
+ `ifndef GLM53F_Q5K_RTL_PRESENT
+ `define GLM53F_Q5K_RTL_PRESENT 1
+ `endif
 `endif
 
 `ifdef GLM53F_KDA_RTL_PRESENT

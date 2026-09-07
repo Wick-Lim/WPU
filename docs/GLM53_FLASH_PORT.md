@@ -973,6 +973,69 @@ Composing `glm53f_kda_attn` and the MLA/MoE sublayers inside `glm53f_hc_block` i
 assembly, and the 4.19 MB/layer recurrent state still lives in registers rather
 than BRAM/DDR — a residency decision, not plumbing.
 
+### 4.3p Q5_K read path — the last guard condition closes, and the blocker was again a premise
+
+`make q5k-loader`, 1610 checks, 1 must-fail injection. The packer now emits Q5_K
+tiles (`ckpt_pack_q4k.pack_q5k_weight`) and the **real** `weight_loader_q4k`
+streams them.
+
+**The `$fatal` was guarding a premise that did not hold.** The loader refused a
+Q5_K descriptor on the grounds that it "has no Q5_K tile geometry" and would
+stream Q4_K geometry — "same widths, wrong bytes, no error". Reading both sides
+showed a Q5_K tile needs **nothing new from the loader**:
+
+* its header fields **are** Q4_K's (`d`, `dmin`, 12-byte packed scales), so the
+  Q4_K *default* decode branch is already exactly right and `ns = nsblk·PE_N` is
+  unchanged — the extra 32 bytes of a 176 B super-block are `qh`, and `qh` never
+  reaches the RTL;
+* its 5-bit code rides `mm_w_hp`, the same 16-bit-per-column lane Q6_K and Q8_0
+  already use, **pre-assembled** by the packer as `nibble | 16·qh_bit`, which is
+  what `glm_matmul_q4k`'s Q5_K arm reads.
+
+So the missing half was the **packer**, not the loader — the third time on this
+branch that something recorded as a blocker turned out to be a framing error
+(§4.3g was the other). The `$fatal` is replaced by the reasoning, not just
+deleted.
+
+**Three independent checks, because "it round-trips" is not enough.**
+
+| check | what it rules out |
+|---|---|
+| packer round-trip, Q5_K at **nb=2**, bit-exact | the tile is lossy — including the fifth bit, since `q5k_codes_to_qs_qh` rebuilds **both** `qs` and `qh` |
+| dequant cross-check vs `q4k_ref.dequantize_block_q5_K` | the bytes survive but no longer *mean* the same thing |
+| `q5k_loader_tb` at **nb=3** | the packer and the RTL disagree on layout — the file the packer writes is the file the loader reads, with expectations from the pre-pack source |
+
+The injection packs the codes with the fifth bit **dropped** while leaving the
+header and the expectations intact: a byte-plausible Q5_K image that is really
+Q4_K data. It fails on the first beat (`0x1d` → `0x0d`). The corpus is checked to
+use the fifth bit on ≥25 % of codes (measured 48.9 %) — otherwise the gate would
+barely distinguish the two formats.
+
+**Two bugs found on the way.**
+* I overwrote `blk.0.ffn_down.weight` — Q4_K at **[8, 512], nb=2** — with the new
+  Q5_K tensor, silently deleting the packer selftest's only multi-super-block
+  Q4_K case. Caught by diffing the synthetic tensor list against `HEAD`.
+* `pack_gguf` relocated per-tile bases under `if desc["type"] == "Q4_K"`, so Q5_K
+  tiles pointed at the image's start instead of the tensor's. **It passed while
+  the Q5_K tensor happened to be first in the image** (`off == 0`) and only broke
+  once it was not — a hardcoded type check where a category was meant. Now
+  `TILED_TYPES`.
+
+**`GLM53F_Q5K_RTL_PRESENT` is defined. All three conditions are closed**, so the
+whole-model top elaborates by default — which broke the guard's own must-fail
+cases, since "no defines" is now a must-pass. Rather than let a gate that can no
+longer fail stand, each machine gained a `GLM53F_NO_*` test escape and the guard
+now forces them absent **one at a time**, requiring the top to go back to
+un-elaboratable. Same 10 checks, and each condition is now individually
+demonstrated to be load-bearing.
+
+**What this does not mean.** The three conditions were always about whether the
+three missing *machines* exist. They do. **The model is not assembled**: nothing
+instantiates `glm53f_kda_attn` or `glm53f_hc_block` into a decoder layer, and
+`glm_q4k_system` still drives the loader with a hardcoded single-tile descriptor
+and no `desc_wtype` at all — a pre-existing gap that applies to Q4_K equally.
+A passing elaboration is not a working model, and §4.2 tracks the difference.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1065,10 +1128,11 @@ make mhc-site                 # 39 + 2568:  one whole site, streams carried (4.3
 make hc-block                 # 20 + 2310:  TWO sites per block, wiring (4.3m)
 make kda-layer                # 84 + 968:   one whole KDA decode step (4.3n)
 make kda-attn                 # 228 + 726:  the same, fetching its own Q8_0 weights (4.3o)
+make q5k-loader               # 1610: packer-built Q5_K tile through the real loader (4.3p)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **32 must-fail
+rather than flipping a boolean. Between them they carry **33 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
 `INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
@@ -1077,7 +1141,7 @@ injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
 `INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}`,
 `INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}`,
-`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}` — plus
+`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, the packer's qh-dropped image — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains
 why a gate that cannot fail is worse than no gate).

@@ -51,6 +51,7 @@ kda_layer 968
 glm53f_kda_layer_gen 84
 kda_attn 726
 glm53f_kda_attn_gen 228
+q5k_loader 1610
 kda_gate 1224
 kda_gate_gen 5
 kda_conv 1280

@@ -224,24 +224,24 @@ module weight_loader_q4k #(
             default: ns = NSW'(nsblk_q) * NSW'(PE_N);
         endcase
     end
-    // ---- Q5_K guard -------------------------------------------------------
-    //   glm_matmul_q4k CAN consume Q5_K (it rides w_hp), but THIS loader cannot
-    //   yet lay out a Q5_K tile: that needs the packer to emit pre-assembled
-    //   5-bit codes and a Q5_K header geometry (176 B/super-block: d, dmin,
-    //   scales[12], qh[32], qs[128]) -- docs/GLM53_FLASH_PORT.md 4.2 item 6.
-    //   Without this guard a Q5_K descriptor takes the `default` above and
-    //   streams Q4_K geometry: same widths, wrong bytes, no error -- the exact
-    //   silent-wrongness this repo builds must-fail pairs to prevent.
-    //   Simulation-only: a per-cycle $fatal is not synthesizable.  `ifndef YOSYS,
-    //   NOT `synthesis translate_off (a legacy hot comment yosys warns about) and
-    //   NOT `ifndef SYNTHESIS -- nothing in this repo defines SYNTHESIS, so that
-    //   guard would exclude nothing.  Same convention as src/mla_attn_q4k.v and
-    //   src/swiglu_expert_q4k.v.  yosys predefines YOSYS.
-`ifndef YOSYS
-    always @(posedge clk)
-        if (!rst && (state == S_STREAM) && (wtype_q == WT_Q5K))
-            $fatal(1, "weight_loader_q4k: desc_wtype==WT_Q5K but this loader has no Q5_K tile geometry (packer item, docs/GLM53_FLASH_PORT.md 4.2) -- it would stream Q4_K geometry: same widths, wrong bytes, no error. Drive glm_matmul_q4k directly for Q5_K.");
-`endif
+    // ---- Q5_K: supported, and here is why nothing had to change ----------
+    //   This used to $fatal on a Q5_K descriptor, on the grounds that the loader
+    //   had "no Q5_K tile geometry" and would stream Q4_K geometry -- same widths,
+    //   wrong bytes, no error.  Reading both sides showed the premise was wrong.
+    //   A Q5_K tile needs NOTHING new here:
+    //     * its header fields ARE Q4_K's (d, dmin, 12-byte packed scales), so the
+    //       `default` header-decode branch above is already exactly right, and
+    //       `ns = nsblk*PE_N` is unchanged -- the extra 32 bytes of a 176 B
+    //       super-block are qh, and qh never reaches the RTL;
+    //     * its 5-bit code rides mm_w_hp, the same 16-bit-per-column lane Q6_K and
+    //       Q8_0 already use, PRE-ASSEMBLED by the packer as (nibble | 16*qh_bit)
+    //       -- which is what glm_matmul_q4k's Q5_K arm expects to read.
+    //   What was actually missing was the PACKER: ckpt_pack_q4k.pack_q5k_weight
+    //   now emits that layout, and `make q5k-loader` is the cross-TOOL gate --
+    //   the file the packer writes is the file this loader reads, with the
+    //   expectations taken from the pre-pack source arrays.  An injection that
+    //   drops the fifth bit (a byte-plausible image that is really Q4_K data) must
+    //   fail it.  docs/GLM53_FLASH_PORT.md 4.3p.
     wire [ADDR_W-1:0]        ns_ext    = {{(ADDR_W-NSW){1'b0}}, ns};
     wire [ADDR_W-1:0]        code_base = base_q + ns_ext;
     // bus slot (col-outer, super-block-inner, compile-time NSB stride) of the

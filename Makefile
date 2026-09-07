@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1402,6 +1402,42 @@ kda-attn:
 	    fi; \
 	done
 
+# ---- q5k-loader : the Q5_K READ PATH, packer -> image -> real loader -----------
+# glm_matmul_q4k has consumed Q5_K since the GEMM arm landed (`make mixedtype`).
+# What did not exist was a way to GET a tile to it: weight_loader_q4k $fatal'ed on
+# a Q5_K descriptor. Reading both sides showed that guard's premise was wrong -- a
+# Q5_K tile needs NOTHING new from the loader. Its header fields ARE Q4_K's
+# (d, dmin, 12-byte scales), so the loader's Q4_K default branch decodes it and
+# `ns = nsblk*PE_N` is unchanged; its 5-bit code rides mm_w_hp, the same
+# 16-bit-per-column lane Q6_K and Q8_0 already use. The missing half was the
+# PACKER, and ckpt_pack_q4k.pack_q5k_weight now emits that layout.
+#   Cross-TOOL gate: the file the packer writes is the file the RTL reads, with
+# expectations taken from the SOURCE arrays before packing. nb=3, because the
+# col-outer/sb-inner header order coincides with sb-outer only at nb==1.
+#   The packer's own selftest runs first: it round-trips a Q5_K tensor at nb=2
+# bit-exact AND dequant-cross-checks it against q4k_ref's ggml golden, so the
+# bytes are proven both lossless and still meaning the same thing.
+#   Injection: an image packed with the fifth bit DROPPED -- byte-plausible, but
+# really Q4_K data -- must fail.
+q5k-loader:
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/ckpt_pack_q4k.py --selftest 2>&1 | grep -q 'SELFTEST PASS' \
+	    || { echo "FAILED: ckpt_pack_q4k selftest (Q5_K round-trip / dequant cross-check)"; exit 1; }
+	@python3 tools/q5k_loader_crosscheck.py >/dev/null \
+	    || { echo "FAILED: q5k_loader_crosscheck image build"; exit 1; }
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/q5kl_sim test/q5k_loader_tb.v \
+	    src/weight_loader_q4k.v src/ecc_secded.v 2>/dev/null \
+	    || { echo "FAILED: q5k-loader compile"; exit 1; }
+	@printf '[%s] ' "q5k_loader"; $(VVP) $(BUILD_DIR)/q5kl_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: q5k_loader"; exit 1; }
+	@python3 tools/q5k_loader_crosscheck.py --inj-noqh >/dev/null
+	@if $(VVP) $(BUILD_DIR)/q5kl_sim 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	    echo "FAILED: q5k-loader qh-dropped injection PASSED -- the gate cannot tell a Q5_K image from Q4_K data"; exit 1; \
+	  else \
+	    echo "[q5k_loader_INJECT_noqh] injection correctly FAILED (the fifth bit is actually checked)"; \
+	  fi
+	@python3 tools/q5k_loader_crosscheck.py >/dev/null
+
 # ---- fp-sigmoid : an fp32 sigmoid, and the exp accuracy ceiling underneath it --
 # Until now the repo's only sigmoid was glm_act: bf16 in/out, polynomial exp, input
 # railed at +/-16. Three GLM-5.3-Flash paths are limited by it, each measured: the
@@ -1438,16 +1474,16 @@ glm53f-config-guard:
 	must_fail() { if "$$@" >/dev/null 2>&1; then echo "FAILED must-fail (elaborated anyway): $$*"; fail=1; fi; }; \
 	must_pass $(IVERILOG) -g2012 -I configs -tnull test/glm53f_dims_wrap.v; \
 	must_pass $(VERILATOR) --lint-only -Iconfigs --top-module glm53f_dims_wrap test/glm53f_dims_wrap.v; \
-	must_fail $(IVERILOG) -g2012 -I configs -tnull test/glm53f_fulltop_wrap.v; \
-	must_fail $(VERILATOR) --lint-only -Iconfigs --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
-	must_fail $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_KDA_RTL_PRESENT -DGLM53F_HC_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
-	must_fail $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_HC_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
-	must_pass $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_Q5K_RTL_PRESENT test/glm53f_fulltop_wrap.v; \
-	must_pass $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_Q5K_RTL_PRESENT --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
-	must_pass $(IVERILOG) -g2012 -I configs -tnull $(GLM53F_DEFS_IV) test/glm53f_fulltop_wrap.v; \
-	must_pass $(VERILATOR) --lint-only -Iconfigs $(GLM53F_DEFS_VL) --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
+	must_pass $(IVERILOG) -g2012 -I configs -tnull test/glm53f_fulltop_wrap.v; \
+	must_pass $(VERILATOR) --lint-only -Iconfigs --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
+	must_fail $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_NO_HC test/glm53f_fulltop_wrap.v; \
+	must_fail $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_NO_HC --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
+	must_fail $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_NO_KDA test/glm53f_fulltop_wrap.v; \
+	must_fail $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_NO_KDA --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
+	must_fail $(IVERILOG) -g2012 -I configs -tnull -DGLM53F_NO_Q5K test/glm53f_fulltop_wrap.v; \
+	must_fail $(VERILATOR) --lint-only -Iconfigs +define+GLM53F_NO_Q5K --top-module glm53f_fulltop_wrap test/glm53f_fulltop_wrap.v; \
 	[ $$fail -eq 0 ] \
-	    && echo "ALL 10 TESTS PASSED (5 cases x 2 tools: dims usable; whole-model top poisoned until the Q5_K loader path lands; hyper-connections AND KDA are BUILT, and the Q5K-only case elaborating is what pins that both defines really come from the header)" \
+	    && echo "ALL 10 TESTS PASSED (5 cases x 2 tools: dims usable; the whole-model top now ELABORATES because all three machines are built -- and forcing any ONE of them absent (GLM53F_NO_HC / NO_KDA / NO_Q5K) puts it back to un-elaboratable, which is what keeps each condition load-bearing rather than decorative)" \
 	    || { echo "FAILED: glm53f-config-guard"; exit 1; }
 
 # ---------------------------------------------------------------------------

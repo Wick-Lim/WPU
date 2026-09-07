@@ -357,6 +357,22 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   `kda-attn` runs the same composed bounds as `kda-layer` and measures an
   identical worst 7.8e-3, because the golden uses the dequantised weights, so the
   Q8_0 round trip is part of the input rather than the error.
+- **And the Q5_K read path landed, so all three guard conditions are closed.** The
+  packer emits Q5_K tiles (`ckpt_pack_q4k.pack_q5k_weight`) and the real
+  `weight_loader_q4k` streams them (`make q5k-loader`). The loader's `$fatal` was
+  guarding a premise that did not hold: a Q5_K tile needs *nothing* new from it —
+  its header fields **are** Q4_K's and its 5-bit code rides the same `mm_w_hp`
+  lane Q6_K and Q8_0 already use, pre-assembled by the packer. The missing half
+  was the packer. **`GLM53F_FULL_TOP_OK` is now defined** — which broke the
+  guard's own must-fail cases, so each machine gained a `GLM53F_NO_*` escape and
+  the guard now forces them absent one at a time. A gate that can no longer fail
+  proves nothing.
+- **What that does NOT mean:** the three conditions were about whether the three
+  missing *machines* exist. They do. **The model is not assembled** — nothing
+  instantiates `glm53f_kda_attn` or `glm53f_hc_block` into a decoder layer, and
+  `glm_q4k_system` still drives the loader with a hardcoded single-tile descriptor
+  and no `desc_wtype` at all (a pre-existing gap that applies to Q4_K equally). A
+  passing elaboration is not a working model.
 - **Also corrected: the "blocked on shared decoder RTL" note was wrong.** It
   assumed GLM-5.3-Flash would reuse `glm_decoder_block_q4k`; it does not — these
   are siblings, and a sibling declares its own port widths. Nothing shared has to
