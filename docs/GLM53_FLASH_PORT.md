@@ -1036,6 +1036,50 @@ instantiates `glm53f_kda_attn` or `glm53f_hc_block` into a decoder layer, and
 and no `desc_wtype` at all — a pre-existing gap that applies to Q4_K equally.
 A passing elaboration is not a working model, and §4.2 tracks the difference.
 
+### 4.3q Decoder block — a real sublayer inside the hyper-connection
+
+`src/glm53f_decoder_block.v` — `make dec-block`, 676 + 20 checks, 2 must-fail
+injections. The first module where a machine lives **inside** another: KDA
+attention wired into the attention site of the two-site mHC block, with the
+recurrence and the conv history advancing across it.
+
+```
+streams [4,D]
+  -> attn site: collapse -> attn_norm -> glm53f_kda_attn -> mix
+  -> FFN  site: collapse -> ffn_norm  -> <handshake>     -> mix
+  -> streams'
+```
+
+**Why this was wiring rather than redesign.** The mHC sublayer contract never
+changed: `attn_norm`/`ffn_norm` sit between `collapsed` and the sublayer on all 46
+blocks [scan], so the sublayer still sees `[D]` bf16 in and `[D]` bf16 out — the
+same shape `mla_attn_q4k` and the FFN already present. §4.3g's claim that
+hyper-connections and the KDA wrapper were "one piece of work" came from the
+premise that turned out to be wrong; they compose cleanly.
+
+**The FFN site is still a handshake, and that is a finding rather than laziness.**
+The census says GLM-5.3-Flash's dense FFN is **Q8_0** (`blk.N.ffn_{gate,up,down}`
+[12288, 4096] ×3) and its MoE experts are a **mix** — `ffn_gate_exps` Q4_K×42 +
+Q5_K×1, `ffn_down_exps` Q5_K×40 + Q6_K×3, shared expert Q8_0, router F32.
+`swiglu_expert_q4k`'s `w_q` port is **4 bits per lane**, so it can carry none of
+them. Hanging it off this block to make it look finished is exactly the
+silent-wrong-weights failure the repo builds must-fail pairs against. A Q8_0
+clamped SwiGLU is the next sibling.
+
+**Scope, stated exactly.** This is blocks 0–2's attention half: those three are
+the dense front (`N_DENSE = 3`) and they are KDA, since the first MLA block is 3.
+For the other 31 KDA blocks the FFN is MoE; for the 11 MLA blocks the attention
+site takes `mla_attn_q4k`, which is why `ATTN_KIND` exists as a parameter even
+though only the KDA arm is built — and `ATTN_KIND = 1` `$fatal`s rather than
+elaborating a block whose attention site is empty.
+
+**Both injections target the composition, not the arithmetic** (the two machines
+have their own gates): `INJ_DBLK_SITE_SWAP` exchanges which sublayer serves which
+site, and `INJ_DBLK_NO_KDA` routes *both* sites to the FFN handshake so the
+attention sublayer never runs. The second is the one worth having — the block
+still completes and the streams still move, so nothing about the handshake would
+reveal it.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1129,10 +1173,11 @@ make hc-block                 # 20 + 2310:  TWO sites per block, wiring (4.3m)
 make kda-layer                # 84 + 968:   one whole KDA decode step (4.3n)
 make kda-attn                 # 228 + 726:  the same, fetching its own Q8_0 weights (4.3o)
 make q5k-loader               # 1610: packer-built Q5_K tile through the real loader (4.3p)
+make dec-block                # 20 + 676:  KDA attention inside the mHC block (4.3q)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **33 must-fail
+rather than flipping a boolean. Between them they carry **35 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
 `INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
@@ -1141,7 +1186,8 @@ injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
 `INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}`,
 `INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}`,
-`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, the packer's qh-dropped image — plus
+`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, `INJ_DBLK_{SITE_SWAP,NO_KDA}`,
+the packer's qh-dropped image — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains
 why a gate that cannot fail is worse than no gate).

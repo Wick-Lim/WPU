@@ -373,6 +373,16 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   `glm_q4k_system` still drives the loader with a hardcoded single-tile descriptor
   and no `desc_wtype` at all (a pre-existing gap that applies to Q4_K equally). A
   passing elaboration is not a working model.
+- **Assembly started: a real sublayer now lives INSIDE the hyper-connection.**
+  `src/glm53f_decoder_block.v` (`make dec-block`) wires `glm53f_kda_attn` into the
+  attention site of the two-site mHC block, with the recurrence and conv history
+  advancing across it. That is blocks 0–2's attention half exactly — those three
+  are the dense front (`N_DENSE = 3`) and they are KDA, since the first MLA block
+  is 3. **The FFN site is still a handshake, and that is a finding:** the census
+  says the dense FFN is **Q8_0** and the MoE experts are a Q4_K/Q5_K/Q6_K mix, so
+  `swiglu_expert_q4k` — 4 bits per lane — can carry none of them. Hanging it off
+  anyway to make the block look finished is the silent-wrong-weights failure this
+  repo builds must-fail pairs against. A Q8_0 clamped SwiGLU is next.
 - **Also corrected: the "blocked on shared decoder RTL" note was wrong.** It
   assumed GLM-5.3-Flash would reuse `glm_decoder_block_q4k`; it does not — these
   are siblings, and a sibling declares its own port widths. Nothing shared has to

@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1437,6 +1437,48 @@ q5k-loader:
 	    echo "[q5k_loader_INJECT_noqh] injection correctly FAILED (the fifth bit is actually checked)"; \
 	  fi
 	@python3 tools/q5k_loader_crosscheck.py >/dev/null
+
+# ---- dec-block : KDA attention wired INSIDE the two-site mHC block -------------
+# src/glm53f_decoder_block.v -- the first module where a real sublayer lives inside
+# the hyper-connection. `make hc-block` checks the two mHC sites with stubs;
+# `make kda-attn` checks the KDA sublayer alone; this checks the composition, with
+# the recurrence and conv history advancing across the attention site.
+#   The FFN site stays a handshake ON PURPOSE: GLM-5.3-Flash's dense FFN is Q8_0
+# (`blk.N.ffn_{gate,up,down}` [scan]) and its MoE experts are a Q4_K/Q5_K/Q6_K mix,
+# so swiglu_expert_q4k -- 4 bits per lane -- cannot carry either. Hanging it off
+# anyway to make the block look finished is the silent-wrong-weights failure this
+# repo builds must-fail pairs against. A Q8_0 clamped SwiGLU is the next sibling.
+#   ATTN_KIND=1 (MLA) $fatals: mla_attn_q4k is not wired into the site yet, and
+# elaborating as if it were would be a top that lies.
+dec-block:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_decoder_block_gen"; python3 tools/glm53f_decoder_block_gen.py --selftest \
+	    || { echo "FAILED: glm53f_decoder_block_gen self-test"; exit 1; }
+	@python3 tools/glm53f_decoder_block_gen.py 4 $(BUILD_DIR)/glm53f_decoder_block_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
+	    -o $(BUILD_DIR)/dec_block_sim test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \
+	    src/glm53f_kda_gemv.v src/glm53f_kda_layer.v src/mhc_block_site.v \
+	    src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v \
+	    src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v src/rmsnorm_unit.v \
+	    src/kda_conv_step.v src/kda_gate_step.v src/kda_recur.v src/kda_onorm_step.v \
+	    src/glm_act.v src/glm_matmul_q4k.v 2>/dev/null \
+	    || { echo "FAILED: dec-block compile"; exit 1; }
+	@printf '[%s] ' "dec_block"; $(VVP) $(BUILD_DIR)/dec_block_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: dec_block"; exit 1; }
+	@for inj in INJ_DBLK_SITE_SWAP INJ_DBLK_NO_KDA; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
+	        -o $(BUILD_DIR)/dec_block_inj test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \
+	    src/glm53f_kda_gemv.v src/glm53f_kda_layer.v src/mhc_block_site.v \
+	    src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v \
+	    src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v src/rmsnorm_unit.v \
+	    src/kda_conv_step.v src/kda_gate_step.v src/kda_recur.v src/kda_onorm_step.v \
+	    src/glm_act.v src/glm_matmul_q4k.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/dec_block_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: dec-block $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[dec_block_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
 
 # ---- fp-sigmoid : an fp32 sigmoid, and the exp accuracy ceiling underneath it --
 # Until now the repo's only sigmoid was glm_act: bf16 in/out, polynomial exp, input
