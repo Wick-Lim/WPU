@@ -393,6 +393,17 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   the attention sublayer by its own gated 0.03 moves a final stream by 0.885. The
   bound is now an envelope: perturb the map and the attention output within their
   own gated bounds and re-run the whole block. Both injections still fire hard.
+- **MoE router** (`src/glm53f_moe_router.v`, `make moe-router`). `moe_router_q4k`'s
+  math was already right; two things differ and both are in the checkpoint — its
+  gate weights are Q4_K while `ffn_gate_inp` is **F32** [4096, 288], and it has no
+  `exp_probs_b` input while GLM-5.3-Flash carries one on all 43 MoE blocks. It uses
+  the **fp32** sigmoid, and here that is load-bearing rather than an improvement:
+  the scores feed a top-k, so a 1.2 % bf16 error near a tie changes *which expert
+  runs*. **One thing could not be resolved and is recorded rather than buried:**
+  whether `exp_probs_b` biases selection only (the DeepSeek-v3 convention) or the
+  weights too. No modeling source is checked out here, so the reference implements
+  **both**, `make glm53f-ref` asserts they disagree, and the other reading is a
+  must-fail injection — it fails on the *weight* with the *same expert* selected.
 - **Also corrected: the "blocked on shared decoder RTL" note was wrong.** It
   assumed GLM-5.3-Flash would reuse `glm_decoder_block_q4k`; it does not — these
   are siblings, and a sibling declares its own port widths. Nothing shared has to

@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 moe-router all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 moe-router unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1512,6 +1512,45 @@ swiglu-q8:
 	        echo "FAILED: swiglu-q8 $$inj PASSED -- that trap is not actually checked"; exit 1; \
 	    else \
 	        echo "[swiglu_q8_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- moe-router : GLM-5.3-Flash's MoE router ----------------------------------
+# src/glm53f_moe_router.v. moe_router_q4k's MATH is already right for this model
+# -- sigmoid, top-k, renormalise, scale -- but two things differ and both are in
+# the checkpoint: its gate weights are Q4_K (w_q is 4 bits/lane) while
+# ffn_gate_inp is F32 [4096,288], and it has NO exp_probs_b input while
+# GLM-5.3-Flash carries one on all 43 MoE blocks.
+#   fp32_sigmoid_pipe, not glm_act, and the reason is DISCRETENESS: these scores
+# feed a TOP-K, so a 1.2% bf16 error near a tie changes WHICH EXPERT RUNS. That is
+# an unbounded output change, not a tolerance question -- the case the fp32 sigmoid
+# was built for.
+#   THE BIAS SEMANTICS IS AN ASSUMPTION, and the gate makes it testable rather than
+# hiding it. The DeepSeek-v3 convention llama.cpp follows adds exp_probs_b when
+# CHOOSING and weights by the UNBIASED sigmoid; no GLM-5.3-Flash source is checked
+# out here to confirm it. Both readings pick the SAME experts and differ only in
+# the weights, so glm53f-ref implements both and asserts they disagree, and
+# INJ_MOER_BIAS_WEIGHTS is the other reading and must fail.
+#   The corpus rejects draws whose top-k margin is under 1e-3, where the DUT's
+# fp32 sigmoid and the reference's float64 one could legitimately disagree about
+# the ordering -- a real limitation, recorded rather than papered over.
+moe-router:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_moe_router_gen"; python3 tools/glm53f_moe_router_gen.py --selftest \
+	    || { echo "FAILED: glm53f_moe_router_gen self-test"; exit 1; }
+	@python3 tools/glm53f_moe_router_gen.py 16 $(BUILD_DIR)/glm53f_moe_router_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_moe_router_vec.txt"' \
+	    -o $(BUILD_DIR)/moe_router_sim test/glm53f_moe_router_tb.v src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: moe-router compile"; exit 1; }
+	@printf '[%s] ' "moe_router"; $(VVP) $(BUILD_DIR)/moe_router_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: moe_router"; exit 1; }
+	@for inj in INJ_MOER_NO_BIAS INJ_MOER_BIAS_WEIGHTS; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_moe_router_vec.txt"' \
+	        -o $(BUILD_DIR)/moe_router_inj test/glm53f_moe_router_tb.v src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/moe_router_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: moe-router $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[moe_router_INJECT_$$inj] injection correctly FAILED"; \
 	    fi; \
 	done
 

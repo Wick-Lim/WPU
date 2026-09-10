@@ -280,6 +280,48 @@ def hc_mix(hidden_streams, comb, post, sub_out):
     return out
 
 
+def moe_route(logits, exp_bias, topk=8, scale=2.5, weights_norm=True,
+              bias_selects_only=True):
+    """GLM-5.3-Flash MoE routing, from the checkpoint's own metadata.
+
+      [gguf] expert_gating_func = 2       -> SIGMOID, not softmax
+      [gguf] expert_weights_norm = True   -> the selected weights are renormalised
+      [gguf] expert_weights_scale = 2.5
+      [gguf] expert_used_count = 8, expert_count = 288
+      [scan] blk.N.exp_probs_b.bias [288] F32 exists on all 43 MoE blocks
+
+        scores = sigmoid(W_g @ x)                       [E]
+        idx    = TOP-K(scores + exp_bias)               lower-index tie-break
+        w      = scores[idx]        <- bias_selects_only=True
+                 (scores+bias)[idx] <- bias_selects_only=False
+        w      = w / sum(w) * scale                     (weights_norm)
+
+    THE UNRESOLVED PART, STATED RATHER THAN HIDDEN.  `bias_selects_only` is an
+    ASSUMPTION, not a transcription: the DeepSeek-v3 convention that llama.cpp
+    follows adds `exp_probs_b` only when CHOOSING experts and weights by the
+    UNBIASED sigmoid scores. This branch has no GLM-5.3-Flash modeling source
+    checked out, so that reading could not be confirmed against it. Both readings
+    pick the SAME experts and differ only in the weights, so the difference is
+    real but easy to miss -- which is why both are implemented here and
+    `make glm53f-ref` asserts they disagree. Anyone with the source can settle it
+    by reading one line; until then the RTL implements bias_selects_only=True and
+    docs/GLM53_FLASH_PORT.md 4.3s records it as assumed.
+    """
+    sc = sigmoid(np.asarray(logits, F32)).astype(F32)
+    b = np.asarray(exp_bias, F32)
+    choose = (sc + b).astype(F32)
+    # lower-index tie-break, matching moe_router_q4k's TOP-K
+    order = sorted(range(sc.shape[0]), key=lambda i: (-float(choose[i]), i))
+    idx = sorted(order[:topk])
+    w = np.array([sc[i] if bias_selects_only else choose[i] for i in idx], F32)
+    if weights_norm:
+        tot = F32(0.0)
+        for v in w:
+            tot = F32(tot + v)
+        w = (w / tot).astype(F32)
+    return np.array(idx, np.int64), (w * F32(scale)).astype(F32)
+
+
 # ------------------------------------------------------------------ self-test
 def _selftest():
     rng = np.random.default_rng(0x5F3)
@@ -398,6 +440,27 @@ def _selftest():
                            mixed_r),
         "mHC: numpy matmul matches the pinned order -- the pin is not live")
 
+    # --- MoE routing: sigmoid gating, the expert bias, and the reading we assumed ---
+    E, K = 16, 4
+    lg = (rng.normal(size=E) * 2.0).astype(F32)
+    eb = (rng.normal(size=E) * 0.5).astype(F32)
+    i1, w1 = moe_route(lg, eb, K, 2.5)
+    chk(i1.shape == (K,) and w1.shape == (K,), "moe: shapes wrong")
+    chk(len(set(i1.tolist())) == K, "moe: repeated expert index")
+    chk(np.all(np.diff(i1) > 0), "moe: indices not ascending")
+    # weights_norm=True means they sum to the scale, not to 1
+    chk(abs(float(w1.sum()) - 2.5) < 2e-3, "moe: normalised weights do not sum to the scale")
+    # the bias must actually change the SELECTION, or carrying it is pointless
+    i0, _ = moe_route(lg, np.zeros(E, F32), K, 2.5)
+    chk(not np.array_equal(i0, i1), "moe: exp_probs_b never changed the selection")
+    # ... and the two READINGS must differ, or the assumption would not matter
+    _, w2 = moe_route(lg, eb, K, 2.5, bias_selects_only=False)
+    chk(not np.array_equal(w1, w2),
+        "moe: the two exp_probs_b readings agree -- the assumption would be untestable")
+    # sigmoid, not softmax: doubling every logit must NOT leave the weights fixed
+    _, w3 = moe_route((lg * F32(2.0)).astype(F32), eb, K, 2.5)
+    chk(not np.allclose(w1, w3), "moe: gating looks scale-invariant -- softmax, not sigmoid?")
+
     if fails:
         for f in fails:
             print("  FAIL:", f)
@@ -406,7 +469,8 @@ def _selftest():
     print(f"ALL {n} TESTS PASSED (clamped SwiGLU asymmetry, l2norm, forget-gate "
           f"range + signed zero, KDA delta rule + decay + beta=0, mHC double "
           f"stochasticity + post range, hc_collapse vs hyper_connection's own "
-          f"collapsed, hc_mix identities + the pinned-order pin)")
+          f"collapsed, hc_mix identities + the pinned-order pin, MoE sigmoid "
+          f"routing with exp_probs_b and both readings of it)")
     return 0
 
 

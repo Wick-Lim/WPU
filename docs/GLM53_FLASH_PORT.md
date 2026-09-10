@@ -1128,6 +1128,69 @@ block with an empty site: `ATTN_KIND = 1` (MLA, 11 blocks) and `FFN_KIND = 1`
 (MoE — `ffn_*_exps` is a Q4_K/Q5_K/Q6_K mix plus a router and a shared expert,
 for the other 31 KDA blocks).
 
+### 4.3s MoE router — and an assumption I could not resolve, made testable
+
+`src/glm53f_moe_router.v` — `make moe-router`, 80 + 123 checks, 2 must-fail
+injections. Plus `moe_route` in the executable spec (`make glm53f-ref` 21 → **28**).
+
+**`moe_router_q4k`'s math was already right**: sigmoid → top-k → renormalise →
+scale, matching `expert_gating_func = 2`, `expert_weights_norm = True` and
+`expert_weights_scale = 2.5`. Two things differ, and both are in the checkpoint:
+its gate weights are Q4_K (`w_q` is 4 bits per lane) while `ffn_gate_inp` is
+**F32** [4096, 288]; and it has **no `exp_probs_b` input** while GLM-5.3-Flash
+carries one — `blk.N.exp_probs_b.bias [288] F32` — on all 43 MoE blocks. That is
+the fifth time the census has redirected a design on this branch.
+
+**fp32 sigmoid, not `glm_act`, and the reason is discreteness.** Everywhere else
+a 1.2 % bf16 sigmoid error is a tolerance question. Here it is not: these scores
+feed a **top-k**, so near a tie that error changes *which expert runs* — an
+unbounded output change. This is the case §4.3j's fp32 sigmoid was built for, and
+the first place on this branch where it is load-bearing rather than an
+improvement.
+
+**The assumption, stated rather than buried.** `exp_probs_b` is added when
+**choosing** experts, and the weights come from the **unbiased** sigmoid scores.
+That is the DeepSeek-v3 convention llama.cpp follows — it is **not** transcribed
+from a GLM-5.3-Flash source, because none is checked out on this branch. The two
+readings pick the **same experts** and differ only in the weights, so the
+difference is real and quiet. Rather than pick silently:
+
+* `glm53_flash_ref.moe_route` implements **both** (`bias_selects_only`), and
+  `make glm53f-ref` asserts they **disagree** — if they ever agreed, the
+  assumption would be untestable and this note would be pointless;
+* `INJ_MOER_BIAS_WEIGHTS` is the other reading and must fail — it does, on the
+  *weight* while the *same expert* is selected, which is precisely the shape of
+  the mistake;
+* `INJ_MOER_NO_BIAS` drops the bias from selection entirely and must fail too.
+
+Anyone with the modeling source can settle this by reading one line. Until then
+the RTL implements `bias_selects_only = True` and this section is where it is
+recorded.
+
+**A corpus filter that is a real limitation, not a convenience.** Draws whose
+top-k margin (K-th minus (K+1)-th biased score) is under **1e-3** are rejected and
+counted. At that margin the DUT's fp32 sigmoid (790 ULP) and the reference's
+float64 one can legitimately disagree about the ordering, and the selection is
+simply not determined by the reference. Measured, 0 of 16 draws needed rejecting
+at this slice, and `exp_probs_b` changes the selection in **15 of 16** — so the
+bias is doing real work in the corpus, not sitting inert.
+
+**Two TB conventions I got wrong first**, both fixed by making the check match the
+semantics rather than the implementation:
+* the reference returns the selected indices **ascending** while `topk_select`
+  returns them **score-descending**. Neither is more correct — the model sums over
+  the selected experts, so emission order is a convention. The check is now
+  order-independent: compare the selected **set**, then match each weight to its
+  own index.
+* a flat 0.01 weight tolerance is **below one bf16 ULP** at these magnitudes
+  (0.0156 near 2.0) — a bound no correct DUT could meet. Now relative + absolute,
+  and the measured worst is exactly one ULP.
+
+**What the MoE still needs:** the expert FFN itself — 288 experts at inter 2048,
+`ffn_{gate,up}_exps` Q4_K×42 + Q5_K×1 and `ffn_down_exps` Q5_K×40 + Q6_K×3, plus
+the always-on shared expert (Q8_0, inter 2048). `FFN_KIND = 1` on the decoder
+block still `$fatal`s.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1223,10 +1286,11 @@ make kda-attn                 # 228 + 726:  the same, fetching its own Q8_0 weig
 make q5k-loader               # 1610: packer-built Q5_K tile through the real loader (4.3p)
 make dec-block                # 20 + 676:  a complete decoder layer, blocks 0-2 (4.3q, 4.3r)
 make swiglu-q8                # 15 + 204:  the dense FFN, clamped SwiGLU over Q8_0 (4.3r)
+make moe-router               # 123 + 80:  sigmoid gating + exp_probs_b (4.3s)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **37 must-fail
+rather than flipping a boolean. Between them they carry **39 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
 `INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
@@ -1235,7 +1299,7 @@ injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
 `INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}`,
 `INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}`,
-`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, `INJ_DBLK_{SITE_SWAP,NO_KDA}`, `INJ_SWQ8_{NOCLAMP,Q4K_TYPE}`,
+`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, `INJ_DBLK_{SITE_SWAP,NO_KDA}`, `INJ_SWQ8_{NOCLAMP,Q4K_TYPE}`, `INJ_MOER_{NO_BIAS,BIAS_WEIGHTS}`,
 the packer's qh-dropped image — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains

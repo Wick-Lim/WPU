@@ -56,6 +56,8 @@ dec_block 676
 glm53f_decoder_block_gen 20
 swiglu_q8 204
 glm53f_swiglu_q8_gen 15
+moe_router 80
+glm53f_moe_router_gen 123
 kda_gate 1224
 kda_gate_gen 5
 kda_conv 1280
@@ -64,7 +66,7 @@ fp32_ieee 10000
 kda_recur(RSQRT) 5184
 kda_recur(EXACT) 5184
 kda_gen 80
-glm53f-ref 21
+glm53f-ref 28
 glm53f-config-guard 10
 axi_boot_writer 403
 axi_master_dma 7
