@@ -8,21 +8,23 @@
 //     -> mHC FFN site:       collapse -> ffn_norm  -> <FFN handshake>  -> mix
 //     -> streams'
 //
-// WHAT IS WIRED AND WHAT IS NOT.  The attention side is complete: glm53f_kda_attn
-// fetches its own nine Q8_0 projections and threads its own recurrence and conv
-// history, and this block routes the mHC site's handshake to it. The FFN side is
-// still a handshake, and deliberately so -- GLM-5.3-Flash's dense FFN is Q8_0
-// (`blk.N.ffn_{gate,up,down}` [scan], not Q4_K) and its MoE experts are a
-// Q4_K/Q5_K/Q6_K mix, so swiglu_expert_q4k cannot carry either: its w_q port is
-// 4 bits per lane. A Q8_0-capable clamped SwiGLU is the next sibling, and
-// pretending this block is finished by hanging the Q4_K one off it would be the
-// silent-wrong-weights failure this repo builds must-fail pairs to prevent.
+// BOTH SIDES ARE NOW WIRED, so this is a COMPLETE GLM-5.3-Flash decoder layer for
+// blocks 0-2: glm53f_kda_attn in the attention site (fetching its own nine Q8_0
+// projections, threading its own recurrence and conv history) and
+// glm53f_swiglu_q8 in the FFN site (gate/up/down off Q8_0, asymmetric clamp).
+// Those three blocks are the dense front (GLM53F_N_DENSE = 3) and they are KDA,
+// since the first MLA block is 3.
 //
-// SO THIS IS BLOCKS 0-2's ATTENTION HALF, exactly.  Those three are the dense
-// front (GLM53F_N_DENSE = 3) and they are KDA, since the first MLA block is 3.
-// For the other 31 KDA blocks the FFN is MoE; for the 11 MLA blocks the attention
-// site takes mla_attn_q4k instead, which is why ATTN_KIND exists as a parameter
-// even though only the KDA arm is built.
+// WHY THE FFN IS A SIBLING AND NOT swiglu_expert_q4k: that unit's w_q port is
+// FOUR BITS PER LANE and the census says this FFN is Q8_0
+// (`blk.N.ffn_{gate,up,down}` [12288,4096] x3 [scan]). It cannot carry these
+// weights at all -- not "less accurately", at all.
+//
+// WHAT IS STILL PARAMETERISED BUT NOT BUILT.  For the other 31 KDA blocks the FFN
+// is MoE (`ffn_*_exps`, a Q4_K/Q5_K/Q6_K mix plus a router and a shared expert);
+// for the 11 MLA blocks the attention site takes mla_attn_q4k. ATTN_KIND and
+// FFN_KIND exist for those and BOTH $fatal on the unbuilt arm -- elaborating a
+// block whose site is empty would be a top that lies.
 //
 // The mHC sublayer contract is what makes this a wiring job rather than a
 // redesign: attn_norm/ffn_norm sit between `collapsed` and the sublayer on all 46
@@ -44,7 +46,10 @@ module glm53f_decoder_block #(
     parameter integer CONV_K      = 4,
     parameter integer TN          = 2,
     parameter integer KMAX        = 32,
+    parameter integer INTER       = 32,     // dense FFN inter size
     parameter integer ATTN_KIND   = 0,      // 0 = KDA (34/45). 1 = MLA: not built.
+    parameter integer FFN_KIND    = 0,      // 0 = dense Q8_0 SwiGLU. 1 = MoE: not built.
+    parameter [15:0]  SWIGLU_LIM  = 16'h4120,  // 10.0 bf16 = swiglu_limit
     parameter [31:0]  EPS         = 32'h358637BD,
     parameter [31:0]  RMS_EPS     = 32'h3727C5AC,
     parameter [31:0]  INV_SQRT_DK = 32'h3F000000,
@@ -94,16 +99,20 @@ module glm53f_decoder_block #(
     input  wire [32*3*KH*DK*(CONV_K-1)-1:0] kda_hist_in,
     output wire [32*3*KH*DK*(CONV_K-1)-1:0] kda_hist_out,
 
-    // ---- FFN sublayer: still a handshake (see the header) ----
-    output reg                           ffn_start,
-    output reg  [16*MODEL_DIM-1:0]       ffn_vec,
-    input  wire                          ffn_done,
-    input  wire [16*MODEL_DIM-1:0]       ffn_out
+    // ---- FFN sublayer: its own Q8_0 weight pull ----
+    output wire                          ffn_w_req,
+    output wire [1:0]                    ffn_w_sel,
+    output wire [$clog2((INTER>MODEL_DIM?INTER:MODEL_DIM)/TN+1)-1:0] ffn_w_grp,
+    output wire [$clog2(KMAX+1)-1:0]     ffn_w_k,
+    input  wire [16*TN-1:0]              ffn_w_hp,
+    input  wire [16*TN*((KMAX+31)/32)-1:0] ffn_w_q8_d
 );
 `ifndef YOSYS
     initial begin
         if (ATTN_KIND != 0)
             $fatal(1, "glm53f_decoder_block: ATTN_KIND=1 (MLA) is not built -- mla_attn_q4k is not wired into the mHC attention site yet, and elaborating as if it were would be a top that lies");
+        if (FFN_KIND != 0)
+            $fatal(1, "glm53f_decoder_block: FFN_KIND=1 (MoE) is not built -- the router, the shared expert and the Q4_K/Q5_K/Q6_K expert mix are not wired, and elaborating as if they were would be a top that lies");
     end
 `endif
 
@@ -142,6 +151,20 @@ module glm53f_decoder_block #(
         .hist_in(kda_hist_in), .hist_out(kda_hist_out),
         .y_out(kda_y));
 
+    // ---- the dense FFN, sitting in the FFN site ----
+    reg                     ffn_start;
+    reg  [16*MODEL_DIM-1:0] ffn_x;
+    wire                    ffn_busy, ffn_done;
+    wire [16*MODEL_DIM-1:0] ffn_y;
+
+    glm53f_swiglu_q8 #(.HIDDEN(MODEL_DIM), .INTER(INTER), .TN(TN), .KMAX(KMAX),
+                       .LIM(SWIGLU_LIM)) u_ffn (
+        .clk(clk), .rst(rst), .start(ffn_start), .busy(ffn_busy), .done(ffn_done),
+        .x_in(ffn_x),
+        .w_req(ffn_w_req), .w_sel(ffn_w_sel), .w_grp(ffn_w_grp), .w_k(ffn_w_k),
+        .w_hp(ffn_w_hp), .w_q8_d(ffn_w_q8_d),
+        .y_out(ffn_y));
+
     integer i;
     localparam [1:0] R_IDLE = 2'd0, R_ATTN = 2'd1, R_FFN = 2'd2;
     reg [1:0] rst_st;
@@ -163,18 +186,18 @@ module glm53f_decoder_block #(
                     if (hc_sub_is_ffn) begin
                         kda_x <= hc_sub_vec; kda_start <= 1'b1; rst_st <= R_ATTN;
                     end else begin
-                        ffn_vec <= hc_sub_vec; ffn_start <= 1'b1; rst_st <= R_FFN;
+                        ffn_x <= hc_sub_vec; ffn_start <= 1'b1; rst_st <= R_FFN;
                     end
 `else
 `ifdef INJ_DBLK_NO_KDA
-                    // must FAIL: BOTH sites routed to the FFN handshake, i.e. the
+                    // must FAIL: BOTH sites routed to the FFN, i.e. the
                     // attention sublayer never runs. The residual streams still
                     // move and the block still completes -- which is exactly why
                     // this needs to be checked rather than assumed.
-                    ffn_vec <= hc_sub_vec; ffn_start <= 1'b1; rst_st <= R_FFN;
+                    ffn_x <= hc_sub_vec; ffn_start <= 1'b1; rst_st <= R_FFN;
 `else
                     if (hc_sub_is_ffn) begin
-                        ffn_vec <= hc_sub_vec; ffn_start <= 1'b1; rst_st <= R_FFN;
+                        ffn_x <= hc_sub_vec; ffn_start <= 1'b1; rst_st <= R_FFN;
                     end else begin
                         kda_x <= hc_sub_vec; kda_start <= 1'b1; rst_st <= R_ATTN;
                     end
@@ -191,7 +214,7 @@ module glm53f_decoder_block #(
                 end
 
                 R_FFN: if (ffn_done) begin
-                    hc_sub_out <= ffn_out;
+                    hc_sub_out <= ffn_y;
                     hc_sub_done <= 1'b1; rst_st <= R_IDLE;
                 end
 

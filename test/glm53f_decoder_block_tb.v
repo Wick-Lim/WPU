@@ -8,12 +8,22 @@
 // the conv history advancing across it. The golden composes both goldens, so a
 // routing mistake between the two machines cannot hide.
 //
-// TWO STUBS, one real: the KDA weight responder answers the nine Q8_0 projections
-// the way the kda-attn gate does, and the FFN site keeps the 0.5*normed stub --
-// GLM-5.3-Flash's dense FFN is Q8_0 and its MoE experts are a Q4_K/Q5_K/Q6_K mix,
-// so swiglu_expert_q4k (4 bits per lane) cannot carry either.
+// BOTH sites now carry a real sublayer, so this is a COMPLETE decoder layer for
+// blocks 0-2: KDA in the attention site, glm53f_swiglu_q8 in the FFN site. Two
+// weight responders, no stubs -- the nine KDA Q8_0 projections and the FFN's
+// gate/up/down, both answered the way their own gates do.
 //
-// Must FAIL: -DINJ_DBLK_SITE_SWAP (the two sites' sublayers exchanged).
+// THE STREAM BOUND IS AN ENVELOPE, NOT A SUM.  The generator perturbs the mHC map
+// outputs by their own gated ULP bounds AND the attention sublayer's output by its
+// own gated abs bound, then re-runs the WHOLE block. That is necessary rather than
+// fastidious: measured, a 0.03 perturbation at the attention output moves a final
+// stream by 0.885 -- a gain of ~29x, because the dense FFN's silu and its 32-term
+// DOWN reduction amplify whatever reaches them. Adding the sublayers' bounds
+// together under-counts by that factor, which is exactly how the first three
+// versions of this bound failed.
+//
+// Must FAIL: -DINJ_DBLK_SITE_SWAP (the two sites' sublayers exchanged) and
+//            -DINJ_DBLK_NO_KDA (both sites routed to the FFN).
 //============================================================================
 `timescale 1ns/1ps
 `include "glm_fp.vh"
@@ -29,6 +39,10 @@
 
 module glm53f_decoder_block_tb;
     localparam integer MD=16, H=4, KH=2, DK=4, DV=4, RANK=4, CK=4, TN=2, KMAX=32;
+    localparam integer INTER=32;
+    localparam integer FG=0, FU=FG+INTER*MD, FD=FU+INTER*MD, NFC=FD+MD*INTER;
+    localparam integer FSG=0, FSU=FSG+INTER, FSD=FSU+INTER, NFS=FSD+MD;
+    localparam integer FGW=$clog2((INTER>MD?INTER:MD)/TN+1);
     localparam integer MIXN=(2+H)*H, HK=H*MD, NBH=HK/32;
     localparam integer HDK=KH*DK, HDV=KH*DV, C=3*HDK;
     localparam integer PO=(HDK>MD)?HDK:MD, NB8=(KMAX+31)/32;
@@ -59,7 +73,7 @@ module glm53f_decoder_block_tb;
     reg  [32*NS-1:0] ks_in;
     reg  [32*NH-1:0] kh_in;
 
-    wire busy, done, kw_req, ffn_start;
+    wire busy, done, kw_req;
     wire [3:0] kw_sel;
     wire [$clog2(PO/TN+1)-1:0] kw_grp;
     wire [$clog2(KMAX+1)-1:0]  kw_k;
@@ -68,12 +82,15 @@ module glm53f_decoder_block_tb;
     wire [32*NST-1:0] s_cur;
     wire [32*NS-1:0]  ks_out;
     wire [32*NH-1:0]  kh_out;
-    wire [16*MD-1:0]  ffn_vec;
-    reg               ffn_done;
-    reg  [16*MD-1:0]  ffn_out;
+    wire              ffn_w_req;
+    wire [1:0]        ffn_w_sel;
+    wire [FGW-1:0]    ffn_w_grp;
+    wire [$clog2(KMAX+1)-1:0] ffn_w_k;
+    reg  [16*TN-1:0]  ffn_w_hp;
+    reg  [16*TN*NB8-1:0] ffn_w_q8d;
 
     glm53f_decoder_block #(.MODEL_DIM(MD),.H(H),.KH(KH),.DK(DK),.DV(DV),.RANK(RANK),
-                           .CONV_K(CK),.TN(TN),.KMAX(KMAX)) dut (
+                           .CONV_K(CK),.TN(TN),.KMAX(KMAX),.INTER(INTER)) dut (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done),
         .streams_load(sload), .streams_init(s_init), .streams_cur(s_cur),
         .a_w_q(awq), .a_w_d(awd), .a_base(ab), .a_s0(a0), .a_s1(a1), .a_s2(a2),
@@ -83,7 +100,8 @@ module glm53f_decoder_block_tb;
         .kda_w_hp(kw_hp), .kda_w_q8_d(kw_q8d),
         .decay_in(decay_in), .dt_bias_in(dtb_in), .conv_w_in(cw_in), .onorm_w_in(onw_in),
         .kda_s_in(ks_in), .kda_s_out(ks_out), .kda_hist_in(kh_in), .kda_hist_out(kh_out),
-        .ffn_start(ffn_start), .ffn_vec(ffn_vec), .ffn_done(ffn_done), .ffn_out(ffn_out));
+        .ffn_w_req(ffn_w_req), .ffn_w_sel(ffn_w_sel), .ffn_w_grp(ffn_w_grp),
+        .ffn_w_k(ffn_w_k), .ffn_w_hp(ffn_w_hp), .ffn_w_q8_d(ffn_w_q8d));
 
     // ---- KDA Q8_0 weight responder (same shape as the kda-attn gate) ----
     reg [7:0]  cmem [0:NCODE-1];
@@ -109,30 +127,30 @@ module glm53f_decoder_block_tb;
         end
     end
 
-    // ---- FFN stub: 0.5 * the normed vector, exact in bf16 ----
-    reg [1:0] fpipe;
-    integer fi;
-    always @(posedge clk) begin
-        if (rst) begin fpipe <= 2'd0; ffn_done <= 1'b0; end
-        else begin
-            ffn_done <= 1'b0;
-            if (ffn_start) fpipe <= 2'd1;
-            else if (fpipe != 2'd0) begin
-                if (fpipe == 2'd2) begin
-                    for (fi = 0; fi < MD; fi = fi + 1)
-                        ffn_out[16*fi +: 16] <= fp32_to_bf16(
-                            fp32_mul(bf16_to_fp32(ffn_vec[16*fi +: 16]), 32'h3F000000));
-                    ffn_done <= 1'b1; fpipe <= 2'd0;
-                end else fpipe <= fpipe + 2'd1;
-            end
+    // ---- FFN Q8_0 weight responder (same shape as the swiglu-q8 gate) ----
+    reg [7:0]  fmem [0:NFC-1];
+    reg [15:0] fsmem [0:NFS-1];
+    integer fco, fso, fk, fj;
+    always @* begin
+        case (ffn_w_sel)
+            2'd0: begin fco=FG; fso=FSG; fk=MD;    end
+            2'd1: begin fco=FU; fso=FSU; fk=MD;    end
+            default: begin fco=FD; fso=FSD; fk=INTER; end
+        endcase
+        ffn_w_hp  = {(16*TN){1'b0}};
+        ffn_w_q8d = {(16*TN*NB8){1'b0}};
+        for (fj = 0; fj < TN; fj = fj + 1) begin
+            ffn_w_hp[16*fj +: 16]       = {8'd0, fmem[fco + (ffn_w_grp*TN + fj)*fk + ffn_w_k]};
+            ffn_w_q8d[16*(fj*NB8) +: 16] = fsmem[fso + ffn_w_grp*TN + fj];
         end
     end
 
     integer fd, code, t, i, ntest, errors, checks, w;
     integer p_md,p_h,p_kh,p_dk,p_dv,p_rank,p_ck;
-    real e, tol, wr, wa, gr;
+    real e, tol, wr, wa, gr, tl;
     reg [31:0] t32; reg [15:0] t16; reg [7:0] t8;
     reg [31:0] e_s [0:NST-1];
+    real       e_st[0:NST-1];        // per-element stream tolerance from the FFN's own
     reg [31:0] e_k [0:NS-1];
     reg [31:0] e_h [0:NH-1];
 
@@ -214,9 +232,16 @@ module glm53f_decoder_block_tb;
             for (i=0;i<DV;i=i+1)    begin code=$fscanf(fd,"%h",t16); onw_in[16*i +: 16]=t16; end
             for (i=0;i<NS;i=i+1)    begin code=$fscanf(fd,"%h",t32); ks_in[32*i +: 32]=t32; end
             for (i=0;i<NH;i=i+1)    begin code=$fscanf(fd,"%h",t32); kh_in[32*i +: 32]=t32; end
+            for (i=0;i<INTER*MD;i=i+1) begin code=$fscanf(fd,"%h",t8); fmem[FG+i]=t8; end
+            for (i=0;i<INTER;i=i+1)    begin code=$fscanf(fd,"%h",t16); fsmem[FSG+i]=t16; end
+            for (i=0;i<INTER*MD;i=i+1) begin code=$fscanf(fd,"%h",t8); fmem[FU+i]=t8; end
+            for (i=0;i<INTER;i=i+1)    begin code=$fscanf(fd,"%h",t16); fsmem[FSU+i]=t16; end
+            for (i=0;i<MD*INTER;i=i+1) begin code=$fscanf(fd,"%h",t8); fmem[FD+i]=t8; end
+            for (i=0;i<MD;i=i+1)       begin code=$fscanf(fd,"%h",t16); fsmem[FSD+i]=t16; end
             for (i=0;i<NST;i=i+1)   begin code=$fscanf(fd,"%h",t32); e_s[i]=t32; end
             for (i=0;i<NS;i=i+1)    begin code=$fscanf(fd,"%h",t32); e_k[i]=t32; end
             for (i=0;i<NH;i=i+1)    begin code=$fscanf(fd,"%h",t32); e_h[i]=t32; end
+            for (i=0;i<NST;i=i+1)   begin code=$fscanf(fd,"%f",tl);   e_st[i]=tl; end
 
             @(negedge clk); sload = 1;
             @(negedge clk); sload = 0;
@@ -229,14 +254,27 @@ module glm53f_decoder_block_tb;
                 $display("[dec_block] FAIL t%0d: done never asserted (%0d cycles)", t, w);
                 errors = errors + 1;
             end
-            for (i=0;i<NST;i=i+1) chk1(s_cur[32*i +: 32],  e_s[i], t, "streams", i);
+            for (i=0;i<NST;i=i+1) begin
+                // rel/abs as elsewhere, PLUS the FFN's own per-element bound scaled
+                // by post -- the block cannot be tighter than the sublayer it runs.
+                checks = checks + 1;
+                gr = f2r(e_s[i]); e = ab_(f2r(s_cur[32*i +: 32]) - gr);
+                tol = `TB_REL * ab_(gr) + `TB_ABS + e_st[i];
+                if (e > wa) wa = e;
+                if (ab_(gr) >= 1.0e-3 && e/ab_(gr) > wr) wr = e/ab_(gr);
+                if (e > tol) begin
+                    $display("FAIL t%0d streams[%0d]: got %h (%f) exp %h (%f) tol %f",
+                             t, i, s_cur[32*i +: 32], f2r(s_cur[32*i +: 32]), e_s[i], gr, tol);
+                    errors = errors + 1;
+                end
+            end
             for (i=0;i<NS;i=i+1)  chk1(ks_out[32*i +: 32], e_k[i], t, "kdastate", i);
             for (i=0;i<NH;i=i+1)  chk1(kh_out[32*i +: 32], e_h[i], t, "kdahist", i);
             @(negedge clk);
         end
         $fclose(fd);
         if (errors == 0)
-            $display("[dec_block] ALL %0d TESTS PASSED (%0d decode steps: KDA attention wired INSIDE the two-site mHC block -- collapse, attn_norm, nine Q8_0 projections, the delta-rule recurrence, mix; residual streams, KDA state and conv history all within rel %0.3f + abs %0.3f; worst rel %0.5f (|golden|>=1e-3), worst abs %e)",
+            $display("[dec_block] ALL %0d TESTS PASSED (%0d decode steps: a COMPLETE decoder layer for blocks 0-2 -- KDA attention and a Q8_0 clamped SwiGLU both wired inside the two-site mHC block; KDA state and conv history within rel %0.3f + abs %0.3f, residual streams within that PLUS a per-element ENVELOPE the generator derives by perturbing the map and the attention sublayer within their own gated bounds and re-running the whole block -- the FFN amplifies its input error ~29x, so a sum of the parts' bounds is not a bound on the composition; worst rel %0.5f (|golden|>=1e-3), worst abs %e)",
                      checks, ntest, `TB_REL, `TB_ABS, wr, wa);
         else
             $display("[dec_block] %0d/%0d FAILED (worst rel %0.5f, abs %e)", errors, checks, wr, wa);

@@ -1080,6 +1080,54 @@ attention sublayer never runs. The second is the one worth having — the block
 still completes and the streams still move, so nothing about the handshake would
 reveal it.
 
+### 4.3r Dense FFN, and a complete decoder layer for blocks 0–2
+
+`src/glm53f_swiglu_q8.v` — `make swiglu-q8`, 204 + 15 checks — then wired into the
+decoder block's FFN site, so `make dec-block` is now a **complete GLM-5.3-Flash
+decoder layer** for blocks 0–2: KDA attention and a clamped SwiGLU, both inside
+the two-site mHC block.
+
+**Why a sibling and not `swiglu_expert_q4k`.** Its `w_q` port is **four bits per
+lane** and the census says this FFN is Q8_0 (`blk.N.ffn_{gate,up,down}`
+[12288, 4096] ×3). It cannot carry these weights — not "less accurately", at all.
+
+**The finding: a composed block is not as tight as the sum of its parts.** Three
+successive versions of the stream bound failed, each on the same element, and each
+time the fix I reached for was wrong:
+
+1. a flat `rel + abs` — failed where the DOWN reduction is large;
+2. `+ post·(the FFN's own per-element tolerance)` — 24 → 2 failures;
+3. `+ post·(the KDA sublayer's own bound)` — 2 → 1.
+
+The remaining failure was not a missing term but a wrong *model*. Probing the DUT
+showed the FFN's **input** already differed by 1.2 % (3 bf16 ULP on the normed
+vector, from KDA's error upstream) while its **output** differed by 0.35 — a gain
+of **~29×**, from silu and a 32-term DOWN reduction. Measured directly: perturbing
+the attention sublayer's output by its own gated 0.03 moves a final stream by
+**0.885**.
+
+So the bound is an **envelope**: perturb the mHC map outputs by their gated ULP
+bounds *and* the attention output by its gated abs bound, then re-run the whole
+block. That is the same technique §4.3l used, and it is necessary here rather than
+fastidious — adding the parts' bounds under-counts by the gain. Both injections
+still fire hard (379 and 648 failing checks), so the looser bound did not cost the
+gate anything.
+
+**A symclamp injection that is deliberately not gated.** `INJ_SWQ8_SYMCLAMP`
+exists but is **not** a must-fail: measured, the symmetric-gate reading moves the
+result 0.25 against a 2.9 tolerance, because that tolerance is forced by
+`glm_act`'s polynomial silu and no exact Python model of that polynomial exists. I
+predicted it would not fire, then confirmed it. The asymmetry *is* gated on a
+tighter slice by `make swiglu`'s own `INJ_SWIGLU_SYMCLAMP`. What this gate does
+check is that the clamp is there at all — `INJ_SWQ8_NOCLAMP` fires by a wide
+margin, because unclamped gates reach ±30 where silu is ~30 rather than ~10 — and
+the generator asserts the corpus drives **both** bounds (98 upper, 59 lower).
+
+**Still parameterised but not built**, and both `$fatal` rather than elaborating a
+block with an empty site: `ATTN_KIND = 1` (MLA, 11 blocks) and `FFN_KIND = 1`
+(MoE — `ffn_*_exps` is a Q4_K/Q5_K/Q6_K mix plus a router and a shared expert,
+for the other 31 KDA blocks).
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1173,11 +1221,12 @@ make hc-block                 # 20 + 2310:  TWO sites per block, wiring (4.3m)
 make kda-layer                # 84 + 968:   one whole KDA decode step (4.3n)
 make kda-attn                 # 228 + 726:  the same, fetching its own Q8_0 weights (4.3o)
 make q5k-loader               # 1610: packer-built Q5_K tile through the real loader (4.3p)
-make dec-block                # 20 + 676:  KDA attention inside the mHC block (4.3q)
+make dec-block                # 20 + 676:  a complete decoder layer, blocks 0-2 (4.3q, 4.3r)
+make swiglu-q8                # 15 + 204:  the dense FFN, clamped SwiGLU over Q8_0 (4.3r)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
-rather than flipping a boolean. Between them they carry **35 must-fail
+rather than flipping a boolean. Between them they carry **37 must-fail
 injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_ONORM_GATE_FIRST`, `INJ_SINK_{SYMM,ROWFIRST,NOEPS}`,
 `INJ_MAP_{POST_NO2,PRE_NOEPS,COMB_NOEPS,SOFTMAX_NOMAX}`,
@@ -1186,7 +1235,7 @@ injections** — `INJ_KDA_NODECAY`, `INJ_CONV_FLIP`, `INJ_GATE_DECAY_AFTER`,
 `INJ_SITE_{IGNORE_SUB,NO_UPDATE,PRE_FOR_POST}`,
 `INJ_HCB_{SAME_WEIGHTS,NORM_SWAP,SKIP_NORM,STALE_STREAMS}`,
 `INJ_KDAL_{NO_STATE,CONV_NOHIST,QK_SWAP,GATE_ORDER}`,
-`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, `INJ_DBLK_{SITE_SWAP,NO_KDA}`,
+`INJ_KGV_{Q4K_TYPE,NO_SCALE,GRP_ALIAS}`, `INJ_DBLK_{SITE_SWAP,NO_KDA}`, `INJ_SWQ8_{NOCLAMP,Q4K_TYPE}`,
 the packer's qh-dropped image — plus
 `INJ_Q5K_NOMIN` in `make mixedtype` and the config guard's own 4 poisoned cases.
 `INJ_SINK_PAIRWISE` exists but is deliberately **not** one of them (§4.3k explains

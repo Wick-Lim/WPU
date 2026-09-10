@@ -382,7 +382,17 @@ but not yet shipping, so its `~200+` is the softest `[EST]` in the table. See
   says the dense FFN is **Q8_0** and the MoE experts are a Q4_K/Q5_K/Q6_K mix, so
   `swiglu_expert_q4k` — 4 bits per lane — can carry none of them. Hanging it off
   anyway to make the block look finished is the silent-wrong-weights failure this
-  repo builds must-fail pairs against. A Q8_0 clamped SwiGLU is next.
+  repo builds must-fail pairs against.
+- **That FFN now exists, so blocks 0–2 are a COMPLETE decoder layer.**
+  `src/glm53f_swiglu_q8.v` (`make swiglu-q8`) is the clamped SwiGLU over Q8_0, and
+  it is wired into the block's FFN site. **The finding that came out of it: a
+  composed block is not as tight as the sum of its parts' bounds.** Three versions
+  of the stream bound failed on the same element before probing showed why — the
+  FFN's *input* differed by 1.2 % while its *output* differed by 0.35, a gain of
+  **~29×** from silu and a 32-term DOWN reduction. Measured directly, perturbing
+  the attention sublayer by its own gated 0.03 moves a final stream by 0.885. The
+  bound is now an envelope: perturb the map and the attention output within their
+  own gated bounds and re-run the whole block. Both injections still fire hard.
 - **Also corrected: the "blocked on shared decoder RTL" note was wrong.** It
   assumed GLM-5.3-Flash would reuse `glm_decoder_block_q4k`; it does not — these
   are siblings, and a sibling declares its own port widths. Nothing shared has to
