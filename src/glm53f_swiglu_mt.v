@@ -1,6 +1,7 @@
 //============================================================================
-// glm53f_swiglu_q8.v -- GLM-5.3-Flash's DENSE FFN: clamped SwiGLU over Q8_0
-// weights, streamed off glm_matmul_q4k.
+// glm53f_swiglu_mt.v -- GLM-5.3-Flash's clamped SwiGLU over MIXED-TYPE weights,
+// streamed off glm_matmul_q4k.  The dense FFN and the MoE experts are the same
+// datapath; only the weight TYPE differs, and it differs per tensor AND per block.
 //
 //   gate = Wg @ x        up = Wu @ x        (Q8_0, K = HIDDEN)
 //   act  = silu(min(gate, +limit)) * clip(up, -limit, +limit)
@@ -31,22 +32,29 @@
 // -- INJ_SWQ8_NOCLAMP must fail, and it does by a wide margin, because unclamped
 // gates reach +/-30 where silu is ~30 rather than ~10.
 //
-// Q8_0 needs nothing new from the engine: w_type = 2, the code on w_hp[7:0], the
-// fp16 block scale on w_q8_d -- all already inputs, all already emitted by
-// weight_loader_q4k. The Q4_K header buses are tied off; the Q8_0 arm never reads
-// them, and an UNDRIVEN w_type would silently select Q4_K, which is why it is
-// driven explicitly rather than left to default.
+// WHY THE TYPE IS A RUNTIME INPUT AND NOT A PARAMETER.  The census gives the
+// dense FFN as Q8_0, but the MoE experts as a MIX that varies per tensor and per
+// BLOCK: ffn_gate_exps / ffn_up_exps are Q4_K on 42 blocks and Q5_K on one,
+// ffn_down_exps is Q5_K on 40 and Q6_K on 3, and the shared expert is Q8_0. One
+// instantiation therefore cannot carry a compile-time type. Hence wt_gate /
+// wt_up / wt_down, and the FULL weight-response bundle -- exactly the shape
+// weight_loader_q4k already emits, so the system side needs nothing new.
+//   The engine reads a DIFFERENT bus per type (Q4_K's 4-bit code on w_q; Q5_K,
+// Q6_K, Q8_0 and F16 on w_hp; headers on w_d/w_dmin/w_scales, w_q6_sc, w_q8_d),
+// so all of them are passed through rather than tied off. w_type is always driven
+// explicitly: an UNDRIVEN w_type reads as Q4_K, which makes "forgot to drive it"
+// and "drove it wrong" look identical downstream.
 //
 // TN AND THE TAIL: output rows are produced TN at a time and there is no partial
 // final group, so INTER and HIDDEN must both be multiples of TN. Checked at
 // elaboration rather than assumed (12288 and 4096 are, for any sane TN).
 //============================================================================
 `timescale 1ns/1ps
-`ifndef GLM53F_SWIGLU_Q8_V
-`define GLM53F_SWIGLU_Q8_V
+`ifndef GLM53F_SWIGLU_MT_V
+`define GLM53F_SWIGLU_MT_V
 `include "glm_fp.vh"
 
-module glm53f_swiglu_q8 #(
+module glm53f_swiglu_mt #(
     parameter integer HIDDEN = 16,
     parameter integer INTER  = 32,
     parameter integer TN     = 2,
@@ -65,8 +73,18 @@ module glm53f_swiglu_q8 #(
     output wire [1:0]              w_sel,    // 0 = GATE, 1 = UP, 2 = DOWN
     output wire [$clog2((INTER>HIDDEN?INTER:HIDDEN)/TN+1)-1:0] w_grp,
     output wire [$clog2(KMAX+1)-1:0] w_k,
-    input  wire [16*TN-1:0]        w_hp,     // Q8_0 code in [7:0] per column
-    input  wire [16*TN*((KMAX+31)/32)-1:0] w_q8_d,
+    // per-pass weight type: 0=Q4_K 1=Q6_K 2=Q8_0 3=F16 4=Q5_K
+    input  wire [2:0]              wt_gate,
+    input  wire [2:0]              wt_up,
+    input  wire [2:0]              wt_down,
+    // the loader's full response bundle -- which bus is read depends on the type
+    input  wire [4*TN-1:0]         w_q,      // Q4_K 4-bit codes
+    input  wire [16*TN-1:0]        w_hp,     // Q5_K/Q6_K/Q8_0/F16 code lane
+    input  wire [16*TN*((KMAX+255)/256)-1:0] w_d,
+    input  wire [16*TN*((KMAX+255)/256)-1:0] w_dmin,
+    input  wire [96*TN*((KMAX+255)/256)-1:0] w_scales,
+    input  wire [128*TN*((KMAX+255)/256)-1:0] w_q6_sc,
+    input  wire [16*TN*((KMAX+31)/32)-1:0]    w_q8_d,
 
     output reg  [16*HIDDEN-1:0]    y_out
 );
@@ -108,22 +126,32 @@ module glm53f_swiglu_q8 #(
     // GATE/UP read x; DOWN reads the activation
     wire [15:0] a_col = (pass == 2'd2) ? act_r[kcnt] : x_in[16*kcnt +: 16];
 
-`ifdef INJ_SWQ8_Q4K_TYPE
-    // must FAIL: w_type left at Q4_K, which is also what an UNDRIVEN w_type reads
-    // as -- "forgot to drive it" and "drove it wrong" look identical downstream.
-    wire [3*TN-1:0] w_type_q8 = {TN{3'd0}};
+`ifdef INJ_SWMT_PASS_TYPE
+    // must FAIL: every pass uses the GATE's type, i.e. the per-pass mux collapsed.
+    // This is a strictly narrower claim than INJ_SWQ8_Q4K_TYPE: the type is still
+    // a runtime input and still reaches the engine, only the PASS SELECT is wrong.
+    // On the checkpoint's (Q4_K,Q4_K,Q5_K) expert that is invisible on two of the
+    // three passes -- which is exactly why the mixed-type corpus has to contain a
+    // combo whose down type differs from its gate type. Both of ours do.
+    wire [2:0] wt_now = wt_gate;
 `else
-    wire [3*TN-1:0] w_type_q8 = {TN{3'd2}};
+    wire [2:0] wt_now = (pass == 2'd0) ? wt_gate : (pass == 2'd1) ? wt_up : wt_down;
+`endif
+`ifdef INJ_SWQ8_Q4K_TYPE
+    // must FAIL: w_type forced to Q4_K regardless of what the caller asked for --
+    // which is also what an UNDRIVEN w_type reads as.
+    wire [3*TN-1:0] w_type_b = {TN{3'd0}};
+`else
+    wire [3*TN-1:0] w_type_b = {TN{wt_now}};
 `endif
 
     glm_matmul_q4k #(.PE_M(1), .PE_N(TN), .KMAX(KMAX)) u_mm (
         .clk(clk), .rst(rst), .start(mm_start), .k_len(mm_k_len),
-        .w_d({16*TN*NSB{1'b0}}), .w_dmin({16*TN*NSB{1'b0}}),
-        .w_scales({96*TN*NSB{1'b0}}),
-        .in_valid(stream), .a_col(a_col), .w_q({4*TN{1'b0}}),
+        .w_d(w_d), .w_dmin(w_dmin), .w_scales(w_scales),
+        .in_valid(stream), .a_col(a_col), .w_q(w_q),
         .busy(mm_busy), .out_valid(mm_ov), .c_out(mm_c),
-        .w_type(w_type_q8), .w_hp(w_hp),
-        .w_q6_sc({128*TN*NSB{1'b0}}), .w_q8_d(w_q8_d));
+        .w_type(w_type_b), .w_hp(w_hp),
+        .w_q6_sc(w_q6_sc), .w_q8_d(w_q8_d));
 
     // ---- the asymmetric clamp, on wires at the two consumption points --------
     //   bf16 is fp32's top 16 bits, so for finite values an unsigned compare of
@@ -137,7 +165,15 @@ module glm53f_swiglu_q8 #(
         bf16_clamp_sym = (x[14:0] > lim[14:0]) ? {x[15], lim[14:0]} : x;
     endfunction
 
-    reg  [7:0] ai, ao;
+    // AW must cover INTER itself, not INTER-1: the `ao == INTER-1` terminator and
+    // the `ai < INTER` guard both compare against the full count.  These were
+    // `reg [7:0]` with `INTER[7:0]` comparisons until 2026-09-11, which TRUNCATES
+    // TO ZERO at INTER = 256 -- `ai < 0` is never true, act_iv never fires, and
+    // S_ACT hangs forever.  `make swiglu-q8` runs INTER = 32 and could not see it;
+    // the real dense FFN is INTER = 12288, which truncates to 0 as well, so this
+    // was a latent defect on the actual model, not a test-slice artifact.
+    localparam integer AW = $clog2(INTER + 1);
+    reg  [AW-1:0] ai, ao;
     reg        act_iv;
     reg  [15:0] act_x;
     wire        act_ov;
@@ -213,15 +249,15 @@ module glm53f_swiglu_q8 #(
                 // silu(clamped gate) streamed one lane per cycle, multiplied by
                 // the clamped up as each result emerges
                 S_ACT: begin
-                    if (ai < INTER[7:0]) begin
+                    if (ai < INTER[AW-1:0]) begin
                         act_iv <= 1'b1;
                         act_x  <= gate_eff(gate_r[ai]);
-                        ai     <= ai + 8'd1;
+                        ai     <= ai + 1'b1;
                     end
                     if (act_ov) begin
                         act_r[ao] <= bf16_mul(act_y, up_eff(up_r[ao]));
-                        ao <= ao + 8'd1;
-                        if (ao == INTER[7:0] - 8'd1) begin
+                        ao <= ao + 1'b1;
+                        if (ao == INTER[AW-1:0] - 1'b1) begin
                             pass <= 2'd2; grp <= 0;
                             klen <= INTER[KW-1:0]; mm_k_len <= INTER[KW-1:0];
                             ngrp <= (HIDDEN/TN);
@@ -236,4 +272,4 @@ module glm53f_swiglu_q8 #(
         end
     end
 endmodule
-`endif // GLM53F_SWIGLU_Q8_V
+`endif // GLM53F_SWIGLU_MT_V

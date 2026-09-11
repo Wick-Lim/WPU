@@ -157,12 +157,21 @@ module glm53f_decoder_block #(
     wire                    ffn_busy, ffn_done;
     wire [16*MODEL_DIM-1:0] ffn_y;
 
-    glm53f_swiglu_q8 #(.HIDDEN(MODEL_DIM), .INTER(INTER), .TN(TN), .KMAX(KMAX),
+    // The dense front is Q8_0 on all three tensors [scan], so the Q4_K/Q6_K
+    // header buses are tied off HERE rather than inside the SwiGLU -- the unit
+    // itself is type-generic now, because the MoE experts are a Q4_K/Q5_K/Q6_K
+    // mix. A block that carries MoE will drive them.
+    localparam integer FNSB = (KMAX + 255) / 256;
+    glm53f_swiglu_mt #(.HIDDEN(MODEL_DIM), .INTER(INTER), .TN(TN), .KMAX(KMAX),
                        .LIM(SWIGLU_LIM)) u_ffn (
         .clk(clk), .rst(rst), .start(ffn_start), .busy(ffn_busy), .done(ffn_done),
         .x_in(ffn_x),
+        .wt_gate(3'd2), .wt_up(3'd2), .wt_down(3'd2),      // Q8_0
         .w_req(ffn_w_req), .w_sel(ffn_w_sel), .w_grp(ffn_w_grp), .w_k(ffn_w_k),
-        .w_hp(ffn_w_hp), .w_q8_d(ffn_w_q8_d),
+        .w_q({4*TN{1'b0}}), .w_hp(ffn_w_hp),
+        .w_d({16*TN*FNSB{1'b0}}), .w_dmin({16*TN*FNSB{1'b0}}),
+        .w_scales({96*TN*FNSB{1'b0}}), .w_q6_sc({128*TN*FNSB{1'b0}}),
+        .w_q8_d(ffn_w_q8_d),
         .y_out(ffn_y));
 
     integer i;

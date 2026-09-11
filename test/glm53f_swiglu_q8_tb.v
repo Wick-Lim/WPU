@@ -4,7 +4,9 @@
 //
 // swiglu_expert_q4k cannot be used here at all: its w_q port is FOUR BITS PER
 // LANE and the census says this FFN is Q8_0 (blk.N.ffn_{gate,up,down}). This is
-// the sibling that can carry it.
+// the Q8_0 CONFIGURATION of glm53f_swiglu_mt, whose weight type is a runtime
+// input because the MoE experts are a Q4_K/Q5_K/Q6_K mix; `make swiglu-mt`
+// exercises the other types on a 256-wide slice (super-blocks are 256 weights).
 //
 // Per-element tolerance comes from the vector file, shaped as `make swiglu` does:
 // glm_act's polynomial silu is an approximation, so the DOWN reduction is a
@@ -42,10 +44,16 @@ module glm53f_swiglu_q8_tb;
     reg  [16*TN*NB8-1:0] w_q8d;
     wire [16*HIDDEN-1:0] y_out;
 
-    glm53f_swiglu_q8 #(.HIDDEN(HIDDEN), .INTER(INTER), .TN(TN), .KMAX(KMAX)) dut (
+    localparam integer NSB = (KMAX + 255) / 256;
+    glm53f_swiglu_mt #(.HIDDEN(HIDDEN), .INTER(INTER), .TN(TN), .KMAX(KMAX)) dut (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done),
-        .x_in(x_in), .w_req(w_req), .w_sel(w_sel), .w_grp(w_grp), .w_k(w_k),
-        .w_hp(w_hp), .w_q8_d(w_q8d), .y_out(y_out));
+        .x_in(x_in),
+        .wt_gate(3'd2), .wt_up(3'd2), .wt_down(3'd2),      // the dense front is Q8_0
+        .w_req(w_req), .w_sel(w_sel), .w_grp(w_grp), .w_k(w_k),
+        .w_q({4*TN{1'b0}}), .w_hp(w_hp),
+        .w_d({16*TN*NSB{1'b0}}), .w_dmin({16*TN*NSB{1'b0}}),
+        .w_scales({96*TN*NSB{1'b0}}), .w_q6_sc({128*TN*NSB{1'b0}}),
+        .w_q8_d(w_q8d), .y_out(y_out));
 
     reg [7:0]  cmem [0:NCODE-1];
     reg [15:0] smem [0:NSCALE-1];

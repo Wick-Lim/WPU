@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 moe-router all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 moe-router unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1456,7 +1456,7 @@ dec-block:
 	    || { echo "FAILED: glm53f_decoder_block_gen self-test"; exit 1; }
 	@python3 tools/glm53f_decoder_block_gen.py 4 $(BUILD_DIR)/glm53f_decoder_block_vec.txt >/dev/null
 	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
-	    -o $(BUILD_DIR)/dec_block_sim test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_swiglu_q8.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \
+	    -o $(BUILD_DIR)/dec_block_sim test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_swiglu_mt.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \
 	    src/glm53f_kda_gemv.v src/glm53f_kda_layer.v src/mhc_block_site.v \
 	    src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v \
 	    src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v src/rmsnorm_unit.v \
@@ -1467,7 +1467,7 @@ dec-block:
 	    || { echo "FAILED: dec_block"; exit 1; }
 	@for inj in INJ_DBLK_SITE_SWAP INJ_DBLK_NO_KDA; do \
 	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
-	        -o $(BUILD_DIR)/dec_block_inj test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_swiglu_q8.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \
+	        -o $(BUILD_DIR)/dec_block_inj test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_swiglu_mt.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \
 	    src/glm53f_kda_gemv.v src/glm53f_kda_layer.v src/mhc_block_site.v \
 	    src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v \
 	    src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v src/rmsnorm_unit.v \
@@ -1481,7 +1481,7 @@ dec-block:
 	done
 
 # ---- swiglu-q8 : GLM-5.3-Flash's DENSE FFN, clamped SwiGLU over Q8_0 ----------
-# src/glm53f_swiglu_q8.v. swiglu_expert_q4k cannot be used here AT ALL -- its w_q
+# src/glm53f_swiglu_mt.v. swiglu_expert_q4k cannot be used here AT ALL -- its w_q
 # port is four bits per lane and the census says this FFN is Q8_0
 # (blk.N.ffn_{gate,up,down} [12288,4096] x3). Not "less accurately": at all.
 #   Two must-fail legs, and the second is the one that keeps the first honest:
@@ -1501,17 +1501,52 @@ swiglu-q8:
 	    || { echo "FAILED: glm53f_swiglu_q8_gen self-test"; exit 1; }
 	@python3 tools/glm53f_swiglu_q8_gen.py 12 $(BUILD_DIR)/glm53f_swiglu_q8_vec.txt >/dev/null
 	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_swiglu_q8_vec.txt"' \
-	    -o $(BUILD_DIR)/swiglu_q8_sim test/glm53f_swiglu_q8_tb.v src/glm53f_swiglu_q8.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null \
+	    -o $(BUILD_DIR)/swiglu_q8_sim test/glm53f_swiglu_q8_tb.v src/glm53f_swiglu_mt.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null \
 	    || { echo "FAILED: swiglu-q8 compile"; exit 1; }
 	@printf '[%s] ' "swiglu_q8"; $(VVP) $(BUILD_DIR)/swiglu_q8_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: swiglu_q8"; exit 1; }
 	@for inj in INJ_SWQ8_NOCLAMP INJ_SWQ8_Q4K_TYPE; do \
 	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_swiglu_q8_vec.txt"' \
-	        -o $(BUILD_DIR)/swiglu_q8_inj test/glm53f_swiglu_q8_tb.v src/glm53f_swiglu_q8.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null; \
+	        -o $(BUILD_DIR)/swiglu_q8_inj test/glm53f_swiglu_q8_tb.v src/glm53f_swiglu_mt.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null; \
 	    if $(VVP) $(BUILD_DIR)/swiglu_q8_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
 	        echo "FAILED: swiglu-q8 $$inj PASSED -- that trap is not actually checked"; exit 1; \
 	    else \
 	        echo "[swiglu_q8_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- swiglu-mt : the SAME module, on the MoE experts' MIXED weight types ------
+# `swiglu-q8` gates this module's ARITHMETIC at the dense front's Q8_0. This gates
+# a different claim -- that the RUNTIME type input selects the right BUS -- and it
+# has to be a separate slice because Q4_K/Q5_K/Q6_K are 256-weight super-blocks,
+# so K must be 256, while the MoE loop wants a small one. One compromise slice
+# would have tested neither well.
+#   The combos are the checkpoint's [scan], not invented:
+#     (Q4_K,Q4_K,Q5_K)  ffn_{gate,up}_exps Q4_K x42, ffn_down_exps Q5_K x40
+#     (Q5_K,Q5_K,Q6_K)  the single Q5_K gate/up block, and the three Q6_K downs
+#   Three must-fail legs. INJ_SWQ8_Q4K_TYPE is the broad one (an undriven w_type
+# reads as Q4_K). INJ_SWMT_PASS_TYPE is the narrow one: the type stays runtime and
+# still reaches the engine, only the per-pass select collapses to the gate's type
+# -- invisible on 2 of 3 passes for the first combo, which is WHY both combos have
+# a down type that differs from their gate type. INJ_SWQ8_NOCLAMP re-proves the
+# clamp survives the generalisation.
+swiglu-mt:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_swiglu_mt_gen"; python3 tools/glm53f_swiglu_mt_gen.py --selftest \
+	    || { echo "FAILED: glm53f_swiglu_mt_gen self-test"; exit 1; }
+	@python3 tools/glm53f_swiglu_mt_gen.py 2 $(BUILD_DIR)/glm53f_swiglu_mt_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_swiglu_mt_vec.txt"' \
+	    -o $(BUILD_DIR)/swiglu_mt_sim test/glm53f_swiglu_mt_tb.v src/glm53f_swiglu_mt.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null \
+	    || { echo "FAILED: swiglu-mt compile"; exit 1; }
+	@printf '[%s] ' "swiglu_mt"; $(VVP) $(BUILD_DIR)/swiglu_mt_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: swiglu_mt"; exit 1; }
+	@for inj in INJ_SWQ8_Q4K_TYPE INJ_SWMT_PASS_TYPE INJ_SWQ8_NOCLAMP; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_swiglu_mt_vec.txt"' \
+	        -o $(BUILD_DIR)/swiglu_mt_inj test/glm53f_swiglu_mt_tb.v src/glm53f_swiglu_mt.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/swiglu_mt_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: swiglu-mt $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[swiglu_mt_INJECT_$$inj] injection correctly FAILED"; \
 	    fi; \
 	done
 

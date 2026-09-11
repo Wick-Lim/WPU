@@ -56,6 +56,8 @@ dec_block 676
 glm53f_decoder_block_gen 20
 swiglu_q8 204
 glm53f_swiglu_q8_gen 15
+swiglu_mt 514
+glm53f_swiglu_mt_gen 8
 moe_router 80
 glm53f_moe_router_gen 123
 kda_gate 1224

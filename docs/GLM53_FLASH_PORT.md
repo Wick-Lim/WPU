@@ -1128,7 +1128,61 @@ block with an empty site: `ATTN_KIND = 1` (MLA, 11 blocks) and `FFN_KIND = 1`
 (MoE — `ffn_*_exps` is a Q4_K/Q5_K/Q6_K mix plus a router and a shared expert,
 for the other 31 KDA blocks).
 
-### 4.3s MoE router — and an assumption I could not resolve, made testable
+### 4.3s The weight type becomes a runtime input — `make swiglu-mt`
+
+The MoE experts do not have *a* weight type. The census says
+`ffn_{gate,up}_exps` is Q4_K ×42 and Q5_K ×1, and `ffn_down_exps` is Q5_K ×40 and
+Q6_K ×3 — so the type varies per tensor **and** per block. `glm53f_swiglu_q8.v`
+was therefore renamed `glm53f_swiglu_mt.v` and its type made a runtime input
+(`wt_gate` / `wt_up` / `wt_down`) carrying the full loader bundle: Q4_K's code on
+`w_q`, every other type's on `w_hp`, headers on `w_d`/`w_dmin`/`w_scales`,
+`w_q6_sc` and `w_q8_d`. `make swiglu-q8` (204) and `make dec-block` (676) both
+still pass unchanged, which is what says the generalisation is behaviour-preserving.
+
+`make swiglu-mt` — **514 + 8 checks** — is a *separate* gate rather than more
+cases in `swiglu-q8`, because Q4_K/Q5_K/Q6_K are 256-weight super-blocks: K must
+be 256 here, while the MoE loop wants a small slice. One compromise slice would
+have tested neither well. The two combos are the checkpoint's, not invented:
+`(Q4_K, Q4_K, Q5_K)` and `(Q5_K, Q5_K, Q6_K)`.
+
+**It found a latent defect on the real model.** The activation lanes were counted
+with `reg [7:0] ai, ao` against `INTER[7:0]`. At the gated slice INTER = 32 that
+is 32 and everything passes; at INTER = 256 it is **0**, `ai < 0` is never true,
+the activation stage never starts, and the FSM hangs. The actual dense FFN is
+INTER = 12288, which truncates to 0 as well — so this would have shipped, and
+neither `swiglu-q8` (INTER = 32) nor `dec-block` could see it. Counters are now
+sized `localparam AW = $clog2(INTER+1)`. Grepping the *class* rather than the
+instance found one more (`TOPK[7:0]` in `glm53f_moe_router.v`), live only if
+top-k could reach 256; it is 8, so that one is left alone rather than churning a
+pinned gate.
+
+**A second finding, in the generator.** Q6_K's 16 int8 scales were emitted as one
+128-bit hex word. Hex is MSB-first, so scale 0 landed at bit offset 8×15 instead
+of 8×0 — the order reversed, every Q6_K column decoded with the wrong per-16
+scale, and the *sign* of the result flipped. `tools/q4k_mixed_gen.py` already
+emits them as 16 separate bytes and `glm_matmul_mixed_tb.v` already reads them at
+`8*i`; the fix was to match that existing convention in both places. The
+generator's own self-test could not have caught it — it checks the reference
+against the packer, not the serialisation order.
+
+**The tolerance is measured, and it is one bf16 ULP.** This generator inherited
+`max(0.06·|y|, 0.02·Σ|act·w|, 0.03)` from `swiglu_q4k_gen`. The Σ-of-absolute term
+dominates because the DOWN dot product cancels, which made the tolerance **≈33 %
+of |y|** — a check that could not fail short of a sign flip. Swept over seeds 0–7
+(4096 outputs) the DUT is **bit-exact** with the reference: worst 0.000 ULP. It is
+still a tolerance and not a bitwise check, because `silu` here uses a true
+`np.exp` while `glm_act` uses a polynomial — bf16's 8-bit mantissa swallows that
+difference on 4096 samples, which is not the same as never. So: one rounding
+boundary of headroom, nothing more.
+
+Three must-fail legs, and the narrow one is the point. `INJ_SWQ8_Q4K_TYPE` forces
+Q4_K (also what an *undriven* `w_type` reads as). `INJ_SWMT_PASS_TYPE` keeps the
+type a runtime input and only collapses the **per-pass select** to the gate's type
+— invisible on two of three passes for the first combo, which is exactly why both
+combos carry a down type that differs from their gate type. `INJ_SWQ8_NOCLAMP`
+re-proves the clamp survived the generalisation.
+
+### 4.3t MoE router — and an assumption I could not resolve, made testable
 
 `src/glm53f_moe_router.v` — `make moe-router`, 80 + 123 checks, 2 must-fail
 injections. Plus `moe_route` in the executable spec (`make glm53f-ref` 21 → **28**).
@@ -1286,7 +1340,8 @@ make kda-attn                 # 228 + 726:  the same, fetching its own Q8_0 weig
 make q5k-loader               # 1610: packer-built Q5_K tile through the real loader (4.3p)
 make dec-block                # 20 + 676:  a complete decoder layer, blocks 0-2 (4.3q, 4.3r)
 make swiglu-q8                # 15 + 204:  the dense FFN, clamped SwiGLU over Q8_0 (4.3r)
-make moe-router               # 123 + 80:  sigmoid gating + exp_probs_b (4.3s)
+make swiglu-mt                #  8 + 514:  the SAME unit on the MoE experts' mixed types (4.3s)
+make moe-router               # 123 + 80:  sigmoid gating + exp_probs_b (4.3t)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number
