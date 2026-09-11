@@ -101,7 +101,21 @@ module glm53f_decoder_block_tb;
         .decay_in(decay_in), .dt_bias_in(dtb_in), .conv_w_in(cw_in), .onorm_w_in(onw_in),
         .kda_s_in(ks_in), .kda_s_out(ks_out), .kda_hist_in(kh_in), .kda_hist_out(kh_out),
         .ffn_w_req(ffn_w_req), .ffn_w_sel(ffn_w_sel), .ffn_w_grp(ffn_w_grp),
-        .ffn_w_k(ffn_w_k), .ffn_w_hp(ffn_w_hp), .ffn_w_q8_d(ffn_w_q8d));
+        .ffn_w_k(ffn_w_k), .ffn_w_hp(ffn_w_hp), .ffn_w_q8_d(ffn_w_q8d),
+        // The MoE arm's ports exist unconditionally (Verilog has no conditional
+        // port) but this TB runs FFN_KIND = 0, so they are tied off.  The MoE arm
+        // itself is gated by `make moe-ffn` at its own slice; what THIS gate has
+        // to keep saying is that adding that arm left the dense block unchanged --
+        // same 676 checks, same numbers.
+        .moe_rw_req(), .moe_rw_k(), .moe_rw_row({32*8{1'b0}}),
+        .moe_bias({32*8{1'b0}}), .moe_fw_shared(), .moe_fw_eidx(),
+        .moe_wt_gate(3'd0), .moe_wt_up(3'd0), .moe_wt_down(3'd0),
+        .moe_wt_sh_gate(3'd0), .moe_wt_sh_up(3'd0), .moe_wt_sh_down(3'd0),
+        .ffn_w_q({4*TN{1'b0}}),
+        .ffn_w_d({16*TN*((KMAX+255)/256){1'b0}}),
+        .ffn_w_dmin({16*TN*((KMAX+255)/256){1'b0}}),
+        .ffn_w_scales({96*TN*((KMAX+255)/256){1'b0}}),
+        .ffn_w_q6_sc({128*TN*((KMAX+255)/256){1'b0}}));
 
     // ---- KDA Q8_0 weight responder (same shape as the kda-attn gate) ----
     reg [7:0]  cmem [0:NCODE-1];

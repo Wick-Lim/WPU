@@ -1245,6 +1245,83 @@ semantics rather than the implementation:
 the always-on shared expert (Q8_0, inter 2048). `FFN_KIND = 1` on the decoder
 block still `$fatal`s.
 
+### 4.3u The MoE FFN, and a complete decoder layer for blocks 3–44
+
+`src/glm53f_moe_ffn.v` — `make moe-ffn`, **111 + 9 checks** — then wired into the
+decoder block's FFN site behind `FFN_KIND = 1`, so `make dec-block`'s block is now
+a complete decoder layer for **either** FFN kind:
+
+    idx, w = router(x)
+    y      = Σ_i w[i] · expert_idx[i](x)  +  shared(x)
+
+One `glm53f_swiglu_mt` instance is reused serially across all TOPK+1 evaluations,
+which is what `glm_decoder_block_q4k` already does for GLM-5.2: one expert's
+weights are fetched per evaluation.
+
+**The shared expert is added at weight 1**, and that is a transcription rather
+than a guess — `expert_weights_scale` = 2.5 scales the *routed* weights only, and
+`glm_decoder_block_q4k`'s own header already states `combine = Σ_e gate_e·y_e +
+y_shared`. `glm53_flash_ref`'s self-test pins it by zeroing every routed expert
+and requiring `y == shared(x)` exactly. It also carries its **own weight types**:
+[scan] says routed experts are Q4_K/Q5_K/Q6_K while the shared one is Q8_0, so
+`wt_sh_*` is a separate input triple, and the gate drives two *different* types
+across that boundary for exactly that reason.
+
+**The finding: the accumulation order is not observable, so it is not gated.** The
+router emits its top-k score-descending; the reference accumulates ascending. fp
+add does not associate, so in principle the order is visible — and the obvious
+move is a must-fail leg that walks the router's order instead. Measured first:
+ascending and score-descending are **bitwise identical** at the bf16 output on
+**16/16 draws** across E = 8/16/32, TOPK = 3/8, INTER = 64/128, worst relative
+difference exactly 0. The final fp32→bf16 rounding swallows the reordering. So
+that leg would have passed and proved nothing. The order is still *pinned*, for
+determinism — the FSM scans `ecur = 0..E-1` and evaluates when `ecur` is in the
+selected set, which is ascending by construction and costs E cycles against
+TOPK+1 expert evaluations — and the generator's self-test carries a **tripwire**
+asserting the two orders still agree, so if that ever changes someone is told.
+
+The four legs that *are* gated were each measured against the golden in Python
+before being written, not written and hoped for: `INJ_MOE_WEIGHT_ROTATE` (right
+experts, right weights, wrong pairing) 96/96 outputs differ, `INJ_MOE_SHARED_TYPE`
+96/96, `INJ_MOE_WRONG_SELECT` 96/96, `INJ_MOE_SHARED_WEIGHTED` 94/96.
+
+**A gate that reported PASS while reading garbage.** The first run of this TB
+printed all 96 output checks passing with the vector stream **completely
+misaligned**. `emit_cols` sizes its header lines from the *per-pass* K
+(`NSB = K//256`, which is **0** at K = 32) while the TB strided by the
+compile-time KMAX; and a `$fscanf` that matches nothing leaves its target
+untouched, so every stale comparison happened to hold. The fix is not just the
+stride: the vector stream now carries a **per-test sentinel** that the TB reads
+back and aborts on, so a misalignment of even one token is a hard failure instead
+of a green run. It earned its place immediately — it caught a second, different
+misalignment (I had inserted the sentinel *before* the tolerance line) on its
+first use.
+
+The output is **bit-exact** with the golden (worst abs 0.0 over 96 outputs). The
+only tolerance is on the router weight readback, and it deliberately uses
+`make moe-router`'s own published bound (rel 0.02 + abs 0.01) rather than a
+tighter one derived here: that quantity's accuracy is owned by that gate, and two
+gates disagreeing about the same number is worse than a loose check. Measured, the
+RTL differs from the golden by exactly one bf16 ULP on 6 of 9 weights — inside
+that bound, and attributable to `fp32_add` (`make fp-ieee`).
+
+**A third leg, because `dec-block` only runs `FFN_KIND = 0`.** Wiring the MoE arm
+into the block would otherwise have left it never *elaborated* by any gate — a
+port-width slip there surfaces only in a whole-model build, or not at all. So
+`make moe-ffn` also builds `test/glm53f_moe_block_elab_tb.v`: two blocks side by
+side, one of each kind, both **run** rather than merely reset. Running them is the
+point — checking the ports while idle would be vacuous, since an idle MoE block
+holds `moe_rw_req` at 0 too, and "it stayed 0" would then pass for either arm. Run,
+the arms diverge: the MoE block's router asks for its first `ffn_gate_inp` row at
+cycle **2744** (measured, and printed so a change is visible rather than absorbed
+— the loop bound is 20000; the 200000 I first wrote cost 526 s of gate time for the
+same claim), while the dense block holds that port tied off across the same
+window. It claims elaboration and tie-off, not function: function is the 111
+checks above.
+
+**Still not built:** `ATTN_KIND = 1`, the 11 MLA blocks. That is now the only
+`$fatal` left in the decoder block.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1342,6 +1419,7 @@ make dec-block                # 20 + 676:  a complete decoder layer, blocks 0-2 
 make swiglu-q8                # 15 + 204:  the dense FFN, clamped SwiGLU over Q8_0 (4.3r)
 make swiglu-mt                #  8 + 514:  the SAME unit on the MoE experts' mixed types (4.3s)
 make moe-router               # 123 + 80:  sigmoid gating + exp_probs_b (4.3t)
+make moe-ffn                  #   9 + 111: the expert loop + shared expert + combine (4.3u)
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number

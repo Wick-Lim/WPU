@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,7 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1549,6 +1549,65 @@ swiglu-mt:
 	        echo "[swiglu_mt_INJECT_$$inj] injection correctly FAILED"; \
 	    fi; \
 	done
+
+# ---- moe-ffn : the MoE FFN -- route, run the experts, add the shared one -------
+# src/glm53f_moe_ffn.v.  The claim is the LOOP and the COMBINE: exactly the
+# selected experts run, in ascending index order, each scaled by ITS OWN router
+# weight, with the always-on shared expert added at weight 1 and its OWN weight
+# types, accumulated in fp32.
+#   It deliberately does NOT re-claim per-type arithmetic -- Q4_K/Q5_K/Q6_K need
+# K=256 super-blocks and `make swiglu-mt` gates them there.  Routed experts run
+# Q8_0 and the shared one F16, so the two type triples are driven DIFFERENTLY
+# across that boundary, which is the property the checkpoint depends on ([scan]:
+# routed Q4_K/Q5_K/Q6_K, shared Q8_0).
+#   Four must-fail legs, each MEASURED against the golden in Python before being
+# written rather than written and hoped for: WEIGHT_ROTATE (right experts, right
+# weights, wrong pairing), SHARED_TYPE (the shared expert on the routed types),
+# WRONG_SELECT (ignore the router, run experts 0..TOPK-1), SHARED_WEIGHTED (the
+# shared expert scaled by a routed weight instead of 1).
+#   There is NO accumulation-ORDER leg, on purpose: measured, ascending and
+# score-descending accumulation are BITWISE IDENTICAL at the bf16 output on 16/16
+# draws across E=8/16/32, TOPK=3/8, INTER=64/128.  Such a leg would pass and prove
+# nothing.  The generator's self-test carries a tripwire that fires if that ever
+# stops being true.
+#   The vector stream carries a per-test SENTINEL and the TB aborts on it. That is
+# not belt-and-braces: the first version of this gate reported all 96 output
+# checks PASSING while the stream was completely misaligned, because emit_cols
+# sizes its header lines from the per-pass K while the TB strided by KMAX, and a
+# $fscanf that matches nothing leaves its target untouched.
+moe-ffn:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_moe_ffn_gen"; python3 tools/glm53f_moe_ffn_gen.py --selftest \
+	    || { echo "FAILED: glm53f_moe_ffn_gen self-test"; exit 1; }
+	@python3 tools/glm53f_moe_ffn_gen.py 3 $(BUILD_DIR)/glm53f_moe_ffn_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_moe_ffn_vec.txt"' \
+	    -o $(BUILD_DIR)/moe_ffn_sim test/glm53f_moe_ffn_tb.v src/glm53f_moe_ffn.v \
+	    src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v \
+	    src/glm53f_swiglu_mt.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null \
+	    || { echo "FAILED: moe-ffn compile"; exit 1; }
+	@printf '[%s] ' "moe_ffn"; $(VVP) $(BUILD_DIR)/moe_ffn_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: moe_ffn"; exit 1; }
+	@for inj in INJ_MOE_WEIGHT_ROTATE INJ_MOE_SHARED_TYPE INJ_MOE_WRONG_SELECT INJ_MOE_SHARED_WEIGHTED; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_moe_ffn_vec.txt"' \
+	        -o $(BUILD_DIR)/moe_ffn_inj test/glm53f_moe_ffn_tb.v src/glm53f_moe_ffn.v \
+	        src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v \
+	        src/glm53f_swiglu_mt.v src/glm_matmul_q4k.v src/glm_act.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/moe_ffn_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: moe-ffn $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[moe_ffn_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/moe_block_elab_sim test/glm53f_moe_block_elab_tb.v \
+	    src/glm53f_decoder_block.v src/glm53f_moe_ffn.v src/glm53f_moe_router.v src/topk_select.v \
+	    src/fp32_sigmoid_pipe.v src/glm_act.v src/glm_fp_pipe.v src/glm_matmul_q4k.v \
+	    src/glm53f_hc_block.v src/glm53f_kda_attn.v src/glm53f_kda_gemv.v src/glm53f_kda_layer.v \
+	    src/glm53f_swiglu_mt.v src/kda_conv_step.v src/kda_gate_step.v src/kda_onorm_step.v \
+	    src/kda_recur.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v \
+	    src/mhc_sinkhorn.v src/mhc_stream_ops.v src/rmsnorm_unit.v 2>/dev/null \
+	    || { echo "FAILED: moe-block-elab compile -- the decoder block's FFN_KIND=1 arm does not elaborate"; exit 1; }
+	@printf '[%s] ' "moe_block_elab"; $(VVP) $(BUILD_DIR)/moe_block_elab_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: moe_block_elab"; exit 1; }
 
 # ---- moe-router : GLM-5.3-Flash's MoE router ----------------------------------
 # src/glm53f_moe_router.v. moe_router_q4k's MATH is already right for this model

@@ -54,13 +54,19 @@
 //   to it.  Q8_0 needed NOTHING new from the engine -- w_type=2, code on w_hp,
 //   fp16 d on w_q8_d were already inputs and weight_loader_q4k already emits them.
 //
-//   WHAT NEITHER DEFINE CLAIMS.  Both modules reach the rest of the system through
-//   handshakes and neither instantiates a decoder layer: composing glm53f_kda_attn
-//   and the MLA/MoE sublayers inside glm53f_hc_block is ASSEMBLY work that is still
-//   open, and the 4.19 MB/layer recurrent state still lives in registers rather
-//   than BRAM/DDR -- a residency decision, not a plumbing one.  These defines say
-//   the machines are built, not that the model is assembled; the whole-model top
-//   stays poisoned by Q5_K.
+//   WHAT NEITHER DEFINE CLAIMS.  These say the MACHINES are built, not that the
+//   MODEL is assembled.  Composition has since moved: glm53f_decoder_block wires
+//   glm53f_kda_attn into the attention site and, as of 2026-09-11, EITHER FFN arm
+//   into the FFN site -- the dense Q8_0 SwiGLU for blocks 0-2 (FFN_KIND=0) or
+//   glm53f_moe_ffn for blocks 3-44 (FFN_KIND=1), gated by `make dec-block` and
+//   `make moe-ffn`.  So a complete decoder layer now exists for BOTH FFN kinds of
+//   the 34 KDA blocks.
+//   What is still open above that line: the 11 MLA blocks (ATTN_KIND=1 still
+//   $fatal's, mla_attn_q4k is not in the site); per-tensor weight descriptors at
+//   the model level, which no type has ever had (glm_q4k_system hardcodes a single
+//   tile and leaves desc_wtype undriven); and the 4.19 MB/layer recurrent state,
+//   which still lives in registers rather than BRAM/DDR -- a residency decision,
+//   not a plumbing one.  No whole-model top is assembled from these blocks yet.
 //
 //   Q5_K STATUS -- SATISFIED as of 2026-09-07.  The GEMM arm was already gated
 //   bit-exact (`WT_Q5K` in glm_matmul_q4k, `make mixedtype` with a must-fail

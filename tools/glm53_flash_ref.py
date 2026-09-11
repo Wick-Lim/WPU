@@ -29,6 +29,14 @@ import numpy as np
 F32 = np.float32
 
 
+def _bf16(x):
+    """round-to-nearest-even to bf16, kept in fp32 -- matches glm_fp.vh's bf16_round."""
+    a = np.ascontiguousarray(np.asarray(x, F32)).view(np.uint32)
+    lsb = (a >> 16) & np.uint32(1)
+    r = (a + np.uint32(0x7FFF) + lsb) & np.uint32(0xFFFF0000)
+    return r.view(F32).reshape(np.asarray(x, F32).shape)
+
+
 def sigmoid(x):
     return (1.0 / (1.0 + np.exp(-np.asarray(x, np.float64)))).astype(F32)
 
@@ -322,6 +330,54 @@ def moe_route(logits, exp_bias, topk=8, scale=2.5, weights_norm=True,
     return np.array(idx, np.int64), (w * F32(scale)).astype(F32)
 
 
+
+def moe_ffn(x, W_g, exp_bias, experts, shared, topk=8, scale=2.5, limit=10.0,
+            weights_norm=True, bias_selects_only=True, expert_out_bf16=False):
+    """GLM-5.3-Flash MoE FFN: route, run the chosen experts, add the shared one.
+
+        idx, w = moe_route(W_g @ x, exp_bias, ...)
+        y = SUM_i w[i] * expert_idx[i](x)  +  shared(x)
+
+    where expert(x) = down @ clamped_swiglu(gate @ x, up @ x, limit).
+
+    THE SHARED EXPERT IS ADDED WITH WEIGHT 1, NOT w-scaled.  That is not a guess:
+    `expert_weights_scale` = 2.5 scales the ROUTED weights only, and this repo
+    already transcribes the same rule for GLM-5.2 -- src/glm_decoder_block_q4k.v's
+    header states `combine = SUM_e gate_e * y_e + y_shared (fp32 accum)`.  The
+    self-test pins it by zeroing every routed expert and requiring y == shared(x)
+    EXACTLY.
+
+    ORDER IS PINNED: routed experts in ASCENDING INDEX order, then the shared one
+    last, accumulating sequentially in fp32.  fp add is not associative, so a
+    different order is a different golden -- the RTL walks the same order.
+
+    `expert_out_bf16` rounds each expert's output to bf16 BEFORE the weighted
+    accumulate.  The RTL reuses `glm53f_swiglu_mt`, whose `y_out` port is bf16, so
+    the hardware composition really does round there; the default False is the
+    mathematical rule, and the gate's generator passes True.  The difference is
+    not cosmetic -- it is one bf16 rounding per expert per output element, eight
+    of them plus the shared one, all before any cancellation in the sum.
+    """
+    x = np.asarray(x, F32)
+    logits = np.asarray(W_g, F32) @ x
+    idx, w = moe_route(logits, exp_bias, topk=topk, scale=scale,
+                       weights_norm=weights_norm,
+                       bias_selects_only=bias_selects_only)
+
+    def one(e):
+        g = (np.asarray(e["gate"], F32) @ x).astype(F32)
+        u = (np.asarray(e["up"], F32) @ x).astype(F32)
+        r = (np.asarray(e["down"], F32) @ clamped_swiglu(g, u, limit)).astype(F32)
+        return _bf16(r) if expert_out_bf16 else r
+
+    acc = np.zeros(x.shape[0] if shared is None else
+                   np.asarray(shared["down"], F32).shape[0], F32)
+    for j, ei in enumerate(idx):                       # ascending index
+        acc = (acc + (F32(w[j]) * one(experts[int(ei)])).astype(F32)).astype(F32)
+    acc = (acc + one(shared)).astype(F32)              # weight 1, last
+    return acc, np.array(idx, np.int64), np.asarray(w, F32)
+
+
 # ------------------------------------------------------------------ self-test
 def _selftest():
     rng = np.random.default_rng(0x5F3)
@@ -434,6 +490,52 @@ def _selftest():
     chk(np.array_equal(hc_mix(hs_r, np.eye(hc, dtype=F32), np.ones(hc, F32), sub_r),
                        (hs_r + sub_r[None, :]).astype(F32)),
         "mHC: comb=I, post=1 is not the plain residual add")
+    # --- MoE FFN: the composition rule, and the shared expert's weight ---
+    Hm, Im, Em, Km = 8, 12, 6, 3
+    def _mk(rg):
+        return dict(gate=(rg.normal(size=(Im, Hm)) * 0.3).astype(F32),
+                    up=(rg.normal(size=(Im, Hm)) * 0.3).astype(F32),
+                    down=(rg.normal(size=(Hm, Im)) * 0.3).astype(F32))
+    xm    = rng.normal(size=Hm).astype(F32)
+    Wg    = (rng.normal(size=(Em, Hm)) * 0.5).astype(F32)
+    bm    = (rng.normal(size=Em) * 0.2).astype(F32)
+    exps  = [_mk(rng) for _ in range(Em)]
+    shrd  = _mk(rng)
+    ym, im_, wm_ = moe_ffn(xm, Wg, bm, exps, shrd, topk=Km)
+    chk(ym.shape == (Hm,), "moe_ffn: output shape wrong")
+    chk(len(im_) == Km and len(set(im_.tolist())) == Km, "moe_ffn: top-k not distinct")
+    chk(list(im_) == sorted(im_), "moe_ffn: indices not ascending -- the accumulation order is unpinned")
+
+    # THE PIN on the shared expert's weight: zero every routed expert and the
+    # answer must be EXACTLY shared(x).  If the shared output were w-scaled, or
+    # scaled by expert_weights_scale, this is off by 2.5x and bitwise-detectable.
+    zexp = [dict(gate=np.zeros((Im, Hm), F32), up=np.zeros((Im, Hm), F32),
+                 down=np.zeros((Hm, Im), F32)) for _ in range(Em)]
+    y_only_sh, _, _ = moe_ffn(xm, Wg, bm, zexp, shrd, topk=Km)
+    g_s = (shrd["gate"] @ xm).astype(F32); u_s = (shrd["up"] @ xm).astype(F32)
+    sh_ref = (shrd["down"] @ clamped_swiglu(g_s, u_s, 10.0)).astype(F32)
+    chk(np.array_equal(y_only_sh, sh_ref),
+        "moe_ffn: shared expert is not added with weight 1")
+
+    # and the converse: a zero shared expert leaves only the routed sum, which
+    # MUST move when expert_weights_scale changes (it scales the routed part only)
+    zsh = dict(gate=np.zeros((Im, Hm), F32), up=np.zeros((Im, Hm), F32),
+               down=np.zeros((Hm, Im), F32))
+    y_r25, _, _ = moe_ffn(xm, Wg, bm, exps, zsh, topk=Km, scale=2.5)
+    y_r50, _, _ = moe_ffn(xm, Wg, bm, exps, zsh, topk=Km, scale=5.0)
+    chk(not np.array_equal(y_r25, y_r50), "moe_ffn: expert_weights_scale does nothing")
+    chk(np.allclose(y_r50, (y_r25 * F32(2.0)).astype(F32), rtol=1e-5, atol=1e-6),
+        "moe_ffn: the routed sum is not linear in expert_weights_scale")
+
+    # UNSELECTED experts must not contribute: perturb one and nothing may move
+    unsel = [e for e in range(Em) if e not in set(im_.tolist())]
+    chk(len(unsel) > 0, "moe_ffn: self-test degenerate -- every expert was selected")
+    exps2 = [dict(gate=e["gate"].copy(), up=e["up"].copy(), down=e["down"].copy())
+             for e in exps]
+    exps2[unsel[0]]["down"] = (exps2[unsel[0]]["down"] + F32(7.0)).astype(F32)
+    y2, _, _ = moe_ffn(xm, Wg, bm, exps2, shrd, topk=Km)
+    chk(np.array_equal(ym, y2), "moe_ffn: an UNSELECTED expert changed the output")
+
     # THE PIN: numpy's own matmul must NOT match, or the sequential order is
     # not actually being enforced and a BLAS change could move the golden.
     chk(not np.array_equal((comb_r @ hs_r + post_r[:, None] * sub_r[None, :]).astype(F32),
@@ -470,7 +572,9 @@ def _selftest():
           f"range + signed zero, KDA delta rule + decay + beta=0, mHC double "
           f"stochasticity + post range, hc_collapse vs hyper_connection's own "
           f"collapsed, hc_mix identities + the pinned-order pin, MoE sigmoid "
-          f"routing with exp_probs_b and both readings of it)")
+          f"routing with exp_probs_b and both readings of it, MoE FFN "
+          f"composition with the shared expert pinned at weight 1 and "
+          f"unselected experts pinned out)")
     return 0
 
 
