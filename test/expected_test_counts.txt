@@ -72,6 +72,7 @@ kda_recur(RSQRT) 5184
 kda_recur(EXACT) 5184
 kda_gen 80
 glm53f-ref 36
+dsa-indexer-ref 424
 glm53f-config-guard 10
 axi_boot_writer 403
 axi_master_dma 7

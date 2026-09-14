@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -75,7 +75,81 @@ all: unittests synth-glm formal model-q4k-smoke resident resident-equiv full-ela
 #   - dsa-thread-equiv / lint : documented above.
 #   - mla-intra : attention-unit-level intra-causal proof; its system-level oracle
 #     (intra-batch-verify) is in-gate, and the unit gate is minutes-long standalone.
-release-gate: glm53f-config-guard glm53f-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+# ============================================================================
+# SHARED GENERATED INPUTS -- what made `make -j` unsafe
+# ----------------------------------------------------------------------------
+# Several gates each regenerated the SAME artifact to the SAME fixed path before
+# using it.  Serially that is only wasteful.  Under -j it is a RACE: one process
+# rewrites the file while another reads it, and the result is a corrupt vector
+# set, not an error message -- a gate that fails for a reason that is not in the
+# RTL, or worse, passes on half-written data.
+#
+# Promoting each to a real FILE target with its generator as a prerequisite makes
+# make build it exactly once per run, whatever -j is, and rebuild it when the
+# generator changes.  The collisions this fixes were enumerated statically over
+# every release-gate target, not guessed:
+#   build/mq4k/*.hex   model-q4k, model-q4k-acthw, batched-q4k
+#   build/q4k_vec.txt  q4k, hdr-late
+#   tools/glm_trace*   unittests, expert-cache        (gitignored, generated)
+#   build/l3_*.hex     l3-e2e, l3-hash-mirror
+# GNU make here is 3.81, so no grouped targets (`&:`): each rule names the ONE
+# file its consumers depend on and writes its siblings alongside, which is safe
+# because the generator always writes the whole set together.
+
+$(BUILD_DIR)/mq4k/.stamp: tools/glm_model_q4k_tb_gen.py
+	@mkdir -p $(BUILD_DIR)/mq4k
+	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null
+	@touch $@
+
+$(BUILD_DIR)/q4k_vec.txt: tools/q4k_matmul_gen.py
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/q4k_matmul_gen.py >/dev/null
+
+tools/glm_trace.hex: tools/route_trace.py
+	@python3 tools/route_trace.py --dump >/dev/null
+
+$(BUILD_DIR)/l3_boot.hex: tools/l3_image_pack.py
+	@mkdir -p $(BUILD_DIR)
+	@python3 tools/l3_image_pack.py >/dev/null
+
+# spec_depth_adapt_sim was compiled IDENTICALLY by two gates to one path; build it
+# once instead.  (The other shared binary, moe_router_sim, was worse than a race:
+# `unittests` built GLM-5.2's moe_router.v there and `moe-router` built
+# GLM-5.3-Flash's glm53f_moe_router.v -- two different designs under one name, so
+# under -j a gate could have run the other one's binary and still printed a pass.
+# That one is renamed at its own recipe rather than shared.)
+$(BUILD_DIR)/spec_depth_adapt_sim: test/spec_depth_adapt_tb.v src/spec_decode_seq.v src/spec_depth_adapt.v
+	@mkdir -p $(BUILD_DIR)
+	@$(IVERILOG) $(IFLAGS) -o $@ $^
+
+# Consumers declare the dependency; their recipes no longer regenerate anything.
+model-q4k model-q4k-acthw batched-q4k: $(BUILD_DIR)/mq4k/.stamp
+q4k hdr-late:                          $(BUILD_DIR)/q4k_vec.txt
+unittests expert-cache:                tools/glm_trace.hex
+l3-e2e l3-hash-mirror:                 $(BUILD_DIR)/l3_boot.hex
+unittests spec-adapt:                  $(BUILD_DIR)/spec_depth_adapt_sim
+
+GATE_SHARED := $(BUILD_DIR)/mq4k/.stamp $(BUILD_DIR)/q4k_vec.txt tools/glm_trace.hex \
+               $(BUILD_DIR)/l3_boot.hex $(BUILD_DIR)/spec_depth_adapt_sim
+gate-shared: $(GATE_SHARED)
+
+# ---- release-gate-par : the same ladder, in parallel ------------------------
+# Measured serial wall time 2026-09-12..14: **49.0 h** (not the ~7 h an older note
+# claimed). The long poles are spec-slow 11.9 h, spec-greedy 10.7 h, expert-cache
+# 8.6 h and intra-batch-verify 8.5 h -- all independent of each other.
+#   This is NOT `make -j`. Xcode's make is 3.81, which has no --output-sync, so
+# parallel targets tear each other's banner lines in half and
+# tools/check_test_counts.sh -- which matches `] ALL <n> TESTS PASSED` on one line
+# -- then reports those gates MISSING. The driver gives each target its own make
+# and its own log, then concatenates in declared order, so the verdict is computed
+# on a log that reads exactly like a serial run.
+#   The gate cannot finish faster than its longest single target, so expect ~12 h,
+# bounded by spec-slow. Override the width with GATE_JOBS.
+GATE_JOBS ?= 6
+release-gate-par:
+	@bash tools/run_gate_parallel.sh $(GATE_JOBS) 2>&1 | tee $(BUILD_DIR)/release_gate_par.log
+
+release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -96,7 +170,6 @@ unittests:
 	@mkdir -p $(BUILD_DIR)
 	@# expert_predictor_tb reads the generated routing trace (tools/glm_trace.hex);
 	@# regenerate it so `unittests` is self-contained on a fresh clone (deterministic seed).
-	@python3 tools/route_trace.py --dump >/dev/null
 	@# ---- GLM-5.2 datapath units (bf16/fp32, fp32-golden verified) ----
 	@# (the old scalar-TPU per-unit TBs were removed with legacy/.)
 	@# rmsnorm_unit: bf16 in/out, fp32 reduce + rsqrt; the FP numerics foundation.
@@ -154,7 +227,6 @@ unittests:
 	    || { echo "FAILED: spec_decode_seq_k"; exit 1; }
 	@# spec_depth_adapt: ADAPTIVE draft depth (runtime k_cur in [1..K] + accept-rate policy) --
 	@# spec==greedy under ANY depth schedule (forced + closed-loop), ADAPT=0 default byte-compatible.
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_depth_adapt_sim test/spec_depth_adapt_tb.v src/spec_decode_seq.v src/spec_depth_adapt.v
 	@printf '[%s] ' "spec_depth_adapt"; $(VVP) $(BUILD_DIR)/spec_depth_adapt_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_depth_adapt"; exit 1; }
 	@# kv_cache_pager: MLA latent-KV ring cache (append + DSA-gather + Flash overflow), single-module system.
@@ -336,7 +408,6 @@ q4k:
 	@printf '[%s] ' "q4k_prim"; $(VVP) $(BUILD_DIR)/q4k_prim_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: q4k_prim"; exit 1; }
 	@# glm_matmul_q4k: Q4_K GEMM core, bit-exact to ggml dequantize_row_q4_K.
-	@python3 tools/q4k_matmul_gen.py >/dev/null            # -> build/q4k_vec.txt
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_matmul_q4k_sim test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v
 	@printf '[%s] ' "glm_matmul_q4k"; $(VVP) $(BUILD_DIR)/glm_matmul_q4k_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_matmul_q4k"; exit 1; }
@@ -420,7 +491,6 @@ model-q4k-smoke:
 
 model-q4k:
 	@mkdir -p $(BUILD_DIR)
-	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null          # -> build/mq4k/*.hex (committed-slice golden)
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_q4k_full_sim $(MODEL_Q4K_SRCS)
 	@printf '[%s] ' "glm_model_q4k_full"; $(VVP) $(BUILD_DIR)/glm_model_q4k_full_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_model_q4k_full"; exit 1; }
@@ -432,7 +502,6 @@ model-q4k:
 # activation serialization (the claim fpga/synth_ku3p.tcl relies on).
 model-q4k-acthw:
 	@mkdir -p $(BUILD_DIR)
-	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null
 	@$(IVERILOG) $(IFLAGS) -DTB_ACT_HW=1 -o $(BUILD_DIR)/glm_model_q4k_acthw_sim $(MODEL_Q4K_SRCS)
 	@printf '[%s] ' "glm_model_q4k_full(ACT_HW=1)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_acthw_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_model_q4k_full ACT_HW=1"; exit 1; }
@@ -530,7 +599,6 @@ spec-slow:
 #   K=2/3/4/6/8.  Same TB also runs inside `unittests`; this is the standalone gate.
 spec-adapt:
 	@mkdir -p $(BUILD_DIR)
-	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/spec_depth_adapt_sim test/spec_depth_adapt_tb.v src/spec_decode_seq.v src/spec_depth_adapt.v
 	@printf '[%s] ' "spec_depth_adapt"; $(VVP) $(BUILD_DIR)/spec_depth_adapt_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: spec_depth_adapt"; exit 1; }
 
@@ -546,7 +614,6 @@ spec-adapt:
 expert-cache:
 	@mkdir -p $(BUILD_DIR)
 	@# regenerate the routing trace (deterministic seed) so the target is self-contained.
-	@python3 tools/route_trace.py --dump >/dev/null
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/expert_cache_pf test/expert_cache_pf_tb.v src/expert_cache_pf.v src/expert_cache_ctrl.v
 	@printf '[%s] ' "expert_cache_pf"; $(VVP) $(BUILD_DIR)/expert_cache_pf | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: expert_cache_pf"; exit 1; }
@@ -966,6 +1033,19 @@ GLM53F_DEFS_VL := +define+GLM53F_KDA_RTL_PRESENT +define+GLM53F_HC_RTL_PRESENT +
 glm53f-ref:
 	@printf '[%s] ' "glm53f-ref"; python3 tools/glm53_flash_ref.py \
 	    || { echo "FAILED: glm53f-ref"; exit 1; }
+
+# ---- dsa-indexer-ref : the DSA indexer's executable reference ----------------
+# tools/dsa_indexer_ref.py is the GLM-5.3-Flash DSA indexer written out as a
+# runnable spec -- the k-pool compressor (a per-channel convex combination
+# starting at the first valid key), the exact top-(TOPK/KPOOL) over valid pools,
+# and the xKPOOL expansion with the incomplete tail appended to width
+# TOPK+KPOOL-1.  It has self-tested since it was committed but was NEVER IN THE
+# LADDER: nothing ran it, so it could rot silently while reading like a pinned
+# reference.  There is no RTL for the indexer yet -- this gates the SPEC, which
+# is exactly the thing the RTL will be written against.
+dsa-indexer-ref:
+	@printf '[%s] ' "dsa-indexer-ref"; python3 tools/dsa_indexer_ref.py \
+	    || { echo "FAILED: dsa-indexer-ref"; exit 1; }
 
 # ---- fp-ieee : how far the fp32 primitives are from IEEE, MEASURED and PINNED
 # src/glm_fp.vh fp32_add is not exactly round-to-nearest-even: ~0.04% of pairs
@@ -1634,9 +1714,9 @@ moe-router:
 	    || { echo "FAILED: glm53f_moe_router_gen self-test"; exit 1; }
 	@python3 tools/glm53f_moe_router_gen.py 16 $(BUILD_DIR)/glm53f_moe_router_vec.txt >/dev/null
 	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_moe_router_vec.txt"' \
-	    -o $(BUILD_DIR)/moe_router_sim test/glm53f_moe_router_tb.v src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null \
+	    -o $(BUILD_DIR)/glm53f_moe_router_sim test/glm53f_moe_router_tb.v src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_fp_pipe.v 2>/dev/null \
 	    || { echo "FAILED: moe-router compile"; exit 1; }
-	@printf '[%s] ' "moe_router"; $(VVP) $(BUILD_DIR)/moe_router_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	@printf '[%s] ' "moe_router"; $(VVP) $(BUILD_DIR)/glm53f_moe_router_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: moe_router"; exit 1; }
 	@for inj in INJ_MOER_NO_BIAS INJ_MOER_BIAS_WEIGHTS; do \
 	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_moe_router_vec.txt"' \
@@ -2191,7 +2271,6 @@ rank14-measure:
 # ============================================================================
 l3-e2e:
 	@mkdir -p $(BUILD_DIR)
-	@python3 tools/l3_image_pack.py >/dev/null
 	@$(IVERILOG) $(IFLAGS) -I src -o $(BUILD_DIR)/l3e2e_sim test/l3_e2e_tb.v fpga/l3_top.v src/*.v
 	@printf '[%s] ' "l3_e2e"; $(VVP) $(BUILD_DIR)/l3e2e_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: l3_e2e"; exit 1; }
@@ -2217,7 +2296,6 @@ l3-e2e:
 # ============================================================================
 l3-hash-mirror:
 	@mkdir -p $(BUILD_DIR)
-	@python3 tools/l3_image_pack.py >/dev/null
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/l3hash_sim test/l3_hash_mirror_tb.v
 	@printf '[%s] ' "l3_hash_mirror"; $(VVP) $(BUILD_DIR)/l3hash_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: l3_hash_mirror"; exit 1; }
@@ -2264,7 +2342,6 @@ l3-hash-mirror:
 HDR_LATE_BASE ?= 9f14c7a
 hdr-late:
 	@mkdir -p $(BUILD_DIR)
-	@python3 tools/q4k_matmul_gen.py >/dev/null
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/hdrl_0 test/glm_matmul_q4k_tb.v src/glm_matmul_q4k.v 2>/dev/null \
 	    || { echo "FAILED: hdr-late compile (0)"; exit 1; }
 	@printf '[glm_matmul_q4k(HDR:0)] '; $(VVP) $(BUILD_DIR)/hdrl_0 2>/dev/null | grep -E 'ALL [0-9]+ TESTS PASSED' \
@@ -2981,7 +3058,6 @@ BATCHED_Q4K_SRCS := test/glm_model_q4k_pem_tb.v src/glm_model_q4k.v src/glm_deco
 
 batched-q4k:
 	@mkdir -p $(BUILD_DIR)
-	@python3 tools/glm_model_q4k_tb_gen.py >/dev/null          # -> build/mq4k/*.hex (committed-slice golden)
 	@$(IVERILOG) $(IFLAGS) -o $(BUILD_DIR)/glm_model_q4k_pem_sim $(BATCHED_Q4K_SRCS)
 	@printf '[%s] ' "glm_model_q4k_pem(PE_M=2)"; $(VVP) $(BUILD_DIR)/glm_model_q4k_pem_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: glm_model_q4k_pem"; exit 1; }
