@@ -27,7 +27,11 @@ WHAT THIS FILE PINS (see _selftest):
   * with no rope, q and k are pure nope and the score is a plain qk_nope dot;
   * key_length == kv_lora_rank, the structural consequence of NoPE;
   * the cache holds c_kv (512/token), NOT per-head k and v (2*64*256 = 32768),
-    a 64x residency difference that is the whole point of the latent form;
+    a 64x residency difference that is the whole point of the latent form, and it
+    holds it RAW -- rmsnorm is applied on READ, once. This file got that wrong
+    once, normalising on write as well; every shape and identity check still
+    passed because rmsnorm is nearly idempotent (measured 2.8e-06 relative), so
+    the self-test now asserts the cached latent's RMS is NOT 1;
   * W_uk can be ABSORBED into q -- (q @ W_uk) . c_kv equals q . (W_uk @ c_kv) in
     exact arithmetic -- which is the standard MLA optimisation and is worth a lot
     here (it folds W_uk into q ONCE instead of expanding a [H,256] key for every
@@ -142,7 +146,14 @@ def mla_attn_nope(x, W, ckv_cache, s_len, absorb=False, absorb_v=False):
     q = (np.asarray(W["W_uq"], F32) @ rmsnorm(np.asarray(W["W_dq"], F32) @ x)).astype(F32)
     q = q.reshape(H, QK)
 
-    c_kv_new = rmsnorm(np.asarray(W["W_dkv"], F32) @ x)
+    # THE CACHE HOLDS THE RAW LATENT. rmsnorm is applied ON READ, once, below --
+    # not here. tools/glm_model_q4k_ref.py's mla_attn does the same (its CKV store
+    # is raw and `ckv_n = rmsnorm(CKV[j])` normalises at use), and normalising on
+    # write as well would apply it twice. rmsnorm is NEARLY idempotent -- the
+    # second pass divides by sqrt(1 + eps) plus rounding -- which is exactly why
+    # this survived a self-test that only checked shapes and identities. Measured
+    # cost of the double norm before the fix: see the module docstring.
+    c_kv_new = (np.asarray(W["W_dkv"], F32) @ x).astype(F32)
     cache = np.concatenate([np.asarray(ckv_cache, F32).reshape(-1, KV_LORA_RANK),
                             c_kv_new[None, :]], axis=0) if s_len else c_kv_new[None, :]
 
@@ -226,6 +237,16 @@ def _selftest():
     out0, ckv0 = mla_attn_nope(x0, W, np.zeros((0, KL), F32), 0)
     chk(out0.shape == (MD,), "output shape wrong")
     chk(ckv0.shape == (KL,), "the cached entry must be the LATENT, width kv_lora_rank")
+    # THE CACHE IS RAW, and this is the check that says so. rmsnorm belongs on the
+    # READ side, once (tools/glm_model_q4k_ref.py's CKV store is raw too). An
+    # earlier version of this file normalised on write AS WELL, and every shape and
+    # identity check still passed, because rmsnorm is NEARLY idempotent -- the
+    # second pass only divides by sqrt(1+eps) plus rounding, measured at 2.8e-06
+    # relative. A normalised latent has RMS == 1; a raw one does not.
+    rms0 = float(np.sqrt((ckv0.astype(np.float64) ** 2).mean()))
+    chk(abs(rms0 - 1.0) > 1e-3,
+        f"the cached latent has RMS {rms0:.6f} ~ 1 -- it is being normalised on "
+        f"WRITE, so rmsnorm is applied twice by the time a reader normalises it")
     chk(np.isfinite(out0).all(), "non-finite output")
 
     # with ONE key, softmax is 1.0 and the context is exactly that key's v

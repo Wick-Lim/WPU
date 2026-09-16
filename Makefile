@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -149,7 +149,7 @@ GATE_JOBS ?= 6
 release-gate-par:
 	@bash tools/run_gate_parallel.sh $(GATE_JOBS) 2>&1 | tee $(BUILD_DIR)/release_gate_par.log
 
-release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1091,6 +1091,47 @@ mla-score:
 	        echo "FAILED: mla-score $$inj PASSED -- that trap is not actually checked"; exit 1; \
 	    else \
 	        echo "[mla_score_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- mla-proj : the MLA projection front, Q8_0 off the shared engine ---------
+# src/glm53f_mla_proj.v -- W_dq -> rmsnorm -> W_uq, the per-head fold of W_uk into
+# q, and the RAW latent off W_dkv. Together with `mla-score` that is the whole
+# NoPE MLA datapath for one token; what is left is wiring it at ATTN_KIND=1.
+#   BITWISE, like mla-score: the GEMV is matmul_q4k_col's contract exactly
+# (sequential fp32 accumulation of bf16 activation x dequantised weight, rounded
+# to bf16 once), the rmsnorm is the repo's own at LANES=1, and the golden runs on
+# the DEQUANTISED weights so the Q8_0 round trip is part of the INPUT -- the same
+# contract `make kda-attn` uses. Q8_0 needs nothing new from the engine.
+#   THE FOLD'S AXIS is the thing worth a gate. qa[h][k] reduces DOWN W_uk's rows
+# (over d), so the store is [H][KV_LORA][QK]; reducing over the other axis has the
+# SAME shape and would ship silently. The generator pins that a transpose differs,
+# and that heads do not mix.
+#   Three must-fail legs, each justified by a self-test measurement rather than
+# hoped for: NO_QNORM (the c_q rmsnorm is live -- q differs without it),
+# FOLD_HEAD0 (heads do not mix normally), NORM_CKV (the latent is emitted RAW --
+# normalising here too applies rmsnorm twice; downstream that is only 2.8e-06
+# relative and invisible to shape checks, which is how it got into the reference
+# before being caught, so it gets a leg of its own here where it is loud).
+mla-proj:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_mla_proj_gen"; python3 tools/glm53f_mla_proj_gen.py --selftest \
+	    || { echo "FAILED: glm53f_mla_proj_gen self-test"; exit 1; }
+	@python3 tools/glm53f_mla_proj_gen.py 4 $(BUILD_DIR)/glm53f_mla_proj_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_mla_proj_vec.txt"' \
+	    -o $(BUILD_DIR)/mla_proj_sim test/glm53f_mla_proj_tb.v src/glm53f_mla_proj.v \
+	    src/glm_matmul_q4k.v src/rmsnorm_unit.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: mla-proj compile"; exit 1; }
+	@printf '[%s] ' "mla_proj"; $(VVP) $(BUILD_DIR)/mla_proj_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mla_proj"; exit 1; }
+	@for inj in INJ_MLAP_NO_QNORM INJ_MLAP_FOLD_HEAD0 INJ_MLAP_NORM_CKV; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_mla_proj_vec.txt"' \
+	        -o $(BUILD_DIR)/mla_proj_inj test/glm53f_mla_proj_tb.v src/glm53f_mla_proj.v \
+	        src/glm_matmul_q4k.v src/rmsnorm_unit.v src/glm_fp_pipe.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mla_proj_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mla-proj $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mla_proj_INJECT_$$inj] injection correctly FAILED"; \
 	    fi; \
 	done
 

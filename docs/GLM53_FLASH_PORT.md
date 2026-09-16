@@ -1387,9 +1387,38 @@ a full case are present. Each must-fail leg was measured against the golden befo
 being written: `INJ_MLAS_NOPAD` moves 48 of 96 ctx elements — *all* of them in the
 padded windows — `INJ_MLAS_NORESCALE` 80, `INJ_MLAS_HEAD0_PROBS` 40.
 
-**Not claimed here:** the projections themselves (`W_dq`/`W_uq`/`W_dkv`, and the
-fold of `W_uk` into q) are Q8_0 GEMVs and belong with a `glm53f_kda_gemv`-shaped
-fetch unit, gated separately; and `ATTN_KIND = 1` is still `$fatal`.
+**The projection front followed** — `src/glm53f_mla_proj.v`, `make mla-proj`,
+**100 + 9 checks, also bitwise**. It turns one token into exactly the two things
+the score unit consumes:
+
+    c_q   = W_dq  @ x                 →  rmsnorm  →  q = W_uq @ ·
+    qa[h] = q[h]  @ W_uk[h]              the fold, one GEMV pass per head
+    c_kv  = W_dkv @ x                    RAW
+
+All four stream Q8_0 off the shared `glm_matmul_q4k`, which needed **nothing new**
+— `w_type = 2`, the code on `w_hp[7:0]`, the fp16 block scale on `w_q8_d` were
+already inputs, exactly as `glm53f_kda_gemv` found for KDA. The golden runs on the
+**dequantised** weights, so the Q8_0 round trip is part of the *input* rather than
+of the error; that is `make kda-attn`'s contract, reused.
+
+**The fold's axis is the thing that needed a gate.** `qa[h][k]` reduces *down*
+`W_uk`'s rows (over d), so the store is `[H][KV_LORA][QK]`. Reducing over the other
+axis has the **same shape** and would ship silently, so the generator pins that a
+transpose differs — and that perturbing one head's q leaves the other head's `qa`
+bit-identical.
+
+**A correctness bug in my own spec, found while designing this.** The reference
+normalised `c_kv` on **write** *and* on read. GLM-5.2's model caches the latent raw
+and normalises once, at use; mine applied rmsnorm twice. Every shape and identity
+check still passed, because rmsnorm is nearly idempotent — the second pass only
+divides by √(1+eps) plus rounding, **measured 2.8e-06 relative**. The fix is one
+line; the durable part is the check that now stands next to it: a normalised vector
+has RMS 1, so the self-test asserts the cached latent's RMS is **not** 1, and
+`INJ_MLAP_NORM_CKV` is a must-fail leg at the port where the same mistake is loud.
+
+**Still not built:** `ATTN_KIND = 1`. Both halves of the NoPE MLA datapath now
+exist and are gated; what remains is composing them behind the decoder block's
+attention site, which is the last `$fatal` in the repo.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
@@ -1491,6 +1520,7 @@ make moe-router               # 123 + 80:  sigmoid gating + exp_probs_b (4.3t)
 make moe-ffn                  #   9 + 111: the expert loop + shared expert + combine (4.3u)
 make mla-ref                  #        18: the NoPE MLA spec -- both absorptions measured (4.3v)
 make mla-score                #   8 + 102: the absorbed-latent MLA inner loop, BITWISE (4.3v)
+make mla-proj                 #   9 + 100: the Q8_0 projection front + the W_uk fold (4.3v)
 make dsa-indexer-ref          #       424: the DSA indexer spec, now in the ladder
 ```
 
