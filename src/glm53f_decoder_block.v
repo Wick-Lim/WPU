@@ -20,15 +20,28 @@
 // (`blk.N.ffn_{gate,up,down}` [12288,4096] x3 [scan]). It cannot carry these
 // weights at all -- not "less accurately", at all.
 //
+// THE TWO ATTENTION ARMS.  ATTN_KIND = 0 is KDA (34 of 45 blocks) --
+// glm53f_kda_attn; ATTN_KIND = 1 is MLA+DSA (11) -- glm53f_mla_attn, which is
+// NoPE and therefore a sibling of mla_attn_q4k rather than a re-dimensioning of
+// it (no W_kr, no rotation, no k_rope cache; a zero-width rotary tail is not
+// expressible in Verilog). Both present the same start/busy/done handshake and
+// the same [D] bf16 in / out, so the site takes either.
+//   THE MLA ARM'S KV CACHE IS NOT HELD HERE. Its ports come straight out: at the
+// real shapes a 1 M-token context is ~1 GB of latent per MLA block, and that
+// residency decision belongs with the model. The same open item already exists
+// for KDA's 4.19 MB/layer recurrent state.
+//
 // THE TWO FFN ARMS.  FFN_KIND = 0 is the dense Q8_0 SwiGLU of blocks 0-2;
 // FFN_KIND = 1 is the MoE of blocks 3-44 -- glm53f_moe_ffn, i.e. the router, the
 // Q4_K/Q5_K/Q6_K routed experts and the always-on Q8_0 shared expert.  Both
 // present the same start/busy/done handshake and the same [D] bf16 in / out, so
 // the site takes either without changing.
 //
-// WHAT IS STILL PARAMETERISED BUT NOT BUILT: the 11 MLA blocks' attention site,
-// which takes mla_attn_q4k.  ATTN_KIND still $fatal's on that arm -- elaborating
-// a block whose site is empty would be a top that lies.
+// NOTHING IS PARAMETERISED-BUT-UNBUILT ANY MORE. Both attention arms and both FFN
+// arms exist and are gated, so a complete decoder layer exists for all 45 blocks.
+// What remains above this line is MODEL-level: nothing stacks 45 of these, no
+// per-tensor weight descriptor exists for any type, and the KV / recurrent state
+// residency is still an open decision.
 //
 // The mHC sublayer contract is what makes this a wiring job rather than a
 // redesign: attn_norm/ffn_norm sit between `collapsed` and the sublayer on all 46
@@ -51,7 +64,17 @@ module glm53f_decoder_block #(
     parameter integer TN          = 2,
     parameter integer KMAX        = 32,
     parameter integer INTER       = 32,     // dense FFN inter size
-    parameter integer ATTN_KIND   = 0,      // 0 = KDA (34/45). 1 = MLA: not built.
+    parameter integer ATTN_KIND   = 0,      // 0 = KDA (34/45 blocks).
+                                            // 1 = MLA+DSA (11): glm53f_mla_attn.
+    parameter integer QK          = 8,      // qk_nope_head_dim (real 256)
+    parameter integer QLORA       = 8,      // q_lora_rank      (real 1536)
+    parameter integer KVL         = 8,      // kv_lora_rank     (real 512)
+    parameter integer VD          = 8,      // v_head_dim       (real 256)
+    parameter integer SMAX        = 4,      // attention window (real 2048)
+    parameter [31:0]  MLA_SCALE   = 32'h3EB504F3,   // 1/sqrt(qk_nope_head_dim)
+    parameter integer MLA_PMAX    = (KH*QK > QLORA)
+                                  ? ((KH*QK > KVL) ? KH*QK : KVL)
+                                  : ((QLORA > KVL) ? QLORA : KVL),
     parameter integer FFN_KIND    = 0,      // 0 = dense Q8_0 SwiGLU (blocks 0-2).
                                             // 1 = MoE (blocks 3-44): glm53f_moe_ffn.
     parameter integer N_EXPERT    = 8,      // expert_count (real 288)
@@ -132,12 +155,32 @@ module glm53f_decoder_block #(
     input  wire [4*TN-1:0]               ffn_w_q,
     input  wire [16*TN*((KMAX+255)/256)-1:0]  ffn_w_d, ffn_w_dmin,
     input  wire [96*TN*((KMAX+255)/256)-1:0]  ffn_w_scales,
-    input  wire [128*TN*((KMAX+255)/256)-1:0] ffn_w_q6_sc
+    input  wire [128*TN*((KMAX+255)/256)-1:0] ffn_w_q6_sc,
+
+    // ---- MLA arm (ATTN_KIND = 1 only; tied off and inert at ATTN_KIND = 0) ----
+    // The KV CACHE IS NOT HELD HERE. The sublayer publishes its new latent and
+    // pulls old ones by index, and those ports come straight out to whoever owns
+    // memory: at the real shapes a 1 M-token context is ~1 GB of latent per MLA
+    // block, and that residency decision belongs with the model, not with a
+    // decoder block. It is the same shape this block already uses for weights.
+    input  wire [$clog2(SMAX+1)-1:0] mla_s_len,
+    output wire                      mla_w_req,
+    output wire [2:0]                mla_w_sel,
+    output wire [$clog2(KH)-1:0]     mla_w_head,
+    output wire [$clog2(MLA_PMAX/TN+1)-1:0] mla_w_grp,
+    output wire [$clog2(KMAX+1)-1:0]        mla_w_k,
+    input  wire [16*TN-1:0]          mla_w_hp,
+    input  wire [16*TN*((KMAX+31)/32)-1:0] mla_w_q8_d,
+    output wire                      mla_ckv_wr,
+    output wire [16*KVL-1:0]         mla_ckv_out,
+    output wire                      mla_c_req,
+    output wire [$clog2(SMAX)-1:0]   mla_c_idx,
+    input  wire [16*KVL-1:0]         mla_c_vec
 );
 `ifndef YOSYS
     initial begin
-        if (ATTN_KIND != 0)
-            $fatal(1, "glm53f_decoder_block: ATTN_KIND=1 (MLA) is not built -- mla_attn_q4k is not wired into the mHC attention site yet, and elaborating as if it were would be a top that lies");
+        if (ATTN_KIND > 1)
+            $fatal(1, "glm53f_decoder_block: ATTN_KIND must be 0 (KDA, 34/45 blocks) or 1 (MLA+DSA, 11)");
         if (FFN_KIND > 1)
             $fatal(1, "glm53f_decoder_block: FFN_KIND must be 0 (dense Q8_0 SwiGLU, blocks 0-2) or 1 (MoE, blocks 3-44)");
     end
@@ -165,18 +208,62 @@ module glm53f_decoder_block #(
     wire                    kda_busy, kda_done;
     wire [32*MODEL_DIM-1:0] kda_y;
 
-    glm53f_kda_attn #(.MODEL_DIM(MODEL_DIM), .H(KH), .DK(DK), .DV(DV), .RANK(RANK),
-                      .CONV_K(CONV_K), .TN(TN), .KMAX(KMAX), .EPS(RMS_EPS),
-                      .INV_SQRT_DK(INV_SQRT_DK)) u_kda (
-        .clk(clk), .rst(rst), .start(kda_start), .busy(kda_busy), .done(kda_done),
-        .x_in(kda_x),
-        .w_req(kda_w_req), .w_sel(kda_w_sel), .w_grp(kda_w_grp), .w_k(kda_w_k),
-        .w_hp(kda_w_hp), .w_q8_d(kda_w_q8_d),
-        .decay_in(decay_in), .dt_bias_in(dt_bias_in), .conv_w_in(conv_w_in),
-        .onorm_w_in(onorm_w_in),
-        .s_in(kda_s_in), .s_out(kda_s_out),
-        .hist_in(kda_hist_in), .hist_out(kda_hist_out),
-        .y_out(kda_y));
+    // Both arms present the SAME handshake to the mHC attention site -- start /
+    // busy / done and one [D] bf16 vector in, one out -- which is why swapping
+    // them is a generate and not a redesign of the site. The KDA arm's outputs are
+    // fp32-TYPED and bf16-VALUED; the MLA arm's are bf16, so it is widened here
+    // rather than the site being changed.
+    generate
+    if (ATTN_KIND == 0) begin : g_kda
+        glm53f_kda_attn #(.MODEL_DIM(MODEL_DIM), .H(KH), .DK(DK), .DV(DV), .RANK(RANK),
+                          .CONV_K(CONV_K), .TN(TN), .KMAX(KMAX), .EPS(RMS_EPS),
+                          .INV_SQRT_DK(INV_SQRT_DK)) u_kda (
+            .clk(clk), .rst(rst), .start(kda_start), .busy(kda_busy), .done(kda_done),
+            .x_in(kda_x),
+            .w_req(kda_w_req), .w_sel(kda_w_sel), .w_grp(kda_w_grp), .w_k(kda_w_k),
+            .w_hp(kda_w_hp), .w_q8_d(kda_w_q8_d),
+            .decay_in(decay_in), .dt_bias_in(dt_bias_in), .conv_w_in(conv_w_in),
+            .onorm_w_in(onorm_w_in),
+            .s_in(kda_s_in), .s_out(kda_s_out),
+            .hist_in(kda_hist_in), .hist_out(kda_hist_out),
+            .y_out(kda_y));
+        assign mla_w_req   = 1'b0;
+        assign mla_w_sel   = 3'd0;
+        assign mla_w_head  = {$clog2(KH){1'b0}};
+        assign mla_w_grp   = {$clog2(MLA_PMAX/TN+1){1'b0}};
+        assign mla_w_k     = {$clog2(KMAX+1){1'b0}};
+        assign mla_ckv_wr  = 1'b0;
+        assign mla_ckv_out = {16*KVL{1'b0}};
+        assign mla_c_req   = 1'b0;
+        assign mla_c_idx   = {$clog2(SMAX){1'b0}};
+    end else begin : g_mla
+        // the 11 MLA+DSA blocks. NoPE: no W_kr, no rotation, no k_rope cache --
+        // see glm53f_mla_proj's header for why that makes it a sibling of
+        // mla_attn_q4k rather than a re-parameterisation.
+        wire [16*MODEL_DIM-1:0] mla_y;
+        glm53f_mla_attn #(.MODEL_DIM(MODEL_DIM), .H(KH), .QK(QK), .QLORA(QLORA),
+                          .KVL(KVL), .VD(VD), .SMAX(SMAX), .TN(TN), .KMAX(KMAX),
+                          .SCALE(MLA_SCALE), .RMS_EPS(RMS_EPS)) u_mla (
+            .clk(clk), .rst(rst), .start(kda_start), .busy(kda_busy), .done(kda_done),
+            .x_in(kda_x), .s_len(mla_s_len),
+            .w_req(mla_w_req), .w_sel(mla_w_sel), .w_head(mla_w_head),
+            .w_grp(mla_w_grp), .w_k(mla_w_k),
+            .w_hp(mla_w_hp), .w_q8_d(mla_w_q8_d),
+            .ckv_wr(mla_ckv_wr), .ckv_out(mla_ckv_out),
+            .c_req(mla_c_req), .c_idx(mla_c_idx), .c_vec(mla_c_vec),
+            .y_out(mla_y));
+        // the site consumes an fp32-typed, bf16-valued vector
+        genvar mi;
+        for (mi = 0; mi < MODEL_DIM; mi = mi + 1) begin : g_widen
+            assign kda_y[32*mi +: 32] = {mla_y[16*mi +: 16], 16'h0000};
+        end
+        assign kda_s_out    = {32*KH*DK*DV{1'b0}};
+        assign kda_hist_out = {32*3*KH*DK*(CONV_K-1){1'b0}};
+        assign kda_w_req = 1'b0; assign kda_w_sel = 4'd0;
+        assign kda_w_grp = {$clog2(PMAX_OUT/TN+1){1'b0}};
+        assign kda_w_k   = {$clog2(KMAX+1){1'b0}};
+    end
+    endgenerate
 
     // ---- the dense FFN, sitting in the FFN site ----
     reg                     ffn_start;

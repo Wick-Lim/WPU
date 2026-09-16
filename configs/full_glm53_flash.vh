@@ -61,12 +61,19 @@
 //   glm53f_moe_ffn for blocks 3-44 (FFN_KIND=1), gated by `make dec-block` and
 //   `make moe-ffn`.  So a complete decoder layer now exists for BOTH FFN kinds of
 //   the 34 KDA blocks.
-//   What is still open above that line: the 11 MLA blocks (ATTN_KIND=1 still
-//   $fatal's, mla_attn_q4k is not in the site); per-tensor weight descriptors at
-//   the model level, which no type has ever had (glm_q4k_system hardcodes a single
-//   tile and leaves desc_wtype undriven); and the 4.19 MB/layer recurrent state,
-//   which still lives in registers rather than BRAM/DDR -- a residency decision,
-//   not a plumbing one.  No whole-model top is assembled from these blocks yet.
+//   As of 2026-09-16 the ATTENTION site takes either arm too: glm53f_kda_attn for
+//   the 34 KDA blocks and glm53f_mla_attn for the 11 MLA+DSA ones (ATTN_KIND=1,
+//   `make glm53f-mla-attn`).  So a COMPLETE DECODER LAYER now exists for all 45
+//   blocks, in every attention x FFN combination the checkpoint uses, and there is
+//   no parameterised-but-unbuilt arm left in the block.
+//   What is still open above that line is MODEL-level: nothing stacks 45 of these
+//   blocks; per-tensor weight descriptors, which no type has ever had
+//   (glm_q4k_system hardcodes a single tile and leaves desc_wtype undriven); and
+//   STATE RESIDENCY, now two items rather than one -- KDA's 4.19 MB/layer
+//   recurrent state and MLA's KV cache, which glm53f_mla_attn deliberately does
+//   NOT hold (at kv_lora_rank = 512 a 1 M-token context is ~1 GB of latent per MLA
+//   block, so where it lives is a model decision and its ports come straight out
+//   of the block).  No whole-model top is assembled from these blocks yet.
 //
 //   Q5_K STATUS -- SATISFIED as of 2026-09-07.  The GEMM arm was already gated
 //   bit-exact (`WT_Q5K` in glm_matmul_q4k, `make mixedtype` with a must-fail

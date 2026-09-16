@@ -115,7 +115,16 @@ module glm53f_decoder_block_tb;
         .ffn_w_d({16*TN*((KMAX+255)/256){1'b0}}),
         .ffn_w_dmin({16*TN*((KMAX+255)/256){1'b0}}),
         .ffn_w_scales({96*TN*((KMAX+255)/256){1'b0}}),
-        .ffn_w_q6_sc({128*TN*((KMAX+255)/256){1'b0}}));
+        .ffn_w_q6_sc({128*TN*((KMAX+255)/256){1'b0}}),
+        // The MLA arm's ports exist unconditionally too; this TB runs
+        // ATTN_KIND = 0, so they are tied off. The MLA arm is gated by
+        // `make glm53f-mla-attn` at its own slice, and its presence inside the
+        // block by the elaboration leg on `make moe-ffn`.
+        .mla_s_len(3'd1),
+        .mla_w_req(), .mla_w_sel(), .mla_w_head(), .mla_w_grp(), .mla_w_k(),
+        .mla_w_hp({16*TN{1'b0}}), .mla_w_q8_d({16*TN*((KMAX+31)/32){1'b0}}),
+        .mla_ckv_wr(), .mla_ckv_out(), .mla_c_req(), .mla_c_idx(),
+        .mla_c_vec({16*8{1'b0}}));
 
     // ---- KDA Q8_0 weight responder (same shape as the kda-attn gate) ----
     reg [7:0]  cmem [0:NCODE-1];

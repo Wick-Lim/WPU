@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -149,7 +149,7 @@ GATE_JOBS ?= 6
 release-gate-par:
 	@bash tools/run_gate_parallel.sh $(GATE_JOBS) 2>&1 | tee $(BUILD_DIR)/release_gate_par.log
 
-release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1135,6 +1135,45 @@ mla-proj:
 	    fi; \
 	done
 
+# ---- glm53f-mla-attn : the WHOLE NoPE MLA sublayer ---------------------------
+# src/glm53f_mla_attn.v -- glm53f_mla_proj + glm53f_mla_score + glm53f_mla_out.
+# This is the module that goes where mla_attn_q4k goes, and with it ATTN_KIND = 1
+# is built: every one of the 45 blocks now has a complete decoder layer.
+#   BITWISE end to end, against a golden that COMPOSES the already-gated unit
+# generators (mla-proj, mla-score) plus matmul_q4k_col for W_uv and W_o. Nothing
+# is re-derived, so a disagreement means the COMPOSITION is wrong rather than the
+# arithmetic -- which is exactly what happened: the first run had `ckv` wrong
+# while `make mla-proj` stayed bitwise. glm_matmul_q4k LATCHES its header buses on
+# `start`, which a stage pulses one cycle BEFORE it raises w_req, so muxing the
+# shared weight channel on w_req published the other stage's address at the moment
+# the engine sampled w_q8_d. INJ_MLAA_MUX_ON_WREQ pins the fix.
+#   THE KV CACHE IS THE TESTBENCH'S, because the sublayer deliberately does not
+# hold it: at the real shapes a 1 M-token context is ~1 GB of latent per MLA
+# block, and that residency decision belongs with the model. What the TB does --
+# append on ckv_wr, answer c_idx -- is what the system will have to do.
+#   The corpus must contain s_len == 1 (first token), a padded window and a full
+# one, and the generator asserts all three: a unit ignoring ckv_wr would pass an
+# all-first-token corpus, one never writing the -inf pad an all-full-window one.
+glm53f-mla-attn:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_mla_attn_gen"; python3 tools/glm53f_mla_attn_gen.py --selftest \
+	    || { echo "FAILED: glm53f_mla_attn_gen self-test"; exit 1; }
+	@python3 tools/glm53f_mla_attn_gen.py 5 $(BUILD_DIR)/glm53f_mla_attn_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_mla_attn_vec.txt"' \
+	    -o $(BUILD_DIR)/glm53f_mla_attn_sim test/glm53f_mla_attn_tb.v src/glm53f_mla_attn.v src/glm53f_mla_proj.v src/glm53f_mla_score.v src/glm53f_mla_out.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/glm_softmax.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: glm53f-mla-attn compile"; exit 1; }
+	@printf '[%s] ' "glm53f_mla_attn"; $(VVP) $(BUILD_DIR)/glm53f_mla_attn_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: glm53f_mla_attn"; exit 1; }
+	@for inj in INJ_MLAA_SKIP_OUT INJ_MLAA_NO_CKVWR INJ_MLAA_MUX_ON_WREQ; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_mla_attn_vec.txt"' \
+	        -o $(BUILD_DIR)/glm53f_mla_attn_inj test/glm53f_mla_attn_tb.v src/glm53f_mla_attn.v src/glm53f_mla_proj.v src/glm53f_mla_score.v src/glm53f_mla_out.v src/glm_matmul_q4k.v src/rmsnorm_unit.v src/glm_softmax.v src/glm_fp_pipe.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/glm53f_mla_attn_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: glm53f-mla-attn $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[glm53f_mla_attn_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
 # ---- fp-ieee : how far the fp32 primitives are from IEEE, MEASURED and PINNED
 # src/glm_fp.vh fp32_add is not exactly round-to-nearest-even: ~0.04% of pairs
 # come out 1 ULP low, at exponent gaps 4-5.  That has been harmless and invisible
@@ -1772,8 +1811,10 @@ moe-ffn:
 	    src/glm53f_hc_block.v src/glm53f_kda_attn.v src/glm53f_kda_gemv.v src/glm53f_kda_layer.v \
 	    src/glm53f_swiglu_mt.v src/kda_conv_step.v src/kda_gate_step.v src/kda_onorm_step.v \
 	    src/kda_recur.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v \
-	    src/mhc_sinkhorn.v src/mhc_stream_ops.v src/rmsnorm_unit.v 2>/dev/null \
-	    || { echo "FAILED: moe-block-elab compile -- the decoder block's FFN_KIND=1 arm does not elaborate"; exit 1; }
+	    src/mhc_sinkhorn.v src/mhc_stream_ops.v src/rmsnorm_unit.v \
+	    src/glm53f_mla_attn.v src/glm53f_mla_proj.v src/glm53f_mla_score.v \
+	    src/glm53f_mla_out.v src/glm_softmax.v 2>/dev/null \
+	    || { echo "FAILED: moe-block-elab compile -- a non-default decoder-block arm does not elaborate"; exit 1; }
 	@printf '[%s] ' "moe_block_elab"; $(VVP) $(BUILD_DIR)/moe_block_elab_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: moe_block_elab"; exit 1; }
 

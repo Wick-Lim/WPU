@@ -62,7 +62,7 @@ moe_router 80
 glm53f_moe_router_gen 123
 moe_ffn 111
 glm53f_moe_ffn_gen 9
-moe_block_elab 3
+moe_block_elab 5
 kda_gate 1224
 kda_gate_gen 5
 kda_conv 1280
@@ -78,6 +78,8 @@ mla_score 102
 glm53f_mla_score_gen 8
 mla_proj 100
 glm53f_mla_proj_gen 9
+glm53f_mla_attn 125
+glm53f_mla_attn_gen 8
 glm53f-config-guard 10
 axi_boot_writer 403
 axi_master_dma 7

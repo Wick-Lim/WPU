@@ -1416,9 +1416,51 @@ line; the durable part is the check that now stands next to it: a normalised vec
 has RMS 1, so the self-test asserts the cached latent's RMS is **not** 1, and
 `INJ_MLAP_NORM_CKV` is a must-fail leg at the port where the same mistake is loud.
 
-**Still not built:** `ATTN_KIND = 1`. Both halves of the NoPE MLA datapath now
-exist and are gated; what remains is composing them behind the decoder block's
-attention site, which is the last `$fatal` in the repo.
+### 4.3w The sublayer closes, and with it the last `$fatal`
+
+`src/glm53f_mla_attn.v` — `make glm53f-mla-attn`, **125 + 8 checks, bitwise end to
+end** — composes the projection front, the absorbed-latent score and a new output
+stage (`src/glm53f_mla_out.v`: `W_uv` per head, then `W_o`). It is the module that
+goes where `mla_attn_q4k` goes, and wiring it at `ATTN_KIND = 1` means **every one
+of the 45 blocks now has a complete decoder layer**, in every attention × FFN
+combination the checkpoint uses. Nothing in the block is parameterised-but-unbuilt
+any more; the two `$fatal`s left are range guards, not absences.
+
+**The golden composes rather than re-derives.** It calls the generators that
+already gate the parts — `mla-proj`'s `project`, `mla-score`'s `ref_score` — plus
+`matmul_q4k_col` for the two output GEMVs. That is not tidiness: it makes a
+disagreement *mean* something specific, and it immediately did.
+
+**What only a composed gate could see.** The first run had `ckv` wrong while
+`make mla-proj` stayed bitwise — so the arithmetic was right and the *composition*
+was not. `glm_matmul_q4k` **latches its header buses on `start`**, and a stage
+pulses `mm_start` in `S_PREP`, one cycle *before* it raises `w_req`. Muxing the
+shared weight channel on `w_req` therefore published the *other* stage's address
+at exactly the moment the engine sampled `w_q8_d`, so every group after the first
+dequantised against the wrong block scale. Selecting on the wrapper's own state
+fixes it, and `INJ_MLAA_MUX_ON_WREQ` pins the fix rather than a hypothetical —
+it is the bug, kept.
+
+**The KV cache is pulled, not held, and that is a decision rather than an
+omission.** The sublayer publishes its new latent on `ckv_wr` and asks for old
+ones by index; those ports come straight out through the decoder block to whoever
+owns memory. At the real shapes a latent is 512 values, so a 1 M-token context is
+**~1 GB per MLA block** — a residency question (BRAM? DDR? paged?) that belongs
+with the model, and the same open item KDA's 4.19 MB/layer recurrent state already
+has. The consequence is stated in the module header rather than left implicit:
+*this is not a complete attention layer on its own; it is complete given a cache.*
+The gate supplies one from the testbench, which is exactly what the system will
+have to do.
+
+The corpus is required to contain `s_len == 1` (first token — the only key is the
+one written this step), a padded window and a full one, and the generator asserts
+all three: a unit ignoring `ckv_wr` would pass an all-first-token corpus, and one
+never writing the −inf pad would pass an all-full-window one. `INJ_MLAA_NO_CKVWR`
+and `INJ_MLAA_SKIP_OUT` move 80 of 125 checks each; the mux leg moves 118.
+
+**`make moe-ffn`'s elaboration leg grew to cover this too** (3 → 5 checks): three
+blocks side by side now, and on the MLA one the attention weight port goes live
+while the KDA arm it replaced is held quiet in the same block.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
@@ -1521,6 +1563,7 @@ make moe-ffn                  #   9 + 111: the expert loop + shared expert + com
 make mla-ref                  #        18: the NoPE MLA spec -- both absorptions measured (4.3v)
 make mla-score                #   8 + 102: the absorbed-latent MLA inner loop, BITWISE (4.3v)
 make mla-proj                 #   9 + 100: the Q8_0 projection front + the W_uk fold (4.3v)
+make glm53f-mla-attn          #   8 + 125: the WHOLE NoPE MLA sublayer; ATTN_KIND=1 (4.3w)
 make dsa-indexer-ref          #       424: the DSA indexer spec, now in the ladder
 ```
 
