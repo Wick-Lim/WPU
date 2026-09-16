@@ -42,6 +42,15 @@ WHAT THIS FILE PINS (see _selftest):
     choice of form is a numerical decision the golden has to match -- not a free
     optimisation. The self-test runs a slice wide enough to SEE it (QK=32); at
     QK=8 the two forms are bitwise identical and the check would be vacuous;
+  * the same rewrite applies on the VALUE side -- W_uv is linear, so
+    SUM_j p_j (W_uv . ckv_j) == W_uv . (SUM_j p_j ckv_j): weight the latents and
+    expand ONCE instead of building a [H,256] value per cached token. Measured,
+    fully-absorbed vs fully-expanded:
+        H=8  QK=32  kv_lora=16  145/192 outputs differ  rel 7.8e-06
+        H=4  QK=256 kv_lora=64  632/768                 rel 3.5e-05
+        H=2  QK=256 kv_lora=512 693/768                 rel 8.2e-05
+    THE RTL ABSORBS BOTH, because that is what makes MLA decode feasible at all
+    (see mla_score_latent), so `absorb=True, absorb_v=True` is the golden;
   * softmax is over real keys only; padded slots contribute exactly zero.
 
 This is fp32/fp64 math, NOT a bit-exact hardware model: the RTL's bf16 dots and
@@ -77,7 +86,42 @@ def rmsnorm(x, weight=None, eps=1e-6):
     return y if weight is None else (y * np.asarray(weight, F32)).astype(F32)
 
 
-def mla_attn_nope(x, W, ckv_cache, s_len, absorb=False):
+def mla_score_latent(qa, cache, scale):
+    """THE INNER LOOP, and the only part that runs once per CACHED TOKEN.
+
+        score[h][j] = qa[h] . rmsnorm(cache[j])  * scale        (absorbed form)
+        p           = softmax(score, over real keys)
+        ctx_lat[h]  = SUM_j p[h][j] * rmsnorm(cache[j])         [KV_LORA wide]
+
+    `qa` is q already folded through W_uk, i.e. qa[h] = q[h] @ W_uk[h]. Folding it
+    ONCE is what makes MLA cheap: expanding k per key instead costs H*QK MACs over
+    KV_LORA for EVERY key (64*256*512 = 8.4 M), against 64*512 = 32 K for a dot
+    against the latent. At the checkpoint's 2048-key window that is the difference
+    between a feasible decode step and an infeasible one.
+
+    The same argument applies on the value side, and this returns ctx in the LATENT
+    basis for it: because W_uv is linear, SUM_j p_j (W_uv . ckv_j) == W_uv . (SUM_j
+    p_j ckv_j), so the caller expands ONCE at the end instead of per key. Both
+    rewrites are exact in real arithmetic and NOT in fp -- see the measured tables
+    in the module docstring and _selftest.
+    """
+    qa = np.asarray(qa, F32)
+    cache = np.asarray(cache, F32)
+    H = qa.shape[0]
+    n = cache.shape[0]
+    ckvn = np.stack([rmsnorm(cache[j]) for j in range(n)])       # [n, KV_LORA]
+    scores = np.zeros((H, n), F32)
+    for h in range(H):
+        for j in range(n):
+            scores[h, j] = F32(np.dot(qa[h].astype(np.float64),
+                                      ckvn[j].astype(np.float64))) * scale
+    p = ref.softmax(scores, axis=-1)
+    ctx_lat = np.einsum('hj,jk->hk', p.astype(np.float64),
+                        ckvn.astype(np.float64)).astype(F32)
+    return ctx_lat, p, ckvn
+
+
+def mla_attn_nope(x, W, ckv_cache, s_len, absorb=False, absorb_v=False):
     """One decode step of GLM-5.3-Flash MLA. Returns (out[MODEL_DIM], c_kv_new).
 
     W is a dict of dense fp32 matrices:
@@ -123,7 +167,17 @@ def mla_attn_nope(x, W, ckv_cache, s_len, absorb=False):
                                           k_j[h].astype(np.float64))) * scale
 
     p = ref.softmax(scores, axis=-1)                       # real keys only
-    ctx = np.einsum('hj,jhd->hd', p.astype(np.float64), vs.astype(np.float64)).astype(F32)
+    if absorb_v:
+        # W_uv is linear, so weight the LATENTS and expand once at the end.
+        ckvn = np.stack([rmsnorm(cache[j]) for j in range(n)])
+        ctx_lat = np.einsum('hj,jk->hk', p.astype(np.float64),
+                            ckvn.astype(np.float64)).astype(F32)
+        Wuv = np.asarray(W["W_uv"], F32).reshape(H, DV, -1)
+        ctx = np.einsum('hdk,hk->hd', Wuv.astype(np.float64),
+                        ctx_lat.astype(np.float64)).astype(F32)
+    else:
+        ctx = np.einsum('hj,jhd->hd', p.astype(np.float64),
+                        vs.astype(np.float64)).astype(F32)
     out = (np.asarray(W["W_o"], F32) @ ctx.reshape(-1)).astype(F32)
     return out, c_kv_new
 
@@ -199,6 +253,36 @@ def _selftest():
         "absorbed and expanded forms came out BITWISE equal at this slice -- then "
         "the spec cannot say the reduction order is observable; widen the slice")
 
+    # --- W_uv ABSORPTION: same story on the value side ---
+    outv, _ = mla_attn_nope(x1, W, ckv0[None, :], 1, absorb=True, absorb_v=True)
+    chk(np.allclose(outv, out1, rtol=1e-3, atol=1e-4),
+        "absorbing W_uv changed the answer beyond reduction-order noise")
+    chk(not np.array_equal(outv, outa),
+        "absorbing W_uv as well changed NOTHING bitwise -- then the value-side "
+        "rewrite is not observable here and the claim must be dropped or widened")
+
+    # --- mla_score_latent IS the inner loop of the absorbed path ---
+    qf = (W["W_uq"] @ rmsnorm(W["W_dq"] @ x1)).astype(F32).reshape(H, QK)
+    qa = np.stack([qf[h] @ W["W_uk"][h * QK:(h + 1) * QK] for h in range(H)]).astype(F32)
+    _, ckv1b = mla_attn_nope(x1, W, ckv0[None, :], 1)
+    cache2 = np.stack([ckv0, ckv1b])
+    ctx_lat, pr, _ = mla_score_latent(qa, cache2, F32(1.0 / np.sqrt(QK)))
+    chk(ctx_lat.shape == (H, KL), "ctx in the latent basis must be [H, kv_lora]")
+    chk(np.allclose(pr.sum(axis=-1), 1.0, atol=1e-5), "softmax rows do not sum to 1")
+    Wuv = W["W_uv"].reshape(H, DV, KL)
+    ctx_expand = np.einsum('hdk,hk->hd', Wuv.astype(np.float64),
+                           ctx_lat.astype(np.float64)).astype(F32)
+    out_two, _ = mla_attn_nope(x1, W, ckv0[None, :], 1, absorb=True, absorb_v=True)
+    chk(np.allclose((W["W_o"] @ ctx_expand.reshape(-1)).astype(F32), out_two,
+                    rtol=1e-4, atol=1e-5),
+        "mla_score_latent + one W_uv expansion does not reproduce the absorbed path")
+
+    # --- the COST claim, which is the whole reason for the latent form ---
+    per_key_expanded = N_HEADS * QK_NOPE_DIM * KV_LORA_RANK   # build k for one key
+    per_key_absorbed = N_HEADS * KV_LORA_RANK                 # dot against latent
+    chk(per_key_expanded // per_key_absorbed == QK_NOPE_DIM,
+        "the absorbed inner loop must be QK_NOPE_DIM times cheaper per cached key")
+
     # --- no rope means no position dependence: the SAME x at a different step
     #     index yields the same q. GLM-5.2 could not say this.
     q_a = (W["W_uq"] @ rmsnorm(W["W_dq"] @ x1)).astype(F32)
@@ -214,8 +298,9 @@ def _selftest():
     print(f"ALL {n} TESTS PASSED (NoPE: no rotary anywhere and key_length == "
           f"kv_lora_rank; the cache holds the 512-wide LATENT, 64x smaller than "
           f"per-head k+v; single-key softmax is exactly 1; the cache is live; "
-          f"W_uk absorption is equal in value and NOT bitwise, so the reduction "
-          f"order is a real RTL choice; q is position-independent)")
+          f"BOTH absorptions are equal in value and NOT bitwise, so the form is a "
+          f"real RTL choice the golden must match; mla_score_latent reproduces the "
+          f"absorbed path; q is position-independent)")
     return 0
 
 

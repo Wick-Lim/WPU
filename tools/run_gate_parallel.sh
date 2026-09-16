@@ -31,8 +31,26 @@ set -u
 # time does not, and the usual "is it hung?" test (CPU ~= elapsed) reports a
 # HEALTHY process the whole time. Without this line a long gate silently takes
 # days and every timing number derived from it is fiction.
-if [ -z "${GATE_CAFFEINATED:-}" ] && command -v caffeinate >/dev/null 2>&1; then
-    GATE_CAFFEINATED=1 exec caffeinate -is "$0" "$@"
+# `caffeinate -w $$` holds the assertion for exactly this script's lifetime and
+# exits with it. An earlier version re-exec'd the script under caffeinate instead;
+# that left caffeinate running as a CHILD with no child of its own -- the
+# assertion happened to be held, but by accident rather than by construction, and
+# `ps` could not show the gate running under it. This form is verifiable: the
+# caffeinate process names the pid it is waiting on.
+CAFF_PID=""
+if command -v caffeinate >/dev/null 2>&1; then
+    caffeinate -i -s -w $$ &
+    CAFF_PID=$!
+    # DISOWN IT. Two reasons, and the first one deadlocks: the final bare `wait`
+    # would otherwise wait on this job too, while caffeinate is waiting on THIS
+    # shell -- measured, the driver hung after printing every PASS. The second is
+    # that `jobs -rp` feeds the concurrency throttle, so an undisowned caffeinate
+    # silently costs one of the JOBS slots.
+    disown "$CAFF_PID" 2>/dev/null || true
+    trap 'if [ -n "$CAFF_PID" ]; then kill "$CAFF_PID" 2>/dev/null; fi' EXIT
+    echo "== holding the machine awake: caffeinate -i -s -w $$ (pid $CAFF_PID) =="
+else
+    echo "== WARNING: no caffeinate; a long run may be suspended by system sleep =="
 fi
 
 JOBS="${1:-6}"
@@ -66,7 +84,7 @@ $MAKE gate-shared || { echo "FAILED: gate-shared"; exit 1; }
 
 echo "== running $(echo $TARGETS | wc -w | tr -d ' ') targets, $JOBS at a time =="
 START=$(date +%s)
-rm -f "$LOGDIR"/*.status 2>/dev/null
+rm -f "$LOGDIR"/*.status "$LOGDIR"/*.log 2>/dev/null
 for t in $ORDERED; do
     while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$JOBS" ]; do sleep 2; done
     (

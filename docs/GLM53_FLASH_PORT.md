@@ -1322,6 +1322,75 @@ checks above.
 **Still not built:** `ATTN_KIND = 1`, the 11 MLA blocks. That is now the only
 `$fatal` left in the decoder block.
 
+### 4.3v The MLA arm starts: NoPE, and the two absorptions
+
+`tools/glm53f_mla_ref.py` (`make mla-ref`, **18 checks**) and
+`src/glm53f_mla_score.v` (`make mla-score`, **102 + 8 checks, BITWISE**).
+
+**It is a sibling, and the reason is structural rather than dimensional.** The repo
+already has a bit-exact MLA model — `mla_attn` in `tools/glm_model_q4k_ref.py`,
+mirroring `src/mla_attn_q4k.v` step for step. GLM-5.3-Flash is not that model with
+different numbers in it:
+
+- **NoPE.** `rope.dimension_count = 0`, `qk_rope_head_dim = 0`,
+  `mla_use_nope = true`. No `W_kr`, no `k_rope` cache, no rotation of q — steps 3
+  and part of 5 of the GLM-5.2 reference simply do not exist. A zero-width rotary
+  tail is not expressible in Verilog, so this cannot be a re-parameterisation. The
+  consequence the config guard already asserts: `attention.key_length ==
+  kv_lora_rank` (both 512), where GLM-5.2's key was the latent *plus* a 64-wide
+  rotary tail.
+- **The projections are Q8_0**, not Q4_K — `mla_attn_q4k`'s `w_q` is four bits per
+  lane, the same wall the FFN hit.
+- qk_nope 192 → **256**, q_lora 2048 → **1536**, kv_lora **512** (now published,
+  no longer the DeepSeek assumption), v_head 256, 64 heads.
+
+**The unit built first is the inner loop, because that is the whole decode cost.**
+`glm53f_mla_score` runs once per *cached token*:
+
+    score[h][j] = ( qa[h] · rmsnorm(c_kv[j]) ) · 1/√qk_nope
+    p[h][·]     = softmax over SMAX slots, slots ≥ s_len pinned to −inf
+    ctx_lat[h]  = Σ_j p[h][j] · rmsnorm(c_kv[j])          ← still in the LATENT basis
+
+`qa` arrives **already folded through W_uk**. That is the point of the latent form:
+expanding a key costs `H·QK` MACs over `KV_LORA` for every cached token
+(64·256·512 = 8.4 M at the real shapes) against `H·KV_LORA` = 32 K for a dot
+against the latent — a factor of **256**. The output stays in the latent basis for
+the same reason on the value side: `W_uv` is linear, so
+`Σ_j p_j (W_uv·ckv_j) = W_uv·(Σ_j p_j ckv_j)`, and the caller expands once.
+
+**Neither absorption is free, and that is the finding.** Both are exact in real
+arithmetic; in fp they are different reduction orders. Measured:
+
+| | differing outputs | worst rel |
+|---|---|---|
+| W_uk absorbed, qk = 8 | **0 / 48** | 0 |
+| W_uk absorbed, qk = 32 | 69 / 192 | 1.3e-05 |
+| W_uk absorbed, **qk = 256** | 517 / 768 | 3.4e-05 |
+| both absorbed, kv_lora = 512 | 693 / 768 | 8.2e-05 |
+
+So at the checkpoint's real width the form is plainly observable, and **the RTL's
+choice of form is a numerical decision the golden has to match** — not a free
+optimisation. At a toy qk = 8 the two forms are bitwise identical, which would have
+made the check vacuous; the reference's self-test caught that and now runs a slice
+wide enough to see it. This is the same shape of finding as the MoE accumulation
+order (§4.3u), reached the same way — measure, then decide what may be claimed.
+
+**The gate is bitwise, not a tolerance,** because every piece the unit uses already
+has a bit-exact Python twin here: `rmsnorm_unit` at LANES=1, `glm_softmax`, and
+`glm_fp.vh`'s bf16/fp32 semantics. The unit adds a new *dataflow* and no new
+numerics, and the gate says exactly that. If it ever stops being bitwise the right
+response is to find out what changed in the arithmetic, not to widen a bound.
+
+**The corpus has to contain short windows.** A unit that never wrote the −inf pad
+passes every test where `s_len == SMAX`, so the generator asserts both a padded and
+a full case are present. Each must-fail leg was measured against the golden before
+being written: `INJ_MLAS_NOPAD` moves 48 of 96 ctx elements — *all* of them in the
+padded windows — `INJ_MLAS_NORESCALE` 80, `INJ_MLAS_HEAD0_PROBS` 40.
+
+**Not claimed here:** the projections themselves (`W_dq`/`W_uq`/`W_dkv`, and the
+fold of `W_uk` into q) are Q8_0 GEMVs and belong with a `glm53f_kda_gemv`-shaped
+fetch unit, gated separately; and `ATTN_KIND = 1` is still `$fatal`.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1420,6 +1489,9 @@ make swiglu-q8                # 15 + 204:  the dense FFN, clamped SwiGLU over Q8
 make swiglu-mt                #  8 + 514:  the SAME unit on the MoE experts' mixed types (4.3s)
 make moe-router               # 123 + 80:  sigmoid gating + exp_probs_b (4.3t)
 make moe-ffn                  #   9 + 111: the expert loop + shared expert + combine (4.3u)
+make mla-ref                  #        18: the NoPE MLA spec -- both absorptions measured (4.3v)
+make mla-score                #   8 + 102: the absorbed-latent MLA inner loop, BITWISE (4.3v)
+make dsa-indexer-ref          #       424: the DSA indexer spec, now in the ladder
 ```
 
 Each of those prints its own worst-case error, so a regression moves a number

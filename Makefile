@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -149,7 +149,7 @@ GATE_JOBS ?= 6
 release-gate-par:
 	@bash tools/run_gate_parallel.sh $(GATE_JOBS) 2>&1 | tee $(BUILD_DIR)/release_gate_par.log
 
-release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1046,6 +1046,53 @@ glm53f-ref:
 dsa-indexer-ref:
 	@printf '[%s] ' "dsa-indexer-ref"; python3 tools/dsa_indexer_ref.py \
 	    || { echo "FAILED: dsa-indexer-ref"; exit 1; }
+
+# ---- mla-ref : the NoPE MLA sublayer's executable spec -----------------------
+# tools/glm53f_mla_ref.py. The 11 blocks that are not KDA use MLA, and this is the
+# spec the RTL is written against -- the STRUCTURAL facts config.json does not
+# give you: that GLM-5.3-Flash is NoPE so `attention.key_length == kv_lora_rank`
+# (both 512, where GLM-5.2's key was the latent PLUS a 64-wide rotary tail); that
+# the cache holds the 512-wide LATENT, 64x smaller than per-head k+v; and that
+# BOTH MLA absorptions (W_uk into q, W_uv past the softmax) are exact in real
+# arithmetic but NOT in fp -- measured 517/768 and 693/768 outputs differ at the
+# checkpoint's widths, so the RTL's choice of form is a numerical decision the
+# golden has to match rather than a free optimisation.
+mla-ref:
+	@printf '[%s] ' "mla-ref"; python3 tools/glm53f_mla_ref.py \
+	    || { echo "FAILED: mla-ref"; exit 1; }
+
+# ---- mla-score : the absorbed-latent MLA inner loop --------------------------
+# src/glm53f_mla_score.v -- the part that runs once per CACHED TOKEN, so it is the
+# whole decode cost of the 11 MLA blocks. BITWISE against the reference, not a
+# tolerance, because every piece it uses already has a bit-exact Python twin
+# (rmsnorm_unit at LANES=1, glm_softmax, glm_fp.vh): the unit adds a new dataflow
+# and no new numerics.
+#   The corpus MUST contain windows shorter than SMAX -- a unit that never wrote
+# the -inf pad would pass every full-window test -- and the generator asserts both
+# cases are present. Each must-fail leg was measured against the golden before
+# being written: NOPAD 48 of 96 ctx elements move (all in the padded windows),
+# NORESCALE 80, HEAD0_PROBS 40.
+mla-score:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_mla_score_gen"; python3 tools/glm53f_mla_score_gen.py --selftest \
+	    || { echo "FAILED: glm53f_mla_score_gen self-test"; exit 1; }
+	@python3 tools/glm53f_mla_score_gen.py 6 $(BUILD_DIR)/glm53f_mla_score_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_mla_score_vec.txt"' \
+	    -o $(BUILD_DIR)/mla_score_sim test/glm53f_mla_score_tb.v src/glm53f_mla_score.v \
+	    src/rmsnorm_unit.v src/glm_softmax.v src/glm_fp_pipe.v 2>/dev/null \
+	    || { echo "FAILED: mla-score compile"; exit 1; }
+	@printf '[%s] ' "mla_score"; $(VVP) $(BUILD_DIR)/mla_score_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: mla_score"; exit 1; }
+	@for inj in INJ_MLAS_NOPAD INJ_MLAS_NORESCALE INJ_MLAS_HEAD0_PROBS; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_mla_score_vec.txt"' \
+	        -o $(BUILD_DIR)/mla_score_inj test/glm53f_mla_score_tb.v src/glm53f_mla_score.v \
+	        src/rmsnorm_unit.v src/glm_softmax.v src/glm_fp_pipe.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/mla_score_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: mla-score $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[mla_score_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
 
 # ---- fp-ieee : how far the fp32 primitives are from IEEE, MEASURED and PINNED
 # src/glm_fp.vh fp32_add is not exactly round-to-nearest-even: ~0.04% of pairs

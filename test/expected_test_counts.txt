@@ -73,6 +73,9 @@ kda_recur(EXACT) 5184
 kda_gen 80
 glm53f-ref 36
 dsa-indexer-ref 424
+mla-ref 18
+mla_score 102
+glm53f_mla_score_gen 8
 glm53f-config-guard 10
 axi_boot_writer 403
 axi_master_dma 7
