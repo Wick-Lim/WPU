@@ -66,7 +66,7 @@ def load_cfg(path):
                                 txt, re.M):
         cfg[name] = int(val)
     need = ["N_MLA", "N_KDA", "L", "KV_LORA", "ROPE", "IDX_DIM", "IDX_KPOOL",
-            "KDA_HEADS", "KDA_DIM", "KDA_CONV_K", "CTX", "MODEL_DIM"]
+            "KDA_HEADS", "KDA_DIM", "KDA_CONV_K", "CTX", "MODEL_DIM", "TOPK_ATTN"]
     missing = [k for k in need if k not in cfg]
     if missing:
         sys.exit(f"config header is missing {missing} -- has {path} been edited?")
@@ -191,7 +191,9 @@ def main():
     print(f"{'context':>10} {'weights':>10} {'KDA state':>10} {'DSA KV':>9} "
           f"{'indexer':>9} {'TOTAL':>10} {'tok/s @1.1TB/s':>15}")
     print("-" * 78)
-    topk_attn = c.get("TOPK_ATTN", 2048)   # [gguf] attention.indexer.top_k, via the config header
+    topk_attn = c["TOPK_ATTN"]   # [gguf] attention.indexer.top_k, REQUIRED (see load_cfg):
+                                 # a default here would silently decide the sparsity of the
+                                 # gather, which is what the KV row of this table rests on.
     for ctx in (32768, 131072, 262144, c["CTX"]):
         w_b = a.raw_gb_per_tok * GB
         # state: read + write, every KDA layer, every token
@@ -206,6 +208,18 @@ def main():
     print("  Weights dominate at every context, so the bandwidth-bound model holds --")
     print("  but the total is 2-5% above the weights-only figure, and the indexer term")
     print("  is what grows. These tok/s are UNAMORTIZED (no speculative decode).")
+    print("\n  ACCESS PATTERN, which is what decides placement rather than these totals:")
+    print("    weights      stream, once, in order            -> the thing the bus is sized for")
+    print("    KDA state    FULL read-modify-write, 34 layers -> never partial, never grows;")
+    print("                                                      wants to sit still and be fast")
+    print(f"    DSA KV       SPARSE GATHER of top-{topk_attn} out of the whole context")
+    print("                                                   -> dominates CAPACITY (11.8 GB at")
+    print("                                                      1M) and is nearly free to read")
+    print("    DSA index    FULL SCAN every token             -> small to hold, and the ONLY")
+    print("                                                      piece whose traffic grows")
+    print("  So capacity and traffic point at different pieces: the KV cache is the big one")
+    print("  to store and the cheap one to read, the index the reverse. A placement argued")
+    print("  from the residency table alone would get both backwards.")
 
     print("\n=== 4. where the binding constraint leaves memory: the die ===")
     print(f"{'tok/s':>8} {'MAC/s':>10} {'lanes @1GHz':>13} {'lanes @2GHz':>13}")

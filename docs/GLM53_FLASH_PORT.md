@@ -1462,6 +1462,43 @@ and `INJ_MLAA_SKIP_OUT` move 80 of 125 checks each; the mux leg moves 118.
 blocks side by side now, and on the MLA one the attention weight port goes live
 while the KDA arm it replaced is held quiet in the same block.
 
+### 4.3y State residency, decided from traffic rather than capacity
+
+Two open items — KDA's recurrent state and MLA's KV cache — were both filed as "a
+memory decision". They are one decision, and the residency table everyone reaches
+for is the wrong input to it.
+
+`tools/glm53_flash_memory_budget.py` already reported bytes read per token; what it
+did not report is the **access pattern**, which is what actually decides placement.
+At 1 M context:
+
+| piece | capacity | per token | pattern |
+|---|---|---|---|
+| weights | 199.7 GB | 14.118 GB | stream, once, in order |
+| KDA recurrent state | 148 MB | 285 MB (read **and** written) | **full read-modify-write**, 34 layers, never partial, never grows |
+| MLA latent cache | **11.81 GB** | 23 MB | **sparse gather** of top-2048 out of the whole context |
+| DSA index keys | 0.37 GB | 369 MB | **full scan**, and the only piece whose traffic grows |
+
+**Capacity and traffic point at different pieces, in opposite directions.** The KV
+cache is the big one to *store* (11.81 GB, 98 % of all non-weight state) and nearly
+free to *read* — DSA gathers 2048 latents however long the context is. The index is
+the reverse: 3 % of the capacity and **16×** the KV's traffic, because selecting a
+top-k means scoring every pooled position. A placement argued from the residency
+table alone gets both backwards.
+
+So: **none of it belongs on-die, and the port shapes were already right.** The KDA
+state is too large for a plausible SRAM (148 MB) but is sequential and pinned; the
+KV is a gather; the index is a stream. All three are DDR-resident alongside the
+weights, and all three are already *ports* on `glm53f_decoder_block` rather than
+storage inside it — so what the model top has to add is per-layer **addressing**,
+not a memory. The decision that was deferred turns out to be the one the interfaces
+already encode; what was missing was the argument, not the RTL.
+
+One tightening came with it: `TOPK_ATTN` (`[gguf] attention.indexer.top_k`) was read
+with a default of 2048. It is now required, and `load_cfg` refuses a header without
+it — a silent default there would have quietly decided the sparsity of the gather,
+which is the whole claim the KV row rests on.
+
 ### 4.3x The arms become runtime-selectable — because 45 layers are a mix
 
 `ATTN_KIND` and `FFN_KIND` chose an arm at **elaboration**, which is right for a
