@@ -1462,6 +1462,38 @@ and `INJ_MLAA_SKIP_OUT` move 80 of 125 checks each; the mux leg moves 118.
 blocks side by side now, and on the MLA one the attention weight port goes live
 while the KDA arm it replaced is held quiet in the same block.
 
+### 4.3x The arms become runtime-selectable — because 45 layers are a mix
+
+`ATTN_KIND` and `FFN_KIND` chose an arm at **elaboration**, which is right for a
+single-kind build and impossible for a model. The repo's GLM-5.2 top runs **one**
+decoder block L times and annotates each weight pull with the layer index;
+GLM-5.3-Flash cannot do that with an elaboration-time arm, because its 45 layers
+are a *mixture* — 34 KDA and 11 MLA, 3 dense and 42 MoE. Both machines have to be
+in silicon anyway, so what was missing was being able to *choose per layer*.
+
+So the parameters now mean **presence**, not selection: `0` = only the first arm,
+`1` = only the second, **`2` = both, chosen at runtime** by the new `attn_sel` /
+`ffn_sel` inputs. `0` and `1` are byte-for-byte what they were; with one arm
+present the selector is a constant.
+
+**The gate is an equivalence, and it is the strongest cheap claim available.** The
+same testbench, the same vectors and the same golden, rebuilt with **both** arms
+in silicon and the selectors pointing at the arms the golden describes, must give
+the **identical** result — not "the new path elaborates" but *"the new path,
+selected, is the old path"*. `make dec-block` now runs both builds: 676 and 676.
+
+**It failed on its first run, 236 of 676.** At `FFN_KIND = 2` both FFN arms were
+driving the block's `ffn_w_*` weight pull — **two drivers, X** — because each arm
+had been wired straight to the block's port back when only one could exist. The
+attention site had no such conflict, since its arms own separate port groups
+(`kda_w_*` and `mla_w_*`). No single-kind build could have shown this: it needs
+both arms present at once, which is exactly the configuration the equivalence gate
+introduced.
+
+**And a leg that keeps the equivalence honest.** Pointing the selectors at the
+*other* arms must **not** reproduce the golden — 646 of 676 checks move. Without
+it, a pair of inert selectors would pass the equivalence check and prove nothing.
+
 ### 4.3y State residency, decided from traffic rather than capacity
 
 Two open items — KDA's recurrent state and MLA's KV cache — were both filed as "a
@@ -1499,37 +1531,46 @@ with a default of 2048. It is now required, and `load_cfg` refuses a header with
 it — a silent default there would have quietly decided the sparsity of the gather,
 which is the whole claim the KV row rests on.
 
-### 4.3x The arms become runtime-selectable — because 45 layers are a mix
+### 4.3z The per-tensor weight descriptor — the oldest open item
 
-`ATTN_KIND` and `FFN_KIND` chose an arm at **elaboration**, which is right for a
-single-kind build and impossible for a model. The repo's GLM-5.2 top runs **one**
-decoder block L times and annotates each weight pull with the layer index;
-GLM-5.3-Flash cannot do that with an elaboration-time arm, because its 45 layers
-are a *mixture* — 34 KDA and 11 MLA, 3 dense and 42 MoE. Both machines have to be
-in silicon anyway, so what was missing was being able to *choose per layer*.
+`src/glm53f_wdesc.v` — `make wdesc`, **384 + 22 checks**.
 
-So the parameters now mean **presence**, not selection: `0` = only the first arm,
-`1` = only the second, **`2` = both, chosen at runtime** by the new `attn_sel` /
-`ffn_sel` inputs. `0` and `1` are byte-for-byte what they were; with one arm
-present the selector is a constant.
+    (kind, layer, expert)  →  (base, klen, nsblk, wtype)
 
-**The gate is an equivalence, and it is the strongest cheap claim available.** The
-same testbench, the same vectors and the same golden, rebuilt with **both** arms
-in silicon and the selectors pointing at the arms the golden describes, must give
-the **identical** result — not "the new path elaborates" but *"the new path,
-selected, is the old path"*. `make dec-block` now runs both builds: 676 and 676.
+`glm_q4k_system` drives `weight_loader_q4k` with a **hardcoded single tile** —
+`desc_base = 0`, `desc_nsblk = 1` — and leaves `desc_wtype` **undriven**, which the
+loader reads as Q4_K. That was survivable with one model, one type and one tile in
+play. It is not survivable here: [scan] says `ffn_{gate,up}_exps` is Q4_K ×42 +
+Q5_K ×1 and `ffn_down_exps` is Q5_K ×40 + Q6_K ×3, so the **type varies per tensor
+*and* per layer**, and a top that walks 45 layers must address a different tile for
+every `(layer, expert)`.
 
-**It failed on its first run, 236 of 676.** At `FFN_KIND = 2` both FFN arms were
-driving the block's `ffn_w_*` weight pull — **two drivers, X** — because each arm
-had been wired straight to the block's port back when only one could exist. The
-attention site had no such conflict, since its arms own separate port groups
-(`kda_w_*` and `mla_w_*`). No single-kind build could have shown this: it needs
-both arms present at once, which is exactly the configuration the equivalence gate
-introduced.
+**The shape is the checkpoint's own.** A flat descriptor would be 1412 entries; it
+does not need to be, because within a kind the layers are a fixed stride apart and
+the experts are uniform. So a **kind** carries `(base, layer stride, expert stride,
+klen, nsblk, default type)` — about twenty rows — and what is left over is exactly
+the UD quantisation bumps, as a short list of `(kind, layer) → type` **exceptions**.
+That is not a compression trick: *"UD bump on `blk.{11,12,44}.ffn_down_exps`"* is
+how the census describes the mix, and an exception list is what that sentence **is**.
+Keeping it that way leaves the regular part checkable by arithmetic and the
+irregular part short enough to read.
 
-**And a leg that keeps the equivalence honest.** Pointing the selectors at the
-*other* arms must **not** reproduce the golden — 646 of 676 checks move. Without
-it, a pair of inert selectors would pass the equivalence check and prove nothing.
+**Both ways of getting it wrong are silent, so both get a leg.** `INJ_WDESC_NO_EXC`
+ignores the bumps, and `blk.{11,12,44}.ffn_down_exps` then streams Q5_K geometry
+over Q6_K bytes — same widths, wrong decode, no error anywhere. `INJ_WDESC_NO_ESTR`
+drops the expert stride, and every expert reads expert 0's bytes: a perfectly
+well-formed model that has **one expert 288 times**. The generator asserts the
+corpus can see them — a kind bumped on *some* layers and not others (so the default
+and the exception are both observed), a non-zero expert stride, and more than one
+expert and layer — because without that the legs would be decorative.
+
+**The table reaches the testbench as a generated include**, not hand-copied
+literals, so the RTL's parameters and the golden cannot drift apart silently.
+
+**What is gated is the machine, not the values.** Turning the census into real byte
+offsets needs the GGUF tensor map — the 199.7 GB checkpoint or at least its headers
+— which this branch does not have. The table fed here is synthetic and *shaped*
+like the real one; producing the real one is a data step, not an RTL step.
 
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
@@ -1633,6 +1674,7 @@ make mla-ref                  #        18: the NoPE MLA spec -- both absorptions
 make mla-score                #   8 + 102: the absorbed-latent MLA inner loop, BITWISE (4.3v)
 make mla-proj                 #   9 + 100: the Q8_0 projection front + the W_uk fold (4.3v)
 make glm53f-mla-attn          #   8 + 125: the WHOLE NoPE MLA sublayer; ATTN_KIND=1 (4.3w)
+make wdesc                    #  22 + 384: per-tensor weight descriptors (4.3z)
 make dsa-indexer-ref          #       424: the DSA indexer spec, now in the ladder
 ```
 

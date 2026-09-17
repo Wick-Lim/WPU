@@ -81,6 +81,8 @@ mla_proj 100
 glm53f_mla_proj_gen 9
 glm53f_mla_attn 125
 glm53f_mla_attn_gen 8
+wdesc 384
+glm53f_wdesc_gen 22
 glm53f-config-guard 10
 axi_boot_writer 403
 axi_master_dma 7

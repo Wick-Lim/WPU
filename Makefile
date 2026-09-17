@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn wdesc fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -149,7 +149,7 @@ GATE_JOBS ?= 6
 release-gate-par:
 	@bash tools/run_gate_parallel.sh $(GATE_JOBS) 2>&1 | tee $(BUILD_DIR)/release_gate_par.log
 
-release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn wdesc fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1171,6 +1171,51 @@ glm53f-mla-attn:
 	        echo "FAILED: glm53f-mla-attn $$inj PASSED -- that trap is not actually checked"; exit 1; \
 	    else \
 	        echo "[glm53f_mla_attn_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- wdesc : the per-tensor weight descriptor this system has never had -------
+# src/glm53f_wdesc.v. glm_q4k_system drives weight_loader_q4k with a HARDCODED
+# single tile (desc_base = 0, desc_nsblk = 1) and leaves desc_wtype UNDRIVEN, which
+# the loader reads as Q4_K. Survivable with one model, one type and one tile; not
+# here, where [scan] says ffn_{gate,up}_exps is Q4_K x42 + Q5_K x1 and
+# ffn_down_exps is Q5_K x40 + Q6_K x3 -- the TYPE varies per tensor AND per layer.
+#   SHAPE: a per-KIND row (base, layer stride, expert stride, klen, nsblk, default
+# type) plus a short (kind, layer) -> type EXCEPTION list. That split is the
+# checkpoint's own -- "UD bump on blk.{11,12,44}.ffn_down_exps" IS an exception
+# list -- and it keeps the regular part checkable by arithmetic.
+#   The table reaches the TB as a GENERATED include, not hand-copied literals, so
+# the RTL's parameters and the golden cannot drift apart.
+#   Both failure modes are silent, so both get a leg: NO_EXC streams Q5_K geometry
+# over Q6_K bytes (same widths, wrong decode, no error), NO_ESTR makes every expert
+# read expert 0's bytes (a well-formed model with one expert 288 times). The
+# generator asserts the corpus can SEE them: a kind bumped on some layers and not
+# others, a non-zero expert stride, and more than one of each.
+#   THE REAL VALUES ARE NOT HERE. Turning the census into byte offsets needs the
+# GGUF tensor map, i.e. the 199.7 GB checkpoint or its headers, which this branch
+# does not have. What this gates is the MACHINE; the table it is fed is synthetic
+# and shaped like the real one.
+wdesc:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_wdesc_gen"; python3 tools/glm53f_wdesc_gen.py --selftest \
+	    || { echo "FAILED: glm53f_wdesc_gen self-test"; exit 1; }
+	@python3 tools/glm53f_wdesc_gen.py $(BUILD_DIR)/glm53f_wdesc_vec.txt >/dev/null
+	@python3 tools/glm53f_wdesc_gen.py --params $(BUILD_DIR)/glm53f_wdesc_params.vh >/dev/null
+	@$(IVERILOG) $(IFLAGS) -I $(BUILD_DIR) -DTB_VEC='"$(BUILD_DIR)/glm53f_wdesc_vec.txt"' \
+	    -DTB_PARAMS='"glm53f_wdesc_params.vh"' \
+	    -o $(BUILD_DIR)/wdesc_sim test/glm53f_wdesc_tb.v src/glm53f_wdesc.v 2>/dev/null \
+	    || { echo "FAILED: wdesc compile"; exit 1; }
+	@printf '[%s] ' "wdesc"; $(VVP) $(BUILD_DIR)/wdesc_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: wdesc"; exit 1; }
+	@for inj in INJ_WDESC_NO_EXC INJ_WDESC_NO_ESTR; do \
+	    $(IVERILOG) $(IFLAGS) -I $(BUILD_DIR) -D$$inj \
+	        -DTB_VEC='"$(BUILD_DIR)/glm53f_wdesc_vec.txt"' \
+	        -DTB_PARAMS='"glm53f_wdesc_params.vh"' \
+	        -o $(BUILD_DIR)/wdesc_inj test/glm53f_wdesc_tb.v src/glm53f_wdesc.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/wdesc_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: wdesc $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[wdesc_INJECT_$$inj] injection correctly FAILED"; \
 	    fi; \
 	done
 
