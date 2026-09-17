@@ -35,12 +35,53 @@ are shared.
 
 | Model | Checkpoint | Branch | Status |
 |---|---|---|---|
-| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB<br>212 GB resident at 1M context | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config LOCKED, datapath in progress.** Arch `glm5next` — not a re-dimensioned GLM-5.2. **Landed:** Q5_K dequant (34.9 % of bytes — reference + RTL + must-fail gate, checked on real published bytes), the asymmetric clamped SwiGLU, **all four non-GEMV KDA units** (`make kda` / `kda-conv` / `kda-gate` / `kda-onorm`), an **fp32 sigmoid** the repo did not have — Newton reciprocal, saturation to exactly 1.0 and exactly 0.0 (`make fp-sigmoid`) — and **hyper-connections end to end** — map *and* residual path (`make mhc-sinkhorn` / `mhc-map` / `mhc-gemv` / `mhc-ops` / `mhc-site` / `hc-block`: six gated targets, 25 must-fail injections), so **`GLM53F_HC_RTL_PRESENT` is the first of the three guard conditions to close**. and the **KDA layer** as a unit (`make kda-layer`: nine projections sequenced, one conv over the concatenation of q,k,v, forget gate, delta-rule recurrence, gated o_norm, owning both the `[H,DK,DV]` state and the conv history). and **the Q8_0 weight streaming that makes it a sublayer** (`make kda-attn`: `glm53f_kda_gemv` streams the nine projections off `glm_matmul_q4k`, `glm53f_kda_attn` is the whole thing), so **`GLM53F_KDA_RTL_PRESENT` is the second guard condition to close** — only Q5_K still poisons the whole-model top. Q8_0 needed *nothing* new from the engine, and the bound did not move: the same composed bounds as the layer gate, identical measured worst 7.8e-3. and **the Q5_K read path** (`make q5k-loader`: the packer emits the tile, the real loader streams it), so **all three guard conditions are closed** and `GLM53F_FULL_TOP_OK` is defined. **Assembly has started:** `glm53f_decoder_block` wires KDA attention inside the mHC block (`make dec-block`) — blocks 0–2's attention half, since the dense front is 3 blocks and they are KDA. That FFN now exists (`make swiglu-q8`) and is wired in, so **all 34 KDA blocks are a complete decoder layer**, for **either** FFN kind: the dense Q8_0 SwiGLU of blocks 0–2 or the **MoE** of blocks 3–44 (`make moe-ffn` — the mixed-type expert, the expert loop, and the always-on shared expert added at weight 1 with its own Q8_0 types). The MoE **router** is built too (`make moe-router`) — sigmoid gating over F32 gate weights plus the `exp_probs_b` bias, with the one reading of that bias I could not confirm implemented **both ways** in the reference and gated as a must-fail injection. **Open — and none of it is a missing machine:** the other 42 blocks need the MLA attention arm for the 11 non-KDA layers — `ATTN_KIND=1` is now the only `$fatal` left, and it still refuses to elaborate an empty site rather than pretending; `glm_q4k_system` has never had a per-tensor weight descriptor for *any* type (it drives the loader with a hardcoded single tile and no `desc_wtype`); the 4.19 MB/layer recurrent state still has to move to BRAM/DDR (a memory decision); and the llama.cpp seal is physically blocked with no checkout. A passing elaboration is not a working model. **An earlier version of this row said KDA was blocked on shared decoder RTL — it is not**: that assumed reusing `glm_decoder_block_q4k`, and these are siblings that declare their own port widths. Every dimension is cited from the GGUF and gated; every one of the three guard conditions is closed, so the whole-model top now elaborates — and the guard was restructured rather than retired, forcing each machine absent in turn and requiring the top to go back to un-elaboratable. |
+| **GLM-5.3-Flash** | [`unsloth/GLM-5.3-Flash-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF)<br>320.8B hybrid MoE (16.7B active/token), 199.70 GB<br>212 GB resident at 1M context | [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | **Current target. Config locked; a complete decoder layer exists for all 45 blocks.** Arch `glm5next` — not a re-dimensioned GLM-5.2. Every machine it needed is built and gated; what is left is model-level assembly. [**Details below.**](#glm-53-flash-where-the-port-stands) |
 | **GLM-5.2** | [`unsloth/GLM-5.2-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/GLM-5.2-GGUF)<br>753B MoE (~40B active/token), ~467 GB | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | **The proven build.** Full datapath bit-exact vs an independent ggml reference, memory-system controllers formally verified, whole product top placed & routed on a real FPGA. The paper is about this build, and the GLM-5.3-Flash branch forked from its tip. |
 | **Laguna-S-2.1** | [`unsloth/Laguna-S-2.1-GGUF : UD-Q4_K_XL`](https://huggingface.co/unsloth/Laguna-S-2.1-GGUF)<br>118B MoE (~8B active/token) | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | **Port in progress.** Dequant inherited unchanged; MoE path bit-exact in RTL at Laguna's config; the (different) GQA attention machine is specified and reference-verified end to end — the bit-exact orchestrator RTL is scoped, not yet written. |
 
 **Branch naming:** `<model>/<quantization>`, e.g. `glm5.2/UD-Q4_K_XL`. A second quantization of the
 same model is a sibling branch under the same model prefix.
+
+---
+
+## GLM-5.3-Flash: where the port stands
+
+`glm5next` is not a re-dimensioned GLM-5.2. **34 of its 45 layers are KDA linear attention**, every
+block carries **hyper-connections** with a Sinkhorn-projected residual mix, and its k-quant mix
+includes a format this repo had never built. Every machine it needed now exists and is gated; what
+is left is model-level assembly.
+
+### Landed
+
+Each row is a `make` target with its own must-fail injections, and the release gate pins its exact
+test count.
+
+| Machine | Gate | The claim |
+|---|---|---|
+| **Q5_K dequant** | `mixedtype`, `q5k-loader` | 34.9 % of the checkpoint's bytes, bit-exact on real published bytes — reference, GEMM arm, and the loader that feeds it |
+| **Clamped SwiGLU** | `q4k` | the clamp is **asymmetric** (gate upper-only, `up` both ways); a symmetric guess is numerically wrong, not approximate |
+| **fp32 sigmoid** | `fp-sigmoid` | the repo had mul/add/rsqrt/exp and **no divide**; Newton reciprocal plus saturation to *exactly* 1.0 and *exactly* 0.0 — neither reachable in bf16 |
+| **Hyper-connections** | `mhc-*`, `hc-block` | four parallel residual streams and the 4×4 doubly-stochastic mix, map *and* residual path |
+| **KDA attention** | `kda*`, `kda-attn` | the whole sublayer, fetching its own Q8_0 projections |
+| **MoE** | `moe-router`, `swiglu-mt`, `moe-ffn` | sigmoid gating with `exp_probs_b`, the mixed-type expert, the expert loop, and the always-on shared expert at weight 1 |
+| **MLA attention** | `mla-*`, `glm53f-mla-attn` | **NoPE** — no rotary anywhere in the path; bitwise end to end |
+| **The decoder layer** | `dec-block` | **all 45 blocks**, in every attention × FFN combination the checkpoint uses, with the arms selectable at runtime |
+
+### Open — and none of it is a missing machine
+
+- **State residency, now two questions.** KDA's **4.19 MB/layer** recurrent state and MLA's **KV
+  cache** both still live in registers or come straight out as ports. At the real shapes a 1 M-token
+  context is ~1 GB of latent *per MLA block*, so where it lives is a model decision. The MLA
+  sublayer says so in its own header: it is not a complete attention layer on its own, it is
+  complete **given a cache**.
+- **Per-tensor weight descriptors.** `glm_q4k_system` has never had one for *any* type — it drives
+  the loader with a hardcoded single tile and leaves `desc_wtype` undriven, so every tile reads as
+  Q4_K. A model whose types vary per tensor *and* per block needs the real thing.
+- **Nothing stacks 45 blocks.** The layer-walking top, which is what forces the two items above.
+- **The llama.cpp seal** is physically blocked: no checkout of the 199.7 GB model here, so every
+  tok/s figure for this target stays unmeasured.
+
+A passing elaboration is not a working model, and this list is the difference.
 
 ---
 
@@ -63,9 +104,12 @@ rather than forking outright.
 **GLM-5.3-Flash is the case that tests the 70–80% figure, and partly breaks it.** Being a
 same-family successor was expected to make it the *cheapest* port yet. It is not:
 
-- The attention machine changed again, and this time it *doubled*: the model is a hybrid, so the
-  branch needs **both** the inherited MLA+DSA machine (11 of 45 layers) **and** a KDA
-  linear-attention machine that does not exist (34 of 45).
+- The attention machine changed again, and this time it **doubled**: the model is a hybrid, so the
+  branch needs **two** of them — 34 of 45 layers are KDA linear attention, which did not exist
+  here, and the other 11 are MLA+DSA. The inherited MLA machine did not carry over either: this
+  model is **NoPE**, so its rotary path had to come out, and a zero-width rotary tail is not
+  expressible in Verilog. Both are now built, as siblings — but that is two attention machines
+  for one port, where the 70–80 % figure assumed one.
 - The residual path changed — hyper-connections with Sinkhorn normalization on every block. Nothing
   in the "attention is the only per-model part" split anticipated that.
 - **The dequant contract was the one thing assumed to be free**, because it is format-level rather
@@ -101,7 +145,14 @@ Two habits keep that honest:
 - **Every load-bearing gate is paired with a must-fail injection build.** A test that cannot fail
   proves nothing, so each one is also run against a deliberately broken variant it *must* catch.
 - **The release gate pins the exact test count of every gate.** A testbench that silently runs
-  fewer tests than intended is a regression, and the manifest turns that into a build failure.
+  fewer tests than intended is a regression, and the manifest turns that into a build failure —
+  `ALL <n> GATE COUNTS MATCH`, or the build fails.
+
+The gate is one command (`make release-gate-par`) and takes a couple of hours: it runs the whole
+ladder six targets at a time, each into its own log, then concatenates them in declared order so the
+count check reads a log identical to a serial run. It also holds the machine awake, which is not a
+nicety — two earlier runs measured 18 h and 49 h wall, of which 16 h and 41 h were the machine
+asleep.
 
 What is *not* done is stated as plainly as what is: no silicon exists, no throughput figure has been
 measured on hardware, and llama.cpp whole-runtime numeric equality is out-of-contract by design.
@@ -114,7 +165,7 @@ The per-claim ledger lives in each model branch's README.
 | Branch | Contents |
 |---|---|
 | `main` (this) | Project hub: this README, the [project site](https://wick-lim.github.io/WPU/), and the [paper](paper/). |
-| [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | The GLM-5.3-Flash port: locked config + its two-sided guard, Q5_K dequant, clamped SwiGLU, the four KDA units (recurrence, conv, gate, output norm), the executable spec for KDA/mHC, the GGUF census + memory-budget tools, `make fp-ieee`, the port ledger. Forked at the GLM-5.2 tip, so it carries every gate that branch has. |
+| [`glm5.3-flash/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.3-flash/UD-Q4_K_XL) | The GLM-5.3-Flash port: the locked config and its two-sided guard, Q5_K, the KDA and MLA attention machines, hyper-connections, the MoE path, the complete decoder layer, the executable specs, the GGUF census and memory-budget tools, and the port ledger. Forked at the GLM-5.2 tip, so it carries every gate that branch has. |
 | [`glm5.2/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/glm5.2/UD-Q4_K_XL) | The GLM-5.2 accelerator: RTL, testbenches, `make` gates, docs, host runtime, FPGA flow. |
 | [`laguna-s-2.1/UD-Q4_K_XL`](https://github.com/Wick-Lim/WPU/tree/laguna-s-2.1/UD-Q4_K_XL) | The Laguna-S-2.1 port: locked config, executable references, gates. |
 
