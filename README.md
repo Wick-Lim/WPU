@@ -48,8 +48,9 @@ same model is a sibling branch under the same model prefix.
 
 `glm5next` is not a re-dimensioned GLM-5.2. **34 of its 45 layers are KDA linear attention**, every
 block carries **hyper-connections** with a Sinkhorn-projected residual mix, and its k-quant mix
-includes a format this repo had never built. Every machine it needed now exists and is gated; what
-is left is model-level assembly.
+includes a format this repo had never built. Every machine it needed now exists and is gated, and
+one decoder block now walks all 45 layers on the checkpoint's own schedule. What is left is the
+model *around* that stack.
 
 ### Landed
 
@@ -65,19 +66,22 @@ test count.
 | **KDA attention** | `kda*`, `kda-attn` | the whole sublayer, fetching its own Q8_0 projections |
 | **MoE** | `moe-router`, `swiglu-mt`, `moe-ffn` | sigmoid gating with `exp_probs_b`, the mixed-type expert, the expert loop, and the always-on shared expert at weight 1 |
 | **MLA attention** | `mla-*`, `glm53f-mla-attn` | **NoPE** — no rotary anywhere in the path; bitwise end to end |
-| **The decoder layer** | `dec-block` | **all 45 blocks**, in every attention × FFN combination the checkpoint uses, with the arms selectable at runtime |
+| **The decoder layer** | `dec-block` | **all 45 blocks**, in every attention × FFN combination the checkpoint uses. The arms are runtime-selectable, and the gate proves it by **equivalence**: the same vectors and golden, rebuilt with both arms in silicon and the selectors pointing at the ones the golden describes, must give the identical result |
+| **Per-tensor descriptors** | `wdesc` | `(kind, layer, expert) → (base, klen, nsblk, wtype)`. The system had never had one for *any* type — it drove the loader with a hardcoded tile and left `desc_wtype` undriven |
+| **The 45-layer walk** | `layers` | one block run 45 times, at the real L: streams loaded once, the checkpoint's own MLA/dense schedule per layer, every pull annotated with its layer |
 
 ### Open — and none of it is a missing machine
 
-- **State residency, now two questions.** KDA's **4.19 MB/layer** recurrent state and MLA's **KV
-  cache** both still live in registers or come straight out as ports. At the real shapes a 1 M-token
-  context is ~1 GB of latent *per MLA block*, so where it lives is a model decision. The MLA
-  sublayer says so in its own header: it is not a complete attention layer on its own, it is
-  complete **given a cache**.
-- **Per-tensor weight descriptors.** `glm_q4k_system` has never had one for *any* type — it drives
-  the loader with a hardcoded single tile and leaves `desc_wtype` undriven, so every tile reads as
-  Q4_K. A model whose types vary per tensor *and* per block needs the real thing.
-- **Nothing stacks 45 blocks.** The layer-walking top, which is what forces the two items above.
+- **A layer stack is not a model.** The walk runs 45 blocks; there is still no **embedding, final
+  norm, LM head or sampler** around it, and nothing drives it from a token stream.
+- **The descriptor's real byte offsets.** The machine is built and gated; turning the census into
+  actual offsets needs the GGUF **tensor map**, which needs the checkpoint — see below. That is a
+  data step, not an RTL step.
+- **State placement is decided but not plumbed.** Traffic, not capacity, settles it: the KDA state
+  is a full read-modify-write of 148 MB that never grows, the KV cache is 11.8 GB read by a *sparse
+  gather* of 2048 latents, and the DSA index is a **full scan every token** — 16× the KV's traffic
+  on 3 % of its capacity. None of it belongs on-die, and every piece is already a *port* rather than
+  storage, so what is missing is the per-layer addressing, not a memory.
 - **The llama.cpp seal** is physically blocked: no checkout of the 199.7 GB model here, so every
   tok/s figure for this target stays unmeasured.
 
