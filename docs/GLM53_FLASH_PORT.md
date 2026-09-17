@@ -1462,6 +1462,38 @@ and `INJ_MLAA_SKIP_OUT` move 80 of 125 checks each; the mux leg moves 118.
 blocks side by side now, and on the MLA one the attention weight port goes live
 while the KDA arm it replaced is held quiet in the same block.
 
+### 4.3x The arms become runtime-selectable — because 45 layers are a mix
+
+`ATTN_KIND` and `FFN_KIND` chose an arm at **elaboration**, which is right for a
+single-kind build and impossible for a model. The repo's GLM-5.2 top runs **one**
+decoder block L times and annotates each weight pull with the layer index;
+GLM-5.3-Flash cannot do that with an elaboration-time arm, because its 45 layers
+are a *mixture* — 34 KDA and 11 MLA, 3 dense and 42 MoE. Both machines have to be
+in silicon anyway, so what was missing was being able to *choose per layer*.
+
+So the parameters now mean **presence**, not selection: `0` = only the first arm,
+`1` = only the second, **`2` = both, chosen at runtime** by the new `attn_sel` /
+`ffn_sel` inputs. `0` and `1` are byte-for-byte what they were; with one arm
+present the selector is a constant.
+
+**The gate is an equivalence, and it is the strongest cheap claim available.** The
+same testbench, the same vectors and the same golden, rebuilt with **both** arms
+in silicon and the selectors pointing at the arms the golden describes, must give
+the **identical** result — not "the new path elaborates" but *"the new path,
+selected, is the old path"*. `make dec-block` now runs both builds: 676 and 676.
+
+**It failed on its first run, 236 of 676.** At `FFN_KIND = 2` both FFN arms were
+driving the block's `ffn_w_*` weight pull — **two drivers, X** — because each arm
+had been wired straight to the block's port back when only one could exist. The
+attention site had no such conflict, since its arms own separate port groups
+(`kda_w_*` and `mla_w_*`). No single-kind build could have shown this: it needs
+both arms present at once, which is exactly the configuration the equivalence gate
+introduced.
+
+**And a leg that keeps the equivalence honest.** Pointing the selectors at the
+*other* arms must **not** reproduce the golden — 646 of 676 checks move. Without
+it, a pair of inert selectors would pass the equivalence check and prove nothing.
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be

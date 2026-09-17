@@ -1672,6 +1672,28 @@ dec-block:
 	    || { echo "FAILED: dec-block compile"; exit 1; }
 	@printf '[%s] ' "dec_block"; $(VVP) $(BUILD_DIR)/dec_block_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
 	    || { echo "FAILED: dec_block"; exit 1; }
+	@# THE RUNTIME-SELECTION EQUIVALENCE. The same TB, the same vectors and the
+	@# same golden, rebuilt with BOTH arms in silicon (ATTN_KIND=2, FFN_KIND=2)
+	@# and the selectors pointing at the arms the golden describes, must give the
+	@# IDENTICAL count. That is the strongest cheap claim for making the arms
+	@# runtime-selectable: not "the new path elaborates" but "the new path,
+	@# selected, IS the old path". It found a real defect on its first run -- both
+	@# FFN arms were driving the block's ffn_w_* pull, two drivers and X, 236 of
+	@# 676 checks failing -- which no single-kind build could have shown.
+	@$(IVERILOG) $(IFLAGS) -DTB_KIND2 -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
+	    -o $(BUILD_DIR)/dec_block_k2 test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_moe_ffn.v src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_act.v src/glm_fp_pipe.v src/glm_matmul_q4k.v src/glm53f_hc_block.v src/glm53f_kda_attn.v src/glm53f_kda_gemv.v src/glm53f_kda_layer.v src/glm53f_swiglu_mt.v src/kda_conv_step.v src/kda_gate_step.v src/kda_onorm_step.v src/kda_recur.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v src/rmsnorm_unit.v src/glm53f_mla_attn.v src/glm53f_mla_proj.v src/glm53f_mla_score.v src/glm53f_mla_out.v src/glm_softmax.v 2>/dev/null \
+	    || { echo "FAILED: dec-block KIND=2 compile"; exit 1; }
+	@printf '[%s] ' "dec_block(KIND=2,sel=0)"; $(VVP) $(BUILD_DIR)/dec_block_k2 | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: dec_block(KIND=2,sel=0) -- selecting the same arms did not reproduce the single-kind build"; exit 1; }
+	@# ...and pointing them at the OTHER arms must NOT reproduce it, or the
+	@# selectors are not selecting and the equivalence above proves nothing.
+	@$(IVERILOG) $(IFLAGS) -DTB_KIND2 -DTB_SEL1 -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
+	    -o $(BUILD_DIR)/dec_block_k2s1 test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_moe_ffn.v src/glm53f_moe_router.v src/topk_select.v src/fp32_sigmoid_pipe.v src/glm_act.v src/glm_fp_pipe.v src/glm_matmul_q4k.v src/glm53f_hc_block.v src/glm53f_kda_attn.v src/glm53f_kda_gemv.v src/glm53f_kda_layer.v src/glm53f_swiglu_mt.v src/kda_conv_step.v src/kda_gate_step.v src/kda_onorm_step.v src/kda_recur.v src/mhc_block_site.v src/mhc_fn_gemv.v src/mhc_map_step.v src/mhc_sinkhorn.v src/mhc_stream_ops.v src/rmsnorm_unit.v src/glm53f_mla_attn.v src/glm53f_mla_proj.v src/glm53f_mla_score.v src/glm53f_mla_out.v src/glm_softmax.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/dec_block_k2s1 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: dec-block KIND=2 sel=1 PASSED -- attn_sel/ffn_sel are inert"; exit 1; \
+	    else \
+	        echo "[dec_block_INJECT_KIND2_SEL1] injection correctly FAILED"; \
+	    fi
 	@for inj in INJ_DBLK_SITE_SWAP INJ_DBLK_NO_KDA; do \
 	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_decoder_block_vec.txt"' \
 	        -o $(BUILD_DIR)/dec_block_inj test/glm53f_decoder_block_tb.v src/glm53f_decoder_block.v src/glm53f_swiglu_mt.v src/glm53f_hc_block.v src/glm53f_kda_attn.v \

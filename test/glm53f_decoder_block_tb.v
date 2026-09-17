@@ -26,6 +26,24 @@
 //            -DINJ_DBLK_NO_KDA (both sites routed to the FFN).
 //============================================================================
 `timescale 1ns/1ps
+// The banner names the CONFIG, so the count manifest pins the two builds
+// separately -- a macro does not expand inside a string literal, hence %s.
+`ifdef TB_KIND2
+  `ifdef TB_SEL1
+    // must FAIL: both arms in silicon, selectors pointing at the OTHER arm (MLA
+    // and MoE) while the golden still describes KDA + dense. If this PASSED, the
+    // selectors would not be selecting anything and the KIND=2 equivalence above
+    // would prove nothing.
+    `define DBNAME "dec_block(KIND=2,sel=1)"
+    `define DBSEL 1'b1
+  `else
+    `define DBNAME "dec_block(KIND=2,sel=0)"
+    `define DBSEL 1'b0
+  `endif
+`else
+    `define DBNAME "dec_block"
+    `define DBSEL 1'b0
+`endif
 `include "glm_fp.vh"
 `ifndef TB_VEC
     `define TB_VEC "build/glm53f_decoder_block_vec.txt"
@@ -89,8 +107,18 @@ module glm53f_decoder_block_tb;
     reg  [16*TN-1:0]  ffn_w_hp;
     reg  [16*TN*NB8-1:0] ffn_w_q8d;
 
+    // TB_KIND2 builds the SAME block with BOTH arms in silicon (ATTN_KIND=2,
+    // FFN_KIND=2) and the runtime selectors pointing at the same arms this TB's
+    // golden describes (attn_sel=0 = KDA, ffn_sel=0 = dense). It must then produce
+    // BIT-IDENTICAL results on the same vectors -- which is the strongest cheap
+    // claim available for the runtime-selection change: not "the new path
+    // elaborates" but "the new path, selected, IS the old path". A single-kind
+    // build has `use_*` as a constant, so this also pins that adding the second
+    // arm did not perturb the first.
+`ifdef TB_KIND2
     glm53f_decoder_block #(.MODEL_DIM(MD),.H(H),.KH(KH),.DK(DK),.DV(DV),.RANK(RANK),
-                           .CONV_K(CK),.TN(TN),.KMAX(KMAX),.INTER(INTER)) dut (
+                           .CONV_K(CK),.TN(TN),.KMAX(KMAX),.INTER(INTER),
+                           .ATTN_KIND(2),.FFN_KIND(2)) dut (
         .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done),
         .streams_load(sload), .streams_init(s_init), .streams_cur(s_cur),
         .a_w_q(awq), .a_w_d(awd), .a_base(ab), .a_s0(a0), .a_s1(a1), .a_s2(a2),
@@ -124,7 +152,38 @@ module glm53f_decoder_block_tb;
         .mla_w_req(), .mla_w_sel(), .mla_w_head(), .mla_w_grp(), .mla_w_k(),
         .mla_w_hp({16*TN{1'b0}}), .mla_w_q8_d({16*TN*((KMAX+31)/32){1'b0}}),
         .mla_ckv_wr(), .mla_ckv_out(), .mla_c_req(), .mla_c_idx(),
-        .mla_c_vec({16*8{1'b0}}));
+        .mla_c_vec({16*8{1'b0}}),
+        .attn_sel(`DBSEL), .ffn_sel(`DBSEL));
+`else
+    glm53f_decoder_block #(.MODEL_DIM(MD),.H(H),.KH(KH),.DK(DK),.DV(DV),.RANK(RANK),
+                           .CONV_K(CK),.TN(TN),.KMAX(KMAX),.INTER(INTER)) dut (
+        .clk(clk), .rst(rst), .start(start), .busy(busy), .done(done),
+        .streams_load(sload), .streams_init(s_init), .streams_cur(s_cur),
+        .a_w_q(awq), .a_w_d(awd), .a_base(ab), .a_s0(a0), .a_s1(a1), .a_s2(a2),
+        .f_w_q(fwq), .f_w_d(fwd), .f_base(fb), .f_s0(f0), .f_s1(f1), .f_s2(f2),
+        .attn_norm_w(anw), .ffn_norm_w(fnw),
+        .kda_w_req(kw_req), .kda_w_sel(kw_sel), .kda_w_grp(kw_grp), .kda_w_k(kw_k),
+        .kda_w_hp(kw_hp), .kda_w_q8_d(kw_q8d),
+        .decay_in(decay_in), .dt_bias_in(dtb_in), .conv_w_in(cw_in), .onorm_w_in(onw_in),
+        .kda_s_in(ks_in), .kda_s_out(ks_out), .kda_hist_in(kh_in), .kda_hist_out(kh_out),
+        .ffn_w_req(ffn_w_req), .ffn_w_sel(ffn_w_sel), .ffn_w_grp(ffn_w_grp),
+        .ffn_w_k(ffn_w_k), .ffn_w_hp(ffn_w_hp), .ffn_w_q8_d(ffn_w_q8d),
+        .moe_rw_req(), .moe_rw_k(), .moe_rw_row({32*8{1'b0}}),
+        .moe_bias({32*8{1'b0}}), .moe_fw_shared(), .moe_fw_eidx(),
+        .moe_wt_gate(3'd0), .moe_wt_up(3'd0), .moe_wt_down(3'd0),
+        .moe_wt_sh_gate(3'd0), .moe_wt_sh_up(3'd0), .moe_wt_sh_down(3'd0),
+        .ffn_w_q({4*TN{1'b0}}),
+        .ffn_w_d({16*TN*((KMAX+255)/256){1'b0}}),
+        .ffn_w_dmin({16*TN*((KMAX+255)/256){1'b0}}),
+        .ffn_w_scales({96*TN*((KMAX+255)/256){1'b0}}),
+        .ffn_w_q6_sc({128*TN*((KMAX+255)/256){1'b0}}),
+        .mla_s_len(3'd1),
+        .mla_w_req(), .mla_w_sel(), .mla_w_head(), .mla_w_grp(), .mla_w_k(),
+        .mla_w_hp({16*TN{1'b0}}), .mla_w_q8_d({16*TN*((KMAX+31)/32){1'b0}}),
+        .mla_ckv_wr(), .mla_ckv_out(), .mla_c_req(), .mla_c_idx(),
+        .mla_c_vec({16*8{1'b0}}),
+        .attn_sel(1'b0), .ffn_sel(1'b0));
+`endif
 
     // ---- KDA Q8_0 weight responder (same shape as the kda-attn gate) ----
     reg [7:0]  cmem [0:NCODE-1];
@@ -297,8 +356,8 @@ module glm53f_decoder_block_tb;
         end
         $fclose(fd);
         if (errors == 0)
-            $display("[dec_block] ALL %0d TESTS PASSED (%0d decode steps: a COMPLETE decoder layer for blocks 0-2 -- KDA attention and a Q8_0 clamped SwiGLU both wired inside the two-site mHC block; KDA state and conv history within rel %0.3f + abs %0.3f, residual streams within that PLUS a per-element ENVELOPE the generator derives by perturbing the map and the attention sublayer within their own gated bounds and re-running the whole block -- the FFN amplifies its input error ~29x, so a sum of the parts' bounds is not a bound on the composition; worst rel %0.5f (|golden|>=1e-3), worst abs %e)",
-                     checks, ntest, `TB_REL, `TB_ABS, wr, wa);
+            $display("[%s] ALL %0d TESTS PASSED (%0d decode steps: a COMPLETE decoder layer for blocks 0-2 -- KDA attention and a Q8_0 clamped SwiGLU both wired inside the two-site mHC block; KDA state and conv history within rel %0.3f + abs %0.3f, residual streams within that PLUS a per-element ENVELOPE the generator derives by perturbing the map and the attention sublayer within their own gated bounds and re-running the whole block -- the FFN amplifies its input error ~29x, so a sum of the parts' bounds is not a bound on the composition; worst rel %0.5f (|golden|>=1e-3), worst abs %e)",
+                     `DBNAME, checks, ntest, `TB_REL, `TB_ABS, wr, wa);
         else
             $display("[dec_block] %0d/%0d FAILED (worst rel %0.5f, abs %e)", errors, checks, wr, wa);
         $finish;

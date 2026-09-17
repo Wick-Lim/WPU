@@ -64,8 +64,18 @@ module glm53f_decoder_block #(
     parameter integer TN          = 2,
     parameter integer KMAX        = 32,
     parameter integer INTER       = 32,     // dense FFN inter size
+    // ATTN_KIND / FFN_KIND are PRESENCE, not selection:
+    //   0 = only the first arm is in silicon, 1 = only the second,
+    //   2 = BOTH, and `attn_sel` / `ffn_sel` pick per token.
+    // 0 and 1 are what a single-kind build wants and are unchanged. 2 is what a
+    // TIME-MULTIPLEXED model top needs: the repo's GLM-5.2 top runs ONE decoder
+    // block L times and annotates each weight pull with the layer index, and
+    // GLM-5.3-Flash cannot do that with an elaboration-time arm because its 45
+    // layers are a MIX -- 34 KDA and 11 MLA, 3 dense and 42 MoE. Both machines
+    // have to be in silicon anyway; what 2 adds is being able to choose per layer.
     parameter integer ATTN_KIND   = 0,      // 0 = KDA (34/45 blocks).
                                             // 1 = MLA+DSA (11): glm53f_mla_attn.
+                                            // 2 = both, chosen by attn_sel.
     parameter integer QK          = 8,      // qk_nope_head_dim (real 256)
     parameter integer QLORA       = 8,      // q_lora_rank      (real 1536)
     parameter integer KVL         = 8,      // kv_lora_rank     (real 512)
@@ -77,6 +87,7 @@ module glm53f_decoder_block #(
                                   : ((QLORA > KVL) ? QLORA : KVL),
     parameter integer FFN_KIND    = 0,      // 0 = dense Q8_0 SwiGLU (blocks 0-2).
                                             // 1 = MoE (blocks 3-44): glm53f_moe_ffn.
+                                            // 2 = both, chosen by ffn_sel.
     parameter integer N_EXPERT    = 8,      // expert_count (real 288)
     parameter integer TOPK        = 3,      // expert_used_count (real 8)
     parameter [31:0]  EXPERT_SCALE = 32'h40200000,   // expert_weights_scale = 2.5
@@ -163,6 +174,11 @@ module glm53f_decoder_block #(
     // memory: at the real shapes a 1 M-token context is ~1 GB of latent per MLA
     // block, and that residency decision belongs with the model, not with a
     // decoder block. It is the same shape this block already uses for weights.
+    // Runtime arm selection. Read ONLY where the matching KIND is 2; a build with
+    // one arm ignores them, so a single-kind instantiation need not drive them.
+    input  wire                      attn_sel,   // 0 = KDA, 1 = MLA
+    input  wire                      ffn_sel,    // 0 = dense, 1 = MoE
+
     input  wire [$clog2(SMAX+1)-1:0] mla_s_len,
     output wire                      mla_w_req,
     output wire [2:0]                mla_w_sel,
@@ -179,10 +195,10 @@ module glm53f_decoder_block #(
 );
 `ifndef YOSYS
     initial begin
-        if (ATTN_KIND > 1)
-            $fatal(1, "glm53f_decoder_block: ATTN_KIND must be 0 (KDA, 34/45 blocks) or 1 (MLA+DSA, 11)");
-        if (FFN_KIND > 1)
-            $fatal(1, "glm53f_decoder_block: FFN_KIND must be 0 (dense Q8_0 SwiGLU, blocks 0-2) or 1 (MoE, blocks 3-44)");
+        if (ATTN_KIND > 2)
+            $fatal(1, "glm53f_decoder_block: ATTN_KIND must be 0 (KDA only), 1 (MLA only) or 2 (both, chosen by attn_sel)");
+        if (FFN_KIND > 2)
+            $fatal(1, "glm53f_decoder_block: FFN_KIND must be 0 (dense only), 1 (MoE only) or 2 (both, chosen by ffn_sel)");
     end
 `endif
 
@@ -205,7 +221,8 @@ module glm53f_decoder_block #(
     // ---- the KDA sublayer, sitting in the attention site ----
     reg                     kda_start;
     reg  [16*MODEL_DIM-1:0] kda_x;
-    wire                    kda_busy, kda_done;
+    wire                    kda_busy;
+    wire                    kda_done;
     wire [32*MODEL_DIM-1:0] kda_y;
 
     // Both arms present the SAME handshake to the mHC attention site -- start /
@@ -213,12 +230,21 @@ module glm53f_decoder_block #(
     // them is a generate and not a redesign of the site. The KDA arm's outputs are
     // fp32-TYPED and bf16-VALUED; the MLA arm's are bf16, so it is widened here
     // rather than the site being changed.
+    // Each arm is instantiated when its KIND ALLOWS it (0/2 for KDA, 1/2 for MLA),
+    // and `use_mla` picks which one runs. With one arm present `use_mla` is a
+    // constant, so a single-kind build is exactly what it was.
+    wire use_mla = (ATTN_KIND == 1) ? 1'b1 : (ATTN_KIND == 2) ? attn_sel : 1'b0;
+    wire k_done, m_done;
+    wire [32*MODEL_DIM-1:0] k_y, m_y;
+    assign kda_done = use_mla ? m_done : k_done;
+    assign kda_y    = use_mla ? m_y    : k_y;
+
     generate
-    if (ATTN_KIND == 0) begin : g_kda
+    if (ATTN_KIND != 1) begin : g_kda
         glm53f_kda_attn #(.MODEL_DIM(MODEL_DIM), .H(KH), .DK(DK), .DV(DV), .RANK(RANK),
                           .CONV_K(CONV_K), .TN(TN), .KMAX(KMAX), .EPS(RMS_EPS),
                           .INV_SQRT_DK(INV_SQRT_DK)) u_kda (
-            .clk(clk), .rst(rst), .start(kda_start), .busy(kda_busy), .done(kda_done),
+            .clk(clk), .rst(rst), .start(kda_start & ~use_mla), .busy(kda_busy), .done(k_done),
             .x_in(kda_x),
             .w_req(kda_w_req), .w_sel(kda_w_sel), .w_grp(kda_w_grp), .w_k(kda_w_k),
             .w_hp(kda_w_hp), .w_q8_d(kda_w_q8_d),
@@ -226,7 +252,36 @@ module glm53f_decoder_block #(
             .onorm_w_in(onorm_w_in),
             .s_in(kda_s_in), .s_out(kda_s_out),
             .hist_in(kda_hist_in), .hist_out(kda_hist_out),
-            .y_out(kda_y));
+            .y_out(k_y));
+    end else begin : g_no_kda
+        assign k_done = 1'b0;
+        assign k_y    = {32*MODEL_DIM{1'b0}};
+        assign kda_s_out    = {32*KH*DK*DV{1'b0}};
+        assign kda_hist_out = {32*3*KH*DK*(CONV_K-1){1'b0}};
+        assign kda_w_req = 1'b0; assign kda_w_sel = 4'd0;
+        assign kda_w_grp = {$clog2(PMAX_OUT/TN+1){1'b0}};
+        assign kda_w_k   = {$clog2(KMAX+1){1'b0}};
+    end
+    if (ATTN_KIND != 0) begin : g_mla
+        wire [16*MODEL_DIM-1:0] mla_y;
+        glm53f_mla_attn #(.MODEL_DIM(MODEL_DIM), .H(KH), .QK(QK), .QLORA(QLORA),
+                          .KVL(KVL), .VD(VD), .SMAX(SMAX), .TN(TN), .KMAX(KMAX),
+                          .SCALE(MLA_SCALE), .RMS_EPS(RMS_EPS)) u_mla (
+            .clk(clk), .rst(rst), .start(kda_start & use_mla), .busy(),
+            .done(m_done), .x_in(kda_x), .s_len(mla_s_len),
+            .w_req(mla_w_req), .w_sel(mla_w_sel), .w_head(mla_w_head),
+            .w_grp(mla_w_grp), .w_k(mla_w_k),
+            .w_hp(mla_w_hp), .w_q8_d(mla_w_q8_d),
+            .ckv_wr(mla_ckv_wr), .ckv_out(mla_ckv_out),
+            .c_req(mla_c_req), .c_idx(mla_c_idx), .c_vec(mla_c_vec),
+            .y_out(mla_y));
+        genvar mi;
+        for (mi = 0; mi < MODEL_DIM; mi = mi + 1) begin : g_widen
+            assign m_y[32*mi +: 32] = {mla_y[16*mi +: 16], 16'h0000};
+        end
+    end else begin : g_no_mla
+        assign m_done = 1'b0;
+        assign m_y    = {32*MODEL_DIM{1'b0}};
         assign mla_w_req   = 1'b0;
         assign mla_w_sel   = 3'd0;
         assign mla_w_head  = {$clog2(KH){1'b0}};
@@ -236,67 +291,67 @@ module glm53f_decoder_block #(
         assign mla_ckv_out = {16*KVL{1'b0}};
         assign mla_c_req   = 1'b0;
         assign mla_c_idx   = {$clog2(SMAX){1'b0}};
-    end else begin : g_mla
-        // the 11 MLA+DSA blocks. NoPE: no W_kr, no rotation, no k_rope cache --
-        // see glm53f_mla_proj's header for why that makes it a sibling of
-        // mla_attn_q4k rather than a re-parameterisation.
-        wire [16*MODEL_DIM-1:0] mla_y;
-        glm53f_mla_attn #(.MODEL_DIM(MODEL_DIM), .H(KH), .QK(QK), .QLORA(QLORA),
-                          .KVL(KVL), .VD(VD), .SMAX(SMAX), .TN(TN), .KMAX(KMAX),
-                          .SCALE(MLA_SCALE), .RMS_EPS(RMS_EPS)) u_mla (
-            .clk(clk), .rst(rst), .start(kda_start), .busy(kda_busy), .done(kda_done),
-            .x_in(kda_x), .s_len(mla_s_len),
-            .w_req(mla_w_req), .w_sel(mla_w_sel), .w_head(mla_w_head),
-            .w_grp(mla_w_grp), .w_k(mla_w_k),
-            .w_hp(mla_w_hp), .w_q8_d(mla_w_q8_d),
-            .ckv_wr(mla_ckv_wr), .ckv_out(mla_ckv_out),
-            .c_req(mla_c_req), .c_idx(mla_c_idx), .c_vec(mla_c_vec),
-            .y_out(mla_y));
-        // the site consumes an fp32-typed, bf16-valued vector
-        genvar mi;
-        for (mi = 0; mi < MODEL_DIM; mi = mi + 1) begin : g_widen
-            assign kda_y[32*mi +: 32] = {mla_y[16*mi +: 16], 16'h0000};
-        end
-        assign kda_s_out    = {32*KH*DK*DV{1'b0}};
-        assign kda_hist_out = {32*3*KH*DK*(CONV_K-1){1'b0}};
-        assign kda_w_req = 1'b0; assign kda_w_sel = 4'd0;
-        assign kda_w_grp = {$clog2(PMAX_OUT/TN+1){1'b0}};
-        assign kda_w_k   = {$clog2(KMAX+1){1'b0}};
     end
     endgenerate
-
     // ---- the dense FFN, sitting in the FFN site ----
     reg                     ffn_start;
     reg  [16*MODEL_DIM-1:0] ffn_x;
-    wire                    ffn_busy, ffn_done;
+    wire                    ffn_busy;
+    wire                    ffn_done;
     wire [16*MODEL_DIM-1:0] ffn_y;
 
     // Both arms present the SAME handshake to the mHC FFN site -- start/busy/done
     // and one bf16 vector in, one out -- which is why swapping them is a generate
     // and not a redesign of the site.
     localparam integer FNSB = (KMAX + 255) / 256;
+    // Same shape as the attention site: each arm exists when its KIND allows it,
+    // and `use_moe` picks. With one arm present this is a constant and the build
+    // is exactly what it was.
+    wire use_moe = (FFN_KIND == 1) ? 1'b1 : (FFN_KIND == 2) ? ffn_sel : 1'b0;
+    // BOTH arms drive a weight pull, and at FFN_KIND=2 both are in silicon -- so
+    // the pull has to be MUXED, not shared. Wiring both onto the block's ffn_w_*
+    // ports gives two drivers and X; measured, the KIND=2 build then failed 236 of
+    // dec-block's 676 checks with sel pointing at the arm that was supposed to be
+    // identical. The attention site has no such conflict because its two arms own
+    // separate port groups (kda_w_* and mla_w_*).
+    wire d_done, e_done;
+    wire [16*MODEL_DIM-1:0] d_y, e_y;
+    wire d_wreq, e_wreq;
+    wire [1:0] d_wsel, e_wsel;
+    wire [$clog2((INTER>MODEL_DIM?INTER:MODEL_DIM)/TN+1)-1:0] d_wgrp, e_wgrp;
+    wire [$clog2(KMAX+1)-1:0] d_wk, e_wk;
+    assign ffn_done  = use_moe ? e_done : d_done;
+    assign ffn_y     = use_moe ? e_y    : d_y;
+    assign ffn_w_req = use_moe ? e_wreq : d_wreq;
+    assign ffn_w_sel = use_moe ? e_wsel : d_wsel;
+    assign ffn_w_grp = use_moe ? e_wgrp : d_wgrp;
+    assign ffn_w_k   = use_moe ? e_wk   : d_wk;
+
     generate
-    if (FFN_KIND == 0) begin : g_dense
+    if (FFN_KIND != 1) begin : g_dense
         // The dense front is Q8_0 on all three tensors [scan], so the Q4_K/Q6_K
         // header buses are tied off HERE rather than inside the SwiGLU -- the unit
         // itself is type-generic now, because the MoE experts are a Q4_K/Q5_K/Q6_K
         // mix. The MoE arm below drives them.
         glm53f_swiglu_mt #(.HIDDEN(MODEL_DIM), .INTER(INTER), .TN(TN), .KMAX(KMAX),
                            .LIM(SWIGLU_LIM)) u_ffn (
-            .clk(clk), .rst(rst), .start(ffn_start), .busy(ffn_busy), .done(ffn_done),
-            .x_in(ffn_x),
+            .clk(clk), .rst(rst), .start(ffn_start & ~use_moe), .busy(ffn_busy),
+            .done(d_done), .x_in(ffn_x),
             .wt_gate(3'd2), .wt_up(3'd2), .wt_down(3'd2),      // Q8_0
-            .w_req(ffn_w_req), .w_sel(ffn_w_sel), .w_grp(ffn_w_grp), .w_k(ffn_w_k),
+            .w_req(d_wreq), .w_sel(d_wsel), .w_grp(d_wgrp), .w_k(d_wk),
             .w_q({4*TN{1'b0}}), .w_hp(ffn_w_hp),
             .w_d({16*TN*FNSB{1'b0}}), .w_dmin({16*TN*FNSB{1'b0}}),
             .w_scales({96*TN*FNSB{1'b0}}), .w_q6_sc({128*TN*FNSB{1'b0}}),
             .w_q8_d(ffn_w_q8_d),
-            .y_out(ffn_y));
-        assign moe_rw_req    = 1'b0;
-        assign moe_rw_k      = {$clog2(MODEL_DIM+1){1'b0}};
-        assign moe_fw_shared = 1'b0;
-        assign moe_fw_eidx   = {EIDXW{1'b0}};
-    end else begin : g_moe
+            .y_out(d_y));
+    end else begin : g_no_dense
+        assign d_done = 1'b0;
+        assign d_y    = {16*MODEL_DIM{1'b0}};
+        assign d_wreq = 1'b0; assign d_wsel = 2'd0;
+        assign d_wgrp = {$clog2((INTER>MODEL_DIM?INTER:MODEL_DIM)/TN+1){1'b0}};
+        assign d_wk   = {$clog2(KMAX+1){1'b0}};
+    end
+    if (FFN_KIND != 0) begin : g_moe
         // blocks 3-44.  The routed experts and the shared expert carry DIFFERENT
         // weight types ([scan]: routed Q4_K/Q5_K/Q6_K, shared Q8_0), so the two
         // type triples come in separately and are passed straight through.
@@ -304,19 +359,30 @@ module glm53f_decoder_block #(
                          .TOPK(TOPK), .TN(TN), .KMAX(KMAX), .SCALE(EXPERT_SCALE),
                          .LIMIT(SWIGLU_LIM), .RECIP_ITERS(RECIP_ITERS),
                          .IDXW(EIDXW)) u_ffn (
-            .clk(clk), .rst(rst), .start(ffn_start), .busy(ffn_busy), .done(ffn_done),
+            .clk(clk), .rst(rst), .start(ffn_start & use_moe), .busy(),
+            .done(e_done),
             .x_in(ffn_x),
             .rw_req(moe_rw_req), .rw_k(moe_rw_k), .rw_row(moe_rw_row),
             .bias_in(moe_bias),
-            .fw_req(ffn_w_req), .fw_shared(moe_fw_shared), .fw_eidx(moe_fw_eidx),
-            .fw_sel(ffn_w_sel), .fw_grp(ffn_w_grp), .fw_k(ffn_w_k),
+            .fw_req(e_wreq), .fw_shared(moe_fw_shared), .fw_eidx(moe_fw_eidx),
+            .fw_sel(e_wsel), .fw_grp(e_wgrp), .fw_k(e_wk),
             .wt_gate(moe_wt_gate), .wt_up(moe_wt_up), .wt_down(moe_wt_down),
             .wt_sh_gate(moe_wt_sh_gate), .wt_sh_up(moe_wt_sh_up),
             .wt_sh_down(moe_wt_sh_down),
             .w_q(ffn_w_q), .w_hp(ffn_w_hp),
             .w_d(ffn_w_d), .w_dmin(ffn_w_dmin), .w_scales(ffn_w_scales),
             .w_q6_sc(ffn_w_q6_sc), .w_q8_d(ffn_w_q8_d),
-            .y_out(ffn_y), .dbg_sel_idx(), .dbg_sel_weight());
+            .y_out(e_y), .dbg_sel_idx(), .dbg_sel_weight());
+    end else begin : g_no_moe
+        assign e_done = 1'b0;
+        assign e_y    = {16*MODEL_DIM{1'b0}};
+        assign e_wreq = 1'b0; assign e_wsel = 2'd0;
+        assign e_wgrp = {$clog2((INTER>MODEL_DIM?INTER:MODEL_DIM)/TN+1){1'b0}};
+        assign e_wk   = {$clog2(KMAX+1){1'b0}};
+        assign moe_rw_req    = 1'b0;
+        assign moe_rw_k      = {$clog2(MODEL_DIM+1){1'b0}};
+        assign moe_fw_shared = 1'b0;
+        assign moe_fw_eidx   = {EIDXW{1'b0}};
     end
     endgenerate
 
