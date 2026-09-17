@@ -26,7 +26,7 @@ YOSYS     ?= yosys
 BUILD_DIR  := build
 IFLAGS := -g2012 -Wall -I src
 
-.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn wdesc fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
+.PHONY: gate-shared release-gate-par glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn wdesc layers fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn all unittests q4k mixedtype model-q4k model-q4k-acthw model-q4k-smoke spec-slow spec-adapt expert-cache full-elab release-gate formal formal-ind lint host-test dsa-thread-equiv full-elab-lanes lane-scaling lane-scaling-ratio lane-scaling-sparse dsa-sparse-correct synth-glm fit-harness cdc coverage resident resident-equiv self-kv-roundtrip self-kv-l6-roundtrip self-kv-equiv dsa-thread-equiv provision-selftest boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab cdc-protocol cdc-protocol-equiv clean
 
 # `all` is the GLM-5.2 (UD-Q4_K_XL) prove-it gate (main's product): every per-unit
 # TB, the whole-chip structural sign-off, the memory-controller formal proofs, plus
@@ -149,7 +149,7 @@ GATE_JOBS ?= 6
 release-gate-par:
 	@bash tools/run_gate_parallel.sh $(GATE_JOBS) 2>&1 | tee $(BUILD_DIR)/release_gate_par.log
 
-release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn wdesc fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
+release-gate: glm53f-config-guard glm53f-ref dsa-indexer-ref mla-ref mla-score mla-proj glm53f-mla-attn wdesc layers fp-ieee fp-sigmoid kda kda-conv kda-gate kda-onorm mhc-sinkhorn mhc-map mhc-ops mhc-gemv mhc-site hc-block kda-layer kda-attn q5k-loader dec-block swiglu-q8 swiglu-mt moe-router moe-ffn unittests q4k mixedtype model-q4k model-q4k-acthw spec-slow spec-adapt spec-greedy intra-batch-verify self-kv-roundtrip self-kv-equiv loopback loopback-fw loopback-rest resident resident-equiv dsa-sparse-correct expert-cache full-elab full-elab-lanes mla-sparse scale-ops batched-q4k perf-q4k boot-integrity weight-ecc weight-ecc-equiv weight-decomp decomp1-elab weight-loader-lanes cdc-protocol cdc-protocol-equiv synth-glm cdc formal formal-ind host-test mig-shim spi-boot packer-rtl-crosscheck uart-host l3-elab boot-writer hdr-late l3-hash-mirror l3-e2e
 	@echo "release-gate: ALL gates passed"
 
 # release-gate-strict: release-gate PLUS an EXACT per-gate test-count check.  The plain
@@ -1216,6 +1216,49 @@ wdesc:
 	        echo "FAILED: wdesc $$inj PASSED -- that trap is not actually checked"; exit 1; \
 	    else \
 	        echo "[wdesc_INJECT_$$inj] injection correctly FAILED"; \
+	    fi; \
+	done
+
+# ---- layers : the 45-layer walk ----------------------------------------------
+# src/glm53f_layers.v. ONE glm53f_decoder_block, run L times, with the per-layer
+# arm selection and the layer index that annotates every pull -- the shape
+# glm_model_q4k already uses for GLM-5.2, except that here BOTH sites switch,
+# because these 45 layers are a MIXTURE rather than a prefix.
+#   THE SCHEDULE IS CITED, NOT ASSUMED. attention: block l is MLA+DSA iff
+# (l % ATTN_PERIOD) == ATTN_OFFSET -- [gguf] attention.head_count_kv is a per-block
+# list and [scan] confirms it is strictly periodic, { 3, 7, ..., 43 }. FFN: MoE iff
+# l >= N_DENSE ([gguf] leading_dense_block_count = 3). Both are PARAMETERS from
+# configs/full_glm53_flash.vh, and the generator reads the same lines -- so a
+# disagreement is a real one rather than two independent guesses. The generator
+# also checks the periodic rule REPRODUCES the separately-cited census counts
+# (N_MLA = 11, N_KDA = 34).
+#   Runs at the REAL L = 45, against a stub block: the claim is the WALK -- streams
+# loaded exactly once before layer 0, the block started exactly 45 times, and the
+# right (layer, attn_sel, ffn_sel) on each -- not what a layer computes. That is
+# `make dec-block`, whose KIND=2 equivalence build also proves the selectors
+# actually select.
+#   INJ_LAYERS_OFF_BY_ONE is the leg worth reading: shifting the attention phase by
+# ONE block still gives ELEVEN MLA blocks at L=45, so every count-based check --
+# including the census figures themselves -- still agrees and only the per-layer
+# sequence disagrees. (Dropping the phase entirely gives twelve, which a count
+# check WOULD catch; that is why the injection is the shift, not the drop.)
+layers:
+	@mkdir -p $(BUILD_DIR)
+	@printf '[%s] ' "glm53f_layers_gen"; python3 tools/glm53f_layers_gen.py --selftest \
+	    || { echo "FAILED: glm53f_layers_gen self-test"; exit 1; }
+	@python3 tools/glm53f_layers_gen.py $(BUILD_DIR)/glm53f_layers_vec.txt >/dev/null
+	@$(IVERILOG) $(IFLAGS) -DTB_VEC='"$(BUILD_DIR)/glm53f_layers_vec.txt"' \
+	    -o $(BUILD_DIR)/layers_sim test/glm53f_layers_tb.v src/glm53f_layers.v 2>/dev/null \
+	    || { echo "FAILED: layers compile"; exit 1; }
+	@printf '[%s] ' "layers"; $(VVP) $(BUILD_DIR)/layers_sim | grep -E 'ALL [0-9]+ TESTS PASSED' \
+	    || { echo "FAILED: layers"; exit 1; }
+	@for inj in INJ_LAYERS_OFF_BY_ONE INJ_LAYERS_DENSE_OFF; do \
+	    $(IVERILOG) $(IFLAGS) -D$$inj -DTB_VEC='"$(BUILD_DIR)/glm53f_layers_vec.txt"' \
+	        -o $(BUILD_DIR)/layers_inj test/glm53f_layers_tb.v src/glm53f_layers.v 2>/dev/null; \
+	    if $(VVP) $(BUILD_DIR)/layers_inj 2>/dev/null | grep -q 'ALL [0-9]* TESTS PASSED'; then \
+	        echo "FAILED: layers $$inj PASSED -- that trap is not actually checked"; exit 1; \
+	    else \
+	        echo "[layers_INJECT_$$inj] injection correctly FAILED"; \
 	    fi; \
 	done
 

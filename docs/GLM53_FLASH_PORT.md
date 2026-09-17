@@ -1572,6 +1572,45 @@ offsets needs the GGUF tensor map — the 199.7 GB checkpoint or at least its he
 — which this branch does not have. The table fed here is synthetic and *shaped*
 like the real one; producing the real one is a data step, not an RTL step.
 
+### 4.3aa The 45-layer walk — and why the schedule needed its own gate
+
+`src/glm53f_layers.v` — `make layers`, **138 + 10 checks, at the real L = 45**.
+
+One `glm53f_decoder_block`, run 45 times, with the per-layer arm selection and the
+layer index that annotates every pull. That is the shape `glm_model_q4k` already
+uses for GLM-5.2 (`db_layer` / `db_mode`); what is new is that **both** sites
+switch, because these 45 layers are a *mixture* rather than a prefix — which is
+what §4.3x made possible.
+
+**There is no `x` between layers**, and that is a consequence rather than a
+shortcut: `glm53f_hc_block` holds the four mHC streams and every sublayer mixes
+into them, so the walk loads them **once**, runs the block 45 times without
+reloading, and reads them out at the end.
+
+**The schedule is cited, and both sides read the same line.** Block *l* is MLA+DSA
+iff `(l % ATTN_PERIOD) == ATTN_OFFSET` — `[gguf] attention.head_count_kv` is a
+per-block list and `[scan]` confirms it is strictly periodic, `{3, 7, …, 43}` — and
+MoE iff `l ≥ N_DENSE`. Both are **parameters** from the locked config, and the
+generator reads those same macros, so a disagreement is a real one rather than two
+independent guesses. The generator also checks the periodic rule **reproduces the
+separately-cited census counts** (`N_MLA = 11`, `N_KDA = 34`); a period/offset that
+did not would be caught before the RTL is ever run.
+
+**The injection worth reading is the off-by-one.** Shifting the attention phase by
+a *single* block gives `{2, 6, …, 42}` — and at L = 45 that is **still eleven MLA
+blocks**. Every count-based check still agrees, including the census figures
+themselves; only the per-layer sequence disagrees. Dropping the phase entirely
+gives *twelve*, which a count check would catch — which is exactly why the
+injection is the shift and not the drop. My first version was the drop, and the
+generator's own adequacy check rejected it for that reason.
+
+**What it claims and what it does not.** The walk: streams loaded exactly once,
+the block started exactly 45 times, and the right `(layer, attn_sel, ffn_sel)` on
+each. Not what a layer computes — that is `make dec-block`, whose KIND = 2
+equivalence build also proves the selectors actually select. The three gates are
+one argument: **one layer is right, selection works, and the schedule picks the
+right selection per layer.**
+
 ## 4.4 The executable specification (what `make glm53f-ref` pins)
 
 Writing RTL for KDA / mHC / clamped SwiGLU from `config.json` alone would be
@@ -1675,6 +1714,7 @@ make mla-score                #   8 + 102: the absorbed-latent MLA inner loop, B
 make mla-proj                 #   9 + 100: the Q8_0 projection front + the W_uk fold (4.3v)
 make glm53f-mla-attn          #   8 + 125: the WHOLE NoPE MLA sublayer; ATTN_KIND=1 (4.3w)
 make wdesc                    #  22 + 384: per-tensor weight descriptors (4.3z)
+make layers                   #  10 + 138: the 45-layer walk and its schedule (4.3aa)
 make dsa-indexer-ref          #       424: the DSA indexer spec, now in the ladder
 ```
 
